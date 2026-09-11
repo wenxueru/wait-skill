@@ -1,0 +1,5 @@
+__pycache__/
+*.py[cod]
+*.log
+.pytest_cache/
+commit.tmp
