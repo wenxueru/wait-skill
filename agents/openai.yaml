@@ -1,4 +1,4 @@
 interface:
-  display_name: "Passive Wait"
-  short_description: "Wait for external state and wake a Codex thread"
-  default_prompt: "Use $wait-skill to wait for an external job without active model polling."
+  display_name: "Wait Goal"
+  short_description: "Run durable goals with event-driven waiting"
+  default_prompt: "Use $wait-goal to run this objective without active model polling."

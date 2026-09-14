@@ -1,40 +1,44 @@
 ---
-name: wait-skill
-description: Passively wait for an external job or service state and wake an existing Codex thread once a ready, terminal, timeout, or repeated-query-failure condition is reached. Use for long queue, deployment, CI, batch, or service waits that should not spend model tokens polling.
+name: wait-goal
+description: Run a durable, event-driven goal without native Goal mode. Use when work has dependent steps, agents, or long external waits and should stop model turns while nothing actionable is ready. Use wait instead when only one external state needs monitoring.
 ---
 
-# Passive Wait
+# Wait Goal
 
-Use `scripts/wait_for.py` to move polling into a small local process. The query command is platform-specific; the wait and Codex notification logic is not.
+Run the objective as a persisted dependency graph. Do not start native `/goal`; this skill owns continuation through explicit `$wait-goal` wake-up messages.
 
-## Workflow
+Use `scripts/wait_goal.py` for durable graph state and `scripts/wait_for.py` for external polling. Read [docs/wait-goal.md](docs/wait-goal.md) before starting or resuming a goal. Read [docs/wait.md](docs/wait.md) when a node must wait on an external command-reported state.
 
-1. Choose a read-only query command that prints exactly one status, or JSON plus `--json-path`. Keep credentials in the command's environment or config files, never in argv or its output.
-2. Define exact ready and terminal statuses. A terminal status wakes the thread but does not authorize a retry, rebuild, or other mutation.
-3. Start one watcher with a lock file and a durable log using an available process-management mechanism. Prefer `tmux` after confirming it is installed; otherwise use a mechanism supported by the current environment or ask the user how the watcher should be kept running.
-4. Tell the user what is being watched and what event will wake the thread. Do not actively poll the same state while the watcher is responsible for it.
-5. When the queued message arrives, re-read the external state before acting. Treat it as a notification, not proof that a resource remains ready.
+## Invocation
 
-Example:
+- `$wait-goal <objective>` starts a goal.
+- `$wait-goal resume <state-file>` resumes from a queued wake-up or user request.
+- `$wait-goal status <state-file>` reports persisted state without advancing it.
+- `$wait-goal pause|cancel <state-file>` applies the requested control operation.
 
-```bash
-python /path/to/wait-skill/scripts/wait_for.py \
-  --label 'build 42' \
-  --ready Running --terminal Failed --terminal Succeeded \
-  --thread "$CODEX_THREAD_ID" \
-  --lock-file /tmp/wait-build-42.lock \
-  --log-file /tmp/wait-build-42.json \
-  -- buildctl status 42 --output status
-```
+## Core behavior
 
-If the query emits `{"job": {"status": "Running"}}`, add `--json-path job.status`.
+1. Persist the objective and its initial nodes before doing substantial work. Add newly discovered work as nodes rather than keeping it only in conversation context.
+2. Make each node as independent as practical, with one bounded outcome, explicit dependency-backed `--input` values, acceptance checks, expected artifacts, and either `--read-only` or concrete write paths. Use dependency edges for unavoidable ordering or information flow; keep tightly coupled work in one node.
+3. Run `wait_goal.py check`, then run only nodes returned by `ready`. The ready frontier automatically serializes overlapping or undeclared write scopes. The root agent alone schedules work and mutates the graph. It may parallelize independent nodes, but every child reports only to the root and must not contact or wait on another child, mutate the graph, or create agents. For an agent node, persist `prepare-agent` first, include its dispatch token in the child task, then attach the returned runtime ID with `start --dispatch-token ... --agent-id ...`.
+4. Mark a node complete only after its acceptance checks pass and its expected artifacts exist. Record a concise result and artifacts in state, then dispatch newly ready nodes.
+5. When no node is ready:
+   - If agents are running, use the runtime's blocking agent wait and resume only on a completion or attention event. If activity is `dispatching`, reconcile the saved dispatch token with runtime agents before taking any other action; never dispatch a second child blindly.
+   - If only external states remain, prepare one wait per external object, start its passive watcher, confirm the startup receipt, activate the wait, then end the turn. Do not query the same state while its watcher owns the wait.
+   - If activity is `blocked`, report the failed or cancelled dependencies and the decision needed to recover. Use `retry` only after that decision, then dispatch the reset node normally.
+   - If progress requires a user decision, report the exact decision needed and stop.
+6. `wait` prepares a unique watch ID while leaving the node running. Use the absolute state, log, lock, and startup paths returned by that command when starting `wait_for.py`. After the startup receipt exists, run `activate-wait`; only then may the watcher query. `wake` accepts only the active ID and returns every event to `running`. Re-check the external state once, then complete, explicitly fail, or prepare another wait. Exact duplicate events are safe no-ops. If a prepared or active watcher cannot continue, run `abort-wait` with its exact watch ID before creating a replacement.
+7. Before finishing, verify the result against the original objective. If it is not satisfied, add the missing work as nodes and continue. Otherwise record the evidence with `wait_goal.py verify`, then run `wait_goal.py finish`.
 
-## Safety invariants
+## Invariants
 
-- The watcher executes the query directly without an implicit shell. Use an explicit `bash -lc` only when shell syntax is genuinely required.
-- It never prints raw query output; only a validated short status enters its result and notification.
-- Notification delivery is attempted once. An ambiguous delivery failure is not retried because the first message may already be queued.
-- Use a unique lock file per external object and Codex thread to prevent duplicate watchers.
-- Do not use a mutating query command. The watcher does not expand the user's authorization or the scope of the task.
+- Waiting is event-driven. Do not spend turns on unchanged status checks or periodic progress messages.
+- The graph may evolve, but it must remain acyclic and every dependency must exist.
+- State mutations append atomically to the goal's event history. Supply `--reason` when adding work discovered during execution.
+- Treat notifications as hints, not proof. Re-check current state before acting.
+- Keep query commands read-only. A wake-up never grants permission to retry, deploy, restart, or otherwise mutate an external system.
+- Do not fan out work merely to increase concurrency; subagents add token cost. Prefer one agent for a short ordered chain or overlapping writes.
+- Run `abort-agent` only after confirming that the prepared dispatch did not create a live child, or after terminating that child.
+- Store credentials outside argv, graph state, watcher logs, and notifications.
 
-Run `python scripts/wait_for.py --help` for all options. The script has no third-party Python dependencies.
+Run `python scripts/wait_goal.py --help` and `python scripts/wait_for.py --help` for command details.

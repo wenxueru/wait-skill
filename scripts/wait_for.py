@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Wait for command-reported state and optionally wake a Codex thread once."""
+"""Wait for command-reported state and durably wake a Codex thread."""
 
 from __future__ import annotations
 
@@ -7,18 +7,38 @@ import argparse
 import fcntl
 import json
 import math
+import os
+import re
+import selectors
+import signal
+import string
 import subprocess
+import tempfile
 import time
+import uuid
+from collections.abc import Callable, Sequence
+from contextlib import ExitStack, suppress
 from pathlib import Path
-from typing import Callable, Sequence
 
 EXIT_READY = 0
 EXIT_TERMINAL = 2
 EXIT_QUERY_FAILED = 3
 EXIT_NOTIFY_FAILED = 70
 EXIT_ALREADY_WATCHING = 75
+EXIT_ACTIVATION_CANCELLED = 76
 EXIT_TIMEOUT = 124
 EXIT_INTERRUPTED = 130
+MESSAGE_FIELDS = {
+    "label",
+    "event",
+    "event_id",
+    "status",
+    "query_failures",
+    "elapsed_seconds",
+    "notification",
+    "notification_attempts",
+}
+MAX_QUERY_OUTPUT_BYTES = 64 * 1024
 
 
 def positive_number(value: str) -> float:
@@ -35,6 +55,30 @@ def nonnegative_int(value: str) -> int:
     return number
 
 
+def absolute_path(path: Path) -> Path:
+    return Path(os.path.abspath(os.path.expanduser(os.fspath(path))))
+
+
+def canonical_path(path: Path) -> Path:
+    return Path(os.path.realpath(absolute_path(path)).casefold())
+
+
+def validate_distinct_paths(
+    command_parser: argparse.ArgumentParser,
+    **paths: Path | None,
+) -> None:
+    seen: dict[Path, str] = {}
+    for name, path in paths.items():
+        if path is None:
+            continue
+        canonical = canonical_path(path)
+        if previous := seen.get(canonical):
+            current_option = name.replace("_", "-")
+            previous_option = previous.replace("_", "-")
+            command_parser.error(f"--{current_option} must differ from --{previous_option}")
+        seen[canonical] = name
+
+
 def extract_status(output: str, json_path: str | None = None) -> str:
     if json_path:
         value: object = json.loads(output)
@@ -44,7 +88,12 @@ def extract_status(output: str, json_path: str | None = None) -> str:
             value = value[key]
         if not isinstance(value, (str, int, float, bool)):
             raise ValueError("status must be a scalar JSON value")
-        status = str(value)
+        if isinstance(value, bool):
+            status = str(value).lower()
+        elif isinstance(value, float) and not math.isfinite(value):
+            raise ValueError("status must be a finite JSON scalar")
+        else:
+            status = str(value)
     else:
         lines = [line.strip() for line in output.splitlines() if line.strip()]
         if not lines:
@@ -56,74 +105,138 @@ def extract_status(output: str, json_path: str | None = None) -> str:
     return status
 
 
-def query_status(
-    command: Sequence[str], query_timeout: float, json_path: str | None
-) -> str:
-    result = subprocess.run(
+def query_status(command: Sequence[str], query_timeout: float, json_path: str | None) -> str:
+    process = subprocess.Popen(
         command,
-        capture_output=True,
-        text=True,
-        timeout=query_timeout,
-        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
     )
-    if result.returncode:
-        raise RuntimeError(f"query exited with status {result.returncode}")
-    return extract_status(result.stdout, json_path)
+    output = bytearray()
+    deadline = time.monotonic() + query_timeout
+    assert process.stdout is not None
+    try:
+        with selectors.DefaultSelector() as selector:
+            selector.register(process.stdout, selectors.EVENT_READ)
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired(command, query_timeout)
+                if not selector.select(remaining):
+                    raise subprocess.TimeoutExpired(command, query_timeout)
+                read_size = min(8192, MAX_QUERY_OUTPUT_BYTES + 1 - len(output))
+                chunk = os.read(process.stdout.fileno(), read_size)
+                if not chunk:
+                    break
+                output.extend(chunk)
+                if len(output) > MAX_QUERY_OUTPUT_BYTES:
+                    raise ValueError(f"query output exceeds {MAX_QUERY_OUTPUT_BYTES} bytes")
+        returncode = process.wait(timeout=max(0.0, deadline - time.monotonic()))
+    except BaseException:
+        terminate_process_group(process)
+        raise
+    finally:
+        process.stdout.close()
+    if returncode:
+        raise RuntimeError(f"query exited with status {returncode}")
+    return extract_status(output.decode("utf-8"), json_path)
 
 
-def wait_for_status(
-    query: Callable[[float | None], str],
-    ready: set[str],
-    terminal: set[str],
-    *,
-    interval: float,
-    timeout: float | None,
-    max_consecutive_failures: int,
-    now: Callable[[], float] = time.monotonic,
-    sleep: Callable[[float], None] = time.sleep,
-) -> tuple[dict[str, object], int]:
-    started = now()
-    deadline = started + timeout if timeout is not None else math.inf
-    status: str | None = None
-    failures = 0
-    consecutive_failures = 0
+def terminate_process_group(process: subprocess.Popen[bytes]) -> None:
+    """Stop a timed-out query and every descendant in its process group."""
+    with suppress(ProcessLookupError, PermissionError):
+        os.killpg(process.pid, signal.SIGTERM)
+    try:
+        process.wait(timeout=0.2)
+    except subprocess.TimeoutExpired:
+        pass
+    with suppress(ProcessLookupError, PermissionError):
+        os.killpg(process.pid, signal.SIGKILL)
+    if process.poll() is None:
+        process.wait()
 
-    while True:
-        remaining = None if timeout is None else deadline - now()
-        if remaining is not None and remaining <= 0:
-            event, code = "timeout", EXIT_TIMEOUT
-            break
-        try:
-            candidate = query(remaining)
-        except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired):
-            if now() >= deadline:
-                event, code = "timeout", EXIT_TIMEOUT
-                break
-            failures += 1
-            consecutive_failures += 1
-            if max_consecutive_failures and consecutive_failures >= max_consecutive_failures:
-                event, code = "query_failed", EXIT_QUERY_FAILED
-                break
-        else:
-            if now() >= deadline:
-                event, code = "timeout", EXIT_TIMEOUT
-                break
-            status = candidate
-            consecutive_failures = 0
-            if status in ready:
-                event, code = "ready", EXIT_READY
-                break
-            if status in terminal:
-                event, code = "terminal", EXIT_TERMINAL
-                break
-        sleep(max(0.0, min(interval, deadline - now())))
 
-    return {
-        "event": event,
-        "status": status,
-        "query_failures": failures,
-        "elapsed_seconds": round(now() - started, 3),
-    }, code
+class StatusWaiter:
+    """Run one bounded status-wait lifecycle."""
+
+    def __init__(
+        self,
+        query: Callable[[float | None], str],
+        ready: set[str],
+        terminal: set[str],
+        *,
+        interval: float,
+        timeout: float | None,
+        max_consecutive_failures: int,
+        is_active: Callable[[], bool] | None = None,
+        now: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
+        self.query = query
+        self.ready = ready
+        self.terminal = terminal
+        self.interval = interval
+        self.timeout = timeout
+        self.max_consecutive_failures = max_consecutive_failures
+        self.is_active = is_active
+        self.now = now
+        self.sleep = sleep
+        self.started: float
+        self.deadline: float
+        self.status: str | None
+        self.failures: int
+        self.consecutive_failures: int
+
+    def run(self) -> tuple[dict[str, object], int]:
+        self.started = self.now()
+        self.deadline = self.started + self.timeout if self.timeout is not None else math.inf
+        self.status = None
+        self.failures = 0
+        self.consecutive_failures = 0
+
+        while True:
+            if self.is_active is not None and not self.is_active():
+                return self._result("cancelled", EXIT_ACTIVATION_CANCELLED)
+            remaining = None if self.timeout is None else self.deadline - self.now()
+            if remaining is not None and remaining <= 0:
+                return self._result("timeout", EXIT_TIMEOUT)
+            try:
+                candidate = self.query(remaining)
+            except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired):
+                outcome = self._record_failure()
+            else:
+                outcome = self._record_status(candidate)
+            if outcome is not None:
+                return self._result(*outcome)
+            self.sleep(max(0.0, min(self.interval, self.deadline - self.now())))
+
+    def _record_failure(self) -> tuple[str, int] | None:
+        if self.now() >= self.deadline:
+            return "timeout", EXIT_TIMEOUT
+        self.failures += 1
+        self.consecutive_failures += 1
+        if self.max_consecutive_failures and self.consecutive_failures >= self.max_consecutive_failures:
+            return "query_failed", EXIT_QUERY_FAILED
+        return None
+
+    def _record_status(self, status: str) -> tuple[str, int] | None:
+        if self.now() >= self.deadline:
+            return "timeout", EXIT_TIMEOUT
+        self.status = status
+        self.consecutive_failures = 0
+        if status in self.ready:
+            return "ready", EXIT_READY
+        if status in self.terminal:
+            return "terminal", EXIT_TERMINAL
+        return None
+
+    def _result(self, event: str, code: int) -> tuple[dict[str, object], int]:
+        return {
+            "event": event,
+            "status": self.status,
+            "query_failures": self.failures,
+            "elapsed_seconds": round(self.now() - self.started, 3),
+        }, code
 
 
 def notify_thread(
@@ -132,9 +245,9 @@ def notify_thread(
     label: str,
     result: dict[str, object],
     template: str,
+    timeout: float = 60.0,
 ) -> None:
-    fields = dict(result)
-    fields["label"] = label
+    fields = {**result, "label": label}
     message = template.format(**fields)
     subprocess.run(
         [
@@ -150,16 +263,197 @@ def notify_thread(
         check=True,
         capture_output=True,
         text=True,
-        timeout=60,
+        timeout=timeout,
     )
+
+
+def deliver_notification(
+    args: argparse.Namespace,
+    result: dict[str, object],
+) -> int | None:
+    """Persist delivery progress and retry with one stable event ID."""
+    attempts = 0
+    result["notification"] = "pending"
+    result["notification_attempts"] = attempts
+    persist_result(args.log_file, result)
+    while True:
+        if not watch_is_current(args):
+            result["notification"] = "cancelled"
+            persist_result(args.log_file, result)
+            return EXIT_ACTIVATION_CANCELLED
+        attempts += 1
+        result["notification_attempts"] = attempts
+        result["notification"] = "attempting"
+        persist_result(args.log_file, result)
+        try:
+            notify_thread(
+                args.thread,
+                args.remote,
+                args.label,
+                result,
+                args.message_template,
+                timeout=args.notification_timeout,
+            )
+        except KeyboardInterrupt:
+            result["notification"] = "interrupted"
+            persist_result(args.log_file, result)
+            return EXIT_INTERRUPTED
+        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+            exhausted = args.max_notification_attempts and attempts >= args.max_notification_attempts
+            ambiguous = isinstance(exc, subprocess.TimeoutExpired)
+            if exhausted:
+                result["notification"] = "unconfirmed" if ambiguous else "failed"
+            else:
+                result["notification"] = "unconfirmed_retrying" if ambiguous else "retrying"
+            persist_result(args.log_file, result)
+            if exhausted:
+                return EXIT_NOTIFY_FAILED
+            try:
+                delay = min(
+                    args.notification_retry_interval * 2 ** min(attempts - 1, 10),
+                    300.0,
+                )
+                time.sleep(delay)
+            except KeyboardInterrupt:
+                result["notification"] = "interrupted"
+                persist_result(args.log_file, result)
+                return EXIT_INTERRUPTED
+        else:
+            result["notification"] = "queued"
+            persist_result(args.log_file, result)
+            return None
+
+
+def goal_wait_phase(args: argparse.Namespace) -> str:
+    """Return this watch's persisted phase or invalid when state is unavailable."""
+    try:
+        state = json.loads(args.goal_state.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return "invalid"
+    if not isinstance(state, dict):
+        return "invalid"
+    nodes = state.get("nodes")
+    if not isinstance(nodes, dict):
+        return "invalid"
+    node = nodes.get(args.goal_node)
+    if not isinstance(node, dict):
+        return "invalid"
+    wait = node.get("wait")
+    if not isinstance(wait, dict) or wait.get("watch_id") != args.event_id or wait.get("thread") != args.thread:
+        return "invalid"
+    phase = wait.get("phase")
+    if node.get("status") == "running" and phase == "prepared":
+        return "prepared"
+    if node.get("status") == "waiting" and phase == "active":
+        return "active"
+    return "invalid"
+
+
+def goal_wait_is_current(args: argparse.Namespace) -> bool:
+    """Return whether this exact watch remains active in durable goal state."""
+    return goal_wait_phase(args) == "active"
+
+
+def watch_is_current(args: argparse.Namespace) -> bool:
+    """Standalone waits are always current; goal waits must still own their watch."""
+    return not args.goal_state or goal_wait_is_current(args)
+
+
+def wait_for_goal_activation(args: argparse.Namespace) -> str:
+    """Wait for activation without allowing a prepared watcher to live forever."""
+    deadline = time.monotonic() + args.activation_timeout
+    while True:
+        phase = goal_wait_phase(args)
+        if phase == "active":
+            return "active"
+        if phase == "invalid":
+            return "cancelled"
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return "timeout"
+        time.sleep(min(args.activation_interval, remaining))
+
+
+def atomic_write_text(path: Path, payload: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+            output.write(payload)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        with suppress(FileNotFoundError):
+            os.unlink(temporary)
+
+
+def persist_result(path: Path | None, result: dict[str, object]) -> None:
+    if path:
+        payload = json.dumps(result, ensure_ascii=False, sort_keys=True) + "\n"
+        atomic_write_text(path, payload)
 
 
 def write_result(path: Path | None, result: dict[str, object]) -> None:
     payload = json.dumps(result, ensure_ascii=False, sort_keys=True)
     if path:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(payload + "\n", encoding="utf-8")
+        atomic_write_text(path, payload + "\n")
     print(payload, flush=True)
+
+
+def validate_message_template(
+    command_parser: argparse.ArgumentParser,
+    template: str,
+    log_file: Path | None,
+    goal_state: Path | None = None,
+    goal_node: str | None = None,
+) -> None:
+    try:
+        fields = {field_name for _, field_name, _, _ in string.Formatter().parse(template) if field_name}
+    except ValueError as exc:
+        command_parser.error(f"invalid --message-template: {exc}")
+    required = {"event_id", "event", "status"}
+    if not required <= fields:
+        command_parser.error("--message-template must include {event_id}, {event}, and {status}")
+    unknown = fields - MESSAGE_FIELDS
+    if unknown:
+        command_parser.error(f"unknown --message-template fields: {sorted(unknown)}")
+    try:
+        template.format(
+            label="label",
+            event="ready",
+            event_id="event-id",
+            status="status",
+            query_failures=0,
+            elapsed_seconds=0.0,
+            notification="pending",
+            notification_attempts=0,
+        )
+    except (IndexError, KeyError, ValueError) as exc:
+        command_parser.error(f"invalid --message-template: {exc}")
+    resume_directives = re.findall(
+        r"\$(wait(?:-goal)?)\s+resume\s+(.+?)\s*(?=;|$)",
+        template,
+    )
+    if len(resume_directives) != 1:
+        command_parser.error("--message-template must contain exactly one $wait or $wait-goal resume directive")
+    resume_skill, resume_target = resume_directives[0]
+    if goal_state:
+        if resume_skill != "wait-goal" or resume_target != str(goal_state):
+            command_parser.error("--message-template must resume the active goal state")
+        watcher_logs = re.findall(r"(?<![A-Za-z0-9._-])watcher_log=(.+?)\s*(?=;|$)", template)
+        nodes = re.findall(r"(?<![A-Za-z0-9._-])node=(.+?)\s*(?=;|$)", template)
+        if watcher_logs != [str(log_file)]:
+            command_parser.error("--message-template must contain exactly one active watcher_log binding")
+        if nodes != [goal_node]:
+            command_parser.error("--message-template must contain exactly one active goal node binding")
+    elif log_file and (resume_skill != "wait" or resume_target != str(log_file)):
+        command_parser.error("--message-template must bind the watcher log as $wait resume <log path>")
 
 
 def parser() -> argparse.ArgumentParser:
@@ -182,46 +476,53 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--lock-file", type=Path, help="Reject another watcher holding this lock")
     result.add_argument("--log-file", type=Path, help="Write the final JSON result here")
     result.add_argument(
+        "--event-id",
+        help="Stable event ID; pass the prepared wait-goal watch ID when integrating",
+    )
+    result.add_argument("--goal-state", type=Path, help="Goal state used for startup activation")
+    result.add_argument("--goal-node", help="External goal node used for startup activation")
+    result.add_argument(
+        "--startup-file",
+        type=Path,
+        help="Write watcher startup confirmation before waiting for goal activation",
+    )
+    result.add_argument("--activation-interval", type=positive_number, default=0.25)
+    result.add_argument("--activation-timeout", type=positive_number, default=60.0)
+    result.add_argument(
+        "--notification-timeout",
+        type=positive_number,
+        default=60.0,
+        help="Maximum seconds to wait for one Codex queue attempt",
+    )
+    result.add_argument(
+        "--notification-retry-interval",
+        type=positive_number,
+        default=30.0,
+        help="Seconds between notification retries",
+    )
+    result.add_argument(
+        "--max-notification-attempts",
+        type=nonnegative_int,
+        default=0,
+        help="Stop after this many notification failures or timeouts; 0 keeps retrying",
+    )
+    result.add_argument(
         "--message-template",
-        default=(
-            "[Passive wait] {label}: {event}; status={status}; "
-            "query failures={query_failures}. Re-check external state before continuing; "
-            "do not assume permission to retry or mutate it."
+        help=(
+            "Required with --thread; format string using label, event, event_id, status, query_failures, and elapsed_seconds"
         ),
-        help="Python format string using label/event/status/query_failures/elapsed_seconds",
     )
     result.add_argument("command", nargs=argparse.REMAINDER, help="Read-only query command after --")
     return result
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    args = parser().parse_args(argv)
-    command = list(args.command)
-    if command[:1] == ["--"]:
-        command = command[1:]
-    if not command:
-        parser().error("a query command is required after --")
-
-    lock = None
-    if args.lock_file:
-        args.lock_file.parent.mkdir(parents=True, exist_ok=True)
-        lock = args.lock_file.open("a", encoding="utf-8")
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            write_result(
-                args.log_file,
-                {"label": args.label, "event": "already_watching", "status": None},
-            )
-            return EXIT_ALREADY_WATCHING
-
+def run_wait(args: argparse.Namespace, command: Sequence[str]) -> int:
+    started = time.monotonic()
     try:
-        result, code = wait_for_status(
+        result, code = StatusWaiter(
             lambda remaining: query_status(
                 command,
-                min(args.query_timeout, remaining)
-                if remaining is not None
-                else args.query_timeout,
+                min(args.query_timeout, remaining) if remaining is not None else args.query_timeout,
                 args.json_path,
             ),
             set(args.ready),
@@ -229,26 +530,129 @@ def main(argv: Sequence[str] | None = None) -> int:
             interval=args.interval,
             timeout=args.timeout,
             max_consecutive_failures=args.max_consecutive_failures,
-        )
+            is_active=lambda: watch_is_current(args),
+        ).run()
     except KeyboardInterrupt:
-        result, code = {
-            "event": "interrupted",
-            "status": None,
-            "query_failures": 0,
-            "elapsed_seconds": 0.0,
-        }, EXIT_INTERRUPTED
+        result, code = (
+            {
+                "event": "interrupted",
+                "status": None,
+                "query_failures": 0,
+                "elapsed_seconds": round(time.monotonic() - started, 3),
+            },
+            EXIT_INTERRUPTED,
+        )
 
     result["label"] = args.label
-    if args.thread and code != EXIT_INTERRUPTED:
-        try:
-            notify_thread(args.thread, args.remote, args.label, result, args.message_template)
-        except (OSError, KeyError, TypeError, ValueError, subprocess.SubprocessError):
-            result["notification"] = "failed_or_unconfirmed; not retried"
-            code = EXIT_NOTIFY_FAILED
-        else:
-            result["notification"] = "queued"
+    result["event_id"] = args.event_id or uuid.uuid4().hex
+    if code != EXIT_INTERRUPTED and not watch_is_current(args):
+        result["event"] = "cancelled"
+        code = EXIT_ACTIVATION_CANCELLED
+    persist_result(args.log_file, result)
+    if args.thread and code not in {EXIT_INTERRUPTED, EXIT_ACTIVATION_CANCELLED}:
+        delivery_code = deliver_notification(args, result)
+        if delivery_code is not None:
+            code = delivery_code
     write_result(args.log_file, result)
     return code
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    command_parser = parser()
+    args = command_parser.parse_args(argv)
+    command = list(args.command)
+    if command[:1] == ["--"]:
+        command = command[1:]
+    if not command:
+        command_parser.error("a query command is required after --")
+    if args.goal_state:
+        for field in ("goal_state", "startup_file", "log_file", "lock_file"):
+            path = getattr(args, field)
+            if path is not None:
+                setattr(args, field, absolute_path(path))
+    validate_distinct_paths(
+        command_parser,
+        goal_state=args.goal_state,
+        startup_file=args.startup_file,
+        log_file=args.log_file,
+        lock_file=args.lock_file,
+    )
+    if args.thread and not args.log_file:
+        command_parser.error("--log-file is required with --thread")
+    if args.thread and not args.lock_file:
+        command_parser.error("--lock-file is required with --thread")
+    if args.thread and not args.message_template:
+        command_parser.error("--message-template is required with --thread")
+    overlap = set(args.ready) & set(args.terminal)
+    if overlap:
+        command_parser.error(f"ready and terminal statuses must be disjoint: {sorted(overlap)}")
+    if args.message_template:
+        validate_message_template(
+            command_parser,
+            args.message_template,
+            args.log_file,
+            args.goal_state,
+            args.goal_node,
+        )
+    if args.event_id is not None and (
+        not args.event_id.strip() or len(args.event_id) > 128 or any(character.isspace() for character in args.event_id)
+    ):
+        command_parser.error("--event-id must be a non-empty identifier of at most 128 characters")
+    handshake = (args.goal_state, args.goal_node, args.startup_file)
+    if any(handshake) and not all(handshake):
+        command_parser.error("--goal-state, --goal-node, and --startup-file must be provided together")
+    if args.goal_state and not args.event_id:
+        command_parser.error("--event-id is required with goal activation")
+    if args.goal_state and not args.thread:
+        command_parser.error("--thread is required with goal activation")
+
+    with ExitStack() as resources:
+        if args.lock_file:
+            args.lock_file.parent.mkdir(parents=True, exist_ok=True)
+            lock = resources.enter_context(args.lock_file.open("a", encoding="utf-8"))
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                write_result(
+                    None,
+                    {
+                        "label": args.label,
+                        "event_id": uuid.uuid4().hex,
+                        "event": "already_watching",
+                        "status": None,
+                    },
+                )
+                return EXIT_ALREADY_WATCHING
+        if args.goal_state:
+            persist_result(
+                args.startup_file,
+                {
+                    "label": args.label,
+                    "event_id": args.event_id,
+                    "event": "watcher_started",
+                    "goal_node": args.goal_node,
+                    "thread": args.thread,
+                    "log_file": str(args.log_file),
+                    "lock_file": str(args.lock_file),
+                    "activation_deadline": time.time() + args.activation_timeout,
+                },
+            )
+            try:
+                activation = wait_for_goal_activation(args)
+            except KeyboardInterrupt:
+                return EXIT_INTERRUPTED
+            if activation != "active":
+                write_result(
+                    args.log_file,
+                    {
+                        "label": args.label,
+                        "event_id": args.event_id,
+                        "event": f"activation_{activation}",
+                        "status": None,
+                    },
+                )
+                return EXIT_ACTIVATION_CANCELLED
+        return run_wait(args, command)
 
 
 if __name__ == "__main__":

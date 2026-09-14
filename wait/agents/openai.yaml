@@ -1,0 +1,4 @@
+interface:
+  display_name: "Wait"
+  short_description: "Passively wait for one external state change"
+  default_prompt: "Use $wait to monitor this external state without active model polling."
