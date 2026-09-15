@@ -55,13 +55,13 @@ Each notification or session-resume attempt is bounded by `--notification-timeou
 
 ## Execution protocol
 
-1. **Define conditions.** `--ready` and `--terminal` use exact, disjoint string matches. The read-only query should emit one short scalar; use `--json-path` for JSON.
-2. **Acquire ownership.** The watcher takes `--lock-file` without blocking. A second watcher returns `already_watching` and does not start another query loop.
+1. **Define conditions.** `--ready` and `--terminal` use exact, disjoint string matches. The read-only query should emit one short scalar; use `--json-path` for JSON. Reuse the task's native Todo item, or create one if needed, following the [client progress-tool rules](clients.md#progress-tools).
+2. **Acquire ownership.** The watcher takes `--lock-file` without blocking. A second watcher returns `already_watching` and does not start another query loop. After confirming the lock and service record, the caller marks its Todo waiting with the condition, deadline, and log path, then ends the turn.
 3. **Query.** Each call is bounded by `--query-timeout` and any remaining overall timeout. A successful query resets the consecutive-failure count.
 4. **Persist.** On ready, terminal, overall timeout, or repeated query failure, the watcher chooses a stable `event_id`: standalone `$wait` generates one, while `wait-loop` and `wait-goal` integrations reuse their `watch_id`. It writes the result atomically before notification.
 5. **Notify.** The selected client adapter resumes the saved session with the stable event ID. Delivery progress is persisted first. Codex queue failures retry by default; synchronous CLI adapters default to one attempt because a timeout may already have started a turn. Before every retry, a goal-owned watcher confirms that its watch is still active.
 6. **Hand off.** After a goal notification succeeds, the watcher retains its lock until the root records `wake`, bounded by `--wake-ack-timeout`. This keeps the notification-to-wake interval distinguishable from a dead watcher.
-7. **Resume and verify.** A resume message is only a hint. The receiver validates the log and event ID, then independently queries the external system once before deciding what to do.
+7. **Resume and verify.** A resume message is only a hint. The receiver validates the log and event ID, then independently queries the external system once before deciding what to do. Update the same Todo from the verified outcome. Ready completes a wait item only when its acceptance condition is met; a goal or loop item follows its owning protocol. Record unsuccessful outcomes with their cause and next action.
 
 | Result or condition | Trigger | Exit | Receiver action |
 | --- | --- | ---: | --- |

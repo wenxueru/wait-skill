@@ -82,9 +82,9 @@ The root alone schedules work and mutates the graph. Child agents are isolated: 
 
 Every start or resume follows the same loop:
 
-1. `show` loads and validates state, `check` reports scheduling issues, and `ready` returns the executable frontier.
-2. Start `local` and `external` nodes before acting. For an `agent` node, run `prepare-agent` first, include its stable dispatch token in the child task, dispatch the child, then attach its runtime ID using `start --dispatch-token ... --agent-id ...`.
-3. The root verifies the result, then runs `complete` or `fail`. Add discovered work with `add --reason`.
+1. `show` loads and validates state, `check` reports scheduling issues, and `ready` returns the executable frontier. Rebuild the task's Todo from this state using node IDs; include final objective verification and follow the [client progress-tool rules](clients.md#progress-tools).
+2. Start `local` and `external` nodes before acting. For an `agent` node, run `prepare-agent` first, include its stable dispatch token in the child task, dispatch the child, then attach its runtime ID using `start --dispatch-token ... --agent-id ...`. Update Todo after a successful start. Include agent-local step tracking and root reporting in child assignments; a shared list is maintained by the root.
+3. The root verifies the result, then runs `complete` or `fail`. Add discovered work with `add --reason`. Synchronize affected Todo items after these commands succeed; child checklists alone do not complete DAG nodes.
 4. When no node is ready, use the derived activity:
 
 | Activity | Action |
@@ -102,6 +102,8 @@ A node should be a bounded, independently verifiable unit. Merge work that share
 Mutation commands run under the state-file lock: load, validate, mutate, append an event, then atomically replace the file. Failed commands persist nothing, and an exact duplicate `wake` does not update `updated_at`. `events` is an audit trail; validated current state remains authoritative during recovery.
 
 ## Start a goal
+
+After persisting the example graph, create `[test] Run tests`, `[deploy] Wait for deployment readiness`, and `Verify objective` in the native Todo tool, if available. Keep the verification item unfinished until `verify` and `finish` both succeed.
 
 ```bash
 python scripts/waitctl.py goal -- init \
@@ -210,14 +212,16 @@ Otherwise, use the normal goal watcher protocol:
 
 1. Run `wait` to prepare metadata while the node remains `running`; retain its unique `watch_id` and returned absolute paths. State, log, lock, and startup paths must be distinct.
 2. Submit the watcher through `waitctl.py start -- ...` with those paths, the watch ID, and `--goal-node`. It acquires the watcher lock, writes the startup receipt, and waits without querying.
-3. Confirm the startup receipt, then run `activate-wait`. The node becomes `waiting`, and the watcher begins querying.
+3. Confirm the startup receipt, then run `activate-wait`. The node becomes `waiting`, and the watcher begins querying. Mark the corresponding Todo waiting with its condition and deadline.
 4. End the current model turn and stop querying that external state.
 5. Let the watcher send `$wait-goal resume <state-file>` in Codex or `/wait-goal resume <state-file>` in another client when an event occurs.
-6. On resume, read the log, run `wake`, and query the external state once more. Every event returns the node to `running`; only the root's verified `complete`, `fail`, or next `wait` decision changes its outcome. IDs from older wait cycles are rejected and exact duplicates are no-ops.
+6. On resume, read the log, run `wake`, and query the external state once more. Every event returns the node to `running`; only the root's verified `complete`, `fail`, or next `wait` decision changes its outcome. IDs from older wait cycles are rejected and exact duplicates are no-ops. Update Todo after the root records its decision.
 
 See [wait.md](wait.md) for the watcher protocol and [clients.md](clients.md) for resume adapters.
 
 ## Control and resume
+
+On resume, refresh this goal's Todo from persisted state. After a successful control command, synchronize the affected items.
 
 Show the full state:
 
@@ -232,7 +236,7 @@ python scripts/waitctl.py goal -- pause --state "$GOAL_STATE"
 python scripts/waitctl.py goal -- resume --state "$GOAL_STATE"
 ```
 
-Cancellation marks every unfinished node as `cancelled`:
+Cancellation marks every nonterminal node as `cancelled`:
 
 ```bash
 python scripts/waitctl.py goal -- cancel --state "$GOAL_STATE"

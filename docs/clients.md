@@ -20,6 +20,22 @@ Resume commands keep the client's default permission policy. If a resumed turn n
 
 Automatic resume targets CLI sessions. An IDE chat without a documented session-resume command can still use the durable watcher log, but it must be resumed by the user or an IDE-specific bridge.
 
+## Progress tools
+
+During planning, each agent uses an available native Todo or plan tool according to its runtime schema. The owning root updates a shared list; children use isolated lists when available and otherwise report progress. Preserve unrelated items.
+
+The execution protocols specify when to update progress: after persisted state transitions, verified watcher results, and final acceptance. Identify goal items by node ID and standalone waits by their log path. Reuse those identities on resume. If the tool is unavailable or fails, proceed from durable state and refresh it on the next supported execution turn.
+
+| Execution state | Native progress item |
+| --- | --- |
+| Pending or blocked | Unfinished; describe unmet dependencies |
+| Dispatching or running | In progress; retain dispatch/node IDs |
+| Waiting | Waiting if supported; otherwise unfinished with condition and deadline |
+| Accepted completion | Completed |
+| Failed, cancelled, or timed out | Matching status or an explicit outcome label, distinct from success |
+
+For large graphs, group nodes by phase and retain their IDs in the description. If only one item can be in progress, use an execution-phase item listing concurrent nodes.
+
 ## Goal initialization
 
 Persist the client and session with the goal:

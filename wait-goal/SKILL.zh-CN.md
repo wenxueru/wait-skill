@@ -20,17 +20,18 @@ description: 在 CodeWiz、Cursor、Claude Code、GitHub Copilot 和 Codex 中�
 
 ## 核心行为
 
-1. 在开始实质工作前持久化目标。让 `init` 在 `/tmp/.wait-goal/` 下创建按项目隔离的默认状态，保留返回的 `state_file`，再向其中写入初始节点；只有需要指定位置时才传 `--state`。新发现的工作应加入图中成为节点，不要只保留在对话上下文里。
-2. 让每个节点尽可能独立：只产生一个有界结果，使用明确且由依赖支持的 `--input`、验收检查和预期产物，并声明 `--read-only` 或具体写入路径。只有不可避免的执行顺序或信息流才使用依赖边；紧密耦合的工作应合并到同一节点。
-3. 根 Agent 通过 `waitctl.py goal -- ...` 运行 goal 命令：先执行 `check`，然后只执行 `ready` 返回的节点。服务只串行执行命令，不决定图修改。ready frontier 会自动串行化写入范围重叠或未声明范围的节点。只有根 Agent 可以调度工作并请求修改图。根 Agent 可以并行执行相互独立的节点，但每个子 Agent 只能向根 Agent 汇报；不得联系或等待其他子 Agent，不得修改图、调用 goal 命令或创建 Agent。对于 agent 节点，先持久化 `prepare-agent`，把返回的 dispatch token 写入子任务，再使用 `start --dispatch-token ... --agent-id ...` 关联运行时返回的 ID。
-4. 只有节点的验收检查通过且预期产物存在时，才能将其标记为完成。在状态中记录简洁结果和产物，再调度新进入 ready 的节点。
-5. 没有 ready 节点时：
-   - 如果仍有 Agent 在运行，使用运行时提供的阻塞式 Agent 等待，只在 Agent 完成或需要处理时恢复。如果 activity 为 `dispatching`，采取其他操作前必须用保存的 dispatch token 对照运行时 Agent；不得直接再次派发。
-   - 如果只剩外部状态，适用时可以考虑下方的长等待方案；否则为每个外部对象准备一次 wait，使用持久化的客户端、会话和有限的总超时启动被动 watcher，确认启动回执并激活 wait，然后结束当前轮次。watcher 拥有该 wait 后，不要再由模型查询同一状态。如果 `check` 报告 `orphaned_wait`，应对同一节点执行 `abort-wait`，再建立新的 wait。
-   - 如果 activity 为 `blocked`，报告失败或取消的依赖，以及恢复所需的决定。只有作出该决定后才能使用 `retry`，随后按正常流程调度重置后的节点。
-   - 如果继续推进需要用户决定，报告所需的具体决定并停止。
-6. `wait` 会准备唯一 watch ID，同时让节点保持 `running`。通过 `waitctl.py start -- ...` 提交 watcher，并使用该命令返回的 state、log、lock 和 startup 绝对路径。启动回执出现后运行 `activate-wait`；只有完成激活，watcher 才能开始查询。`waiting` 节点必须始终有 watcher 持有其 lock；所有权消失时，`check` 报告 `orphaned_wait`，`show` 也返回同名 activity。`wake` 只接受当前活动 ID，并把任何事件对应的节点恢复为 `running`。重新检查一次外部状态，然后完成节点、明确标记失败，或准备下一次 wait。完全相同的重复事件为空操作。如果 prepared 或 active watcher 无法继续，先使用准确的 watch ID 对同一节点运行 `abort-wait`，再建立新 watcher。如果节点已失败，而同一个外部逻辑任务仍需继续，必须 `retry` 原节点；不得新增一个与原后继链断开的替代节点。
-7. 结束前，对照原始目标验证结果。如果目标尚未满足，把缺少的工作加入图中并继续；否则使用 `waitctl.py goal -- verify` 记录证据，再运行 `waitctl.py goal -- finish`。
+1. **规划。** 使用 `init` 持久化目标，保留返回的 `state_file`，加入初始节点。每个节点有一个有界结果、依赖支持的输入、验收检查、预期产物，以及只读或明确的写入范围。紧密耦合的工作放在同一节点。有原生 Todo 或计划工具时，用节点 ID 展示这些任务，并加入最终目标验收条目。
+2. **加载与调度。** 启动或恢复时读取 `show`、运行 `check`，从持久状态重建当前任务的 Todo。只执行 `ready` 返回的节点。状态转换成功后同步 Todo；调度和完成判定依据持久图与验收证据。
+3. **执行。** local 和 external 节点先 `start` 再执行。agent 节点先持久化 `prepare-agent`，把 dispatch token 写入子任务，再用 `start --dispatch-token ... --agent-id ...` 关联返回的运行时 ID。将已派发工作标为进行中。要求子 Agent 用独立 Todo 管理内部步骤，向根 Agent 返回结果、证据、产物和新发现的工作。共享 Todo 由根 Agent 维护；子 Agent 不相互联系或等待，不修改图、调用 goal 命令或创建 Agent。
+4. **验收与演化。** 检查结果和预期产物后运行 `complete`；失败使用 `fail` 记录。状态命令成功后更新对应 Todo。新发现的工作使用 `add --reason` 加入图和 Todo，再调度新就绪节点。子清单完成代表结果可提交根 Agent 验收。
+5. **等待与恢复。** 没有 ready 节点时，根据当前活动处理：
+   - `dispatching`：先用保存的 token 对照运行时 Agent，再进行后续派发。
+   - Agent 运行中：使用运行时阻塞等待，接收完成或需要处理的事件。
+   - 外部等待：准备 `wait`，用返回的绝对路径提交有界 watcher，确认启动回执后 `activate-wait`。在 Todo 注明等待条件和截止时间，然后结束轮次。收到事件后读取日志、记录 `wake`、复查外部状态，再完成、失败或建立下一次等待。
+   - `orphaned_wait` 或准备中断：用当前 watch ID 执行 `abort-wait`，再为同一节点建立替代 watcher。失败工作需要继续时，决定恢复后 `retry` 原节点。
+   - 依赖阻塞或需要用户决定：在 Todo 记录原因，报告所需决定。
+6. **控制。** 暂停、恢复、重试和取消先作用于持久状态，再刷新受影响的 Todo。恢复时使用已保存的 dispatch 与 watch ID 核对未完成工作。
+7. **最终验收。** 所有节点完成后，对照原始目标检查结果。缺工作则加入并继续；否则用 `verify` 持久化证据，再运行 `finish`。两个命令成功后完成最终验收 Todo 条目。
 
 ## 不变量
 

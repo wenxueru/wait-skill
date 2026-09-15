@@ -82,9 +82,9 @@ flowchart TD
 
 每次启动或恢复都执行相同循环：
 
-1. `show` 加载并验证状态，`check` 输出调度诊断，`ready` 返回本轮可执行节点。
-2. `local`、`external` 节点先 `start` 再执行。对于 `agent` 节点，先执行 `prepare-agent`，把稳定的 dispatch token 写入子任务，派发后再使用 `start --dispatch-token ... --agent-id ...` 关联运行时 ID。
-3. 根 Agent 验收结果后执行 `complete` 或 `fail`；新工作使用 `add --reason` 入图。
+1. **恢复计划。** `show` 加载并验证状态，`check` 输出调度诊断，`ready` 返回本轮可执行节点。按[客户端进度工具规则](clients.zh-CN.md#进度工具)，使用节点 ID 从该状态重建当前任务的 Todo，并包含最终目标验收。
+2. **执行和派发。** `local`、`external` 节点先 `start` 再执行。对于 `agent` 节点，先执行 `prepare-agent`，把稳定的 dispatch token 写入子任务，派发后再使用 `start --dispatch-token ... --agent-id ...` 关联运行时 ID。`start` 成功后更新 Todo。子任务说明中包含内部步骤跟踪和向根 Agent 汇报；共享列表由根 Agent 维护。
+3. **验收和调整。** 根 Agent 验收结果后执行 `complete` 或 `fail`；新工作使用 `add --reason` 入图。命令成功后同步受影响的 Todo；子清单完成不能直接完成 DAG 节点。
 4. 没有 ready 节点时，根据活动状态决定下一步：
 
 | 活动状态 | 动作 |
@@ -102,6 +102,8 @@ flowchart TD
 所有修改命令都在状态文件锁内执行“加载 → 验证 → 修改 → 追加事件 → 原子替换”。命令失败时不保存状态或事件；完全重复的 `wake` 不修改 `updated_at`。`events` 是审计记录，不替代当前状态，恢复时仍以通过验证的状态文件为准。
 
 ## 开始目标
+
+持久化下例的图后，有原生 Todo 工具时建立 `[test] 运行测试`、`[deploy] 等待部署就绪` 和“最终目标验收”。验收条目在 `verify` 与 `finish` 都成功后完成。
 
 ```bash
 python scripts/waitctl.py goal -- init \
@@ -210,14 +212,16 @@ python scripts/waitctl.py goal -- add \
 
 1. 运行 `wait` 准备元数据，节点暂时保持 `running`；保存唯一 `watch_id` 和命令返回的绝对路径。state、log、lock 和 startup 路径必须互不相同。
 2. 通过 `waitctl.py start -- ...` 提交 watcher，并传入这些路径、watch ID 和 `--goal-node`。它先取得 watcher lock、写入启动回执，然后在不查询外部系统的情况下等待激活。
-3. 确认启动回执后运行 `activate-wait`。节点进入 `waiting`，watcher 才开始查询。
+3. 确认启动回执后运行 `activate-wait`。节点进入 `waiting`，watcher 才开始查询；此时在对应 Todo 中标记等待条件和截止时间。
 4. 结束当前模型轮次，不再查询该外部状态。
 5. watcher 出现事件时，在 Codex 中发送 `$wait-goal resume <state-file>`，在其他客户端中发送 `/wait-goal resume <state-file>`。
-6. 恢复后读取日志、执行 `wake`，再重新查询一次外部状态。所有事件都先让节点回到 `running`；只有根 Agent 验证后执行的 `complete`、`fail` 或下一轮 `wait` 才决定结果。旧等待 ID 会被拒绝，同一事件重复到达时为空操作。
+6. 恢复后读取日志、执行 `wake`，再重新查询一次外部状态。所有事件都先让节点回到 `running`；根 Agent 验证后执行 `complete`、`fail` 或下一轮 `wait`，再将结果同步到 Todo。旧等待 ID 会被拒绝，同一事件重复到达时为空操作。
 
 watcher 协议见 [wait.zh-CN.md](wait.zh-CN.md)，会话恢复适配见 [clients.zh-CN.md](clients.zh-CN.md)。
 
 ## 控制和恢复
+
+恢复时从持久状态刷新当前目标的 Todo；控制命令成功后同步受影响的条目。
 
 查看完整状态：
 
@@ -232,7 +236,7 @@ python scripts/waitctl.py goal -- pause --state "$GOAL_STATE"
 python scripts/waitctl.py goal -- resume --state "$GOAL_STATE"
 ```
 
-取消会把尚未完成的节点标记为 `cancelled`：
+取消会把尚未结束的节点标记为 `cancelled`：
 
 ```bash
 python scripts/waitctl.py goal -- cancel --state "$GOAL_STATE"
