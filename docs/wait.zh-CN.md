@@ -61,7 +61,7 @@ JSON 对象或数组必须选择一个标量字段，例如 `{"status":"ServiceR
 2. **watcher 取得所有权。** 它以非阻塞方式取得 `--lock-file`。已有进程持有同一 lock 时，新 watcher 返回 `already_watching`，不会启动第二个查询循环。调用方确认 lock 和服务记录后，将 Todo 标记等待，记录条件、截止时间和日志路径，然后结束轮次。
 3. **watcher 执行查询循环。** 每次查询最多运行 `--query-timeout` 秒；设置总 `--timeout` 时，单次查询也不会越过剩余总时间。普通状态按 `--interval` 继续等待，成功查询会清零连续失败计数。
 4. **watcher 固化事件。** 遇到 ready、terminal、总超时或连续查询失败后，确定稳定的 `event_id`：独立 `$wait` 生成新 ID，与 `wait-loop` 或 `wait-goal` 集成时沿用其 `watch_id`。结果先原子写入 `--log-file`，再尝试通知。
-5. **watcher 投递通知。** 客户端适配器使用稳定 event ID 恢复已保存的会话，并先持久化投递进度。Codex 队列失败默认重试；同步 CLI 适配器默认只尝试一次，因为超时可能已经启动了模型轮次。goal watcher 每次重试前还会确认当前 watch 仍有效。
+5. **watcher 投递通知。** 客户端适配器投递稳定 event ID。结束轮次前，按[客户端适配](clients.zh-CN.md)接好投递通道。投递进度先持久化；goal watcher 每次重试前还会确认当前 watch 仍有效。
 6. **watcher 完成交接。** goal 通知成功后，watcher 会继续持有 lock，直到根 Agent 记录 `wake`，最长不超过 `--wake-ack-timeout`。这样能区分正常的“通知已送达、wake 尚未落盘”窗口与 watcher 消失。
 7. **接收方恢复并复查。** 恢复消息只是提示。接收方先读取日志并校验 event ID，再对外部系统执行一次独立的只读查询；只有复查结果可以驱动后续完成或失败判断。依据核实结果更新同一 Todo。Ready 只有满足等待条目的验收条件时才能完成该条目；goal 或 loop 条目遵循所属协议。失败结果记录原因和下一步。
 

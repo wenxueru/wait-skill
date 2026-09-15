@@ -44,6 +44,6 @@ description: 在 CodeWiz、Cursor、Claude Code、GitHub Copilot 和 Codex 中�
 - 不要只为并发形式而 fan-out。对于依赖清晰、上下文可隔离、可独立验收且写入范围不冲突的节点，应尽量并发派发；这既能缩短关键路径，也可能减少根 Agent 重复处理上下文的 Token。短小的顺序链、紧密耦合或写入重叠的工作，在协调成本高于并发收益时应由一个 Agent 完成。
 - 只有确认 prepared dispatch 没有创建存活的子 Agent，或已终止该 Agent 后，才能运行 `abort-agent`。
 - 凭据不得写入 argv、图状态、watcher 日志或通知。
-- 客户端适配器只能恢复目标初始化时记录的会话 ID。Codex 使用消息队列；CodeWiz、Cursor、Claude Code 和 GitHub Copilot CLI 在子进程中恢复指定会话，并默认只投递一次，避免重复触发模型轮次。
+- 激活 watcher 后，按[客户端适配](../docs/clients.zh-CN.md)接好目标初始化时记录的会话的事件投递通道，再结束轮次。
 
 运行 `python ../scripts/waitctl.py --help`、`python ../scripts/wait_goal.py --help` 和 `python ../scripts/wait_for.py --help` 查看命令详情。

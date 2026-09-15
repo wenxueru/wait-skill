@@ -172,6 +172,7 @@ class WaitForTest(unittest.TestCase):
     def test_notification_formats_label_once(self) -> None:
         result = {
             "label": "stored label",
+            "event_id": "event-1",
             "event": "ready",
             "status": "Running",
             "query_failures": 0,
@@ -195,7 +196,6 @@ class WaitForTest(unittest.TestCase):
             "codex": ["codex", "queue", "--remote", "unix://", "--thread", "session-1", "--message", "resume"],
             "codewiz": ["codewiz", "run", "--session", "session-1", "resume"],
             "cursor": ["cursor-agent", "--print", "--resume=session-1", "resume"],
-            "claude": ["claude", "--print", "--resume", "session-1", "resume"],
             "copilot": ["copilot", "--resume=session-1", "--prompt", "resume"],
         }
         for client, command in expected.items():
@@ -260,8 +260,7 @@ class WaitForTest(unittest.TestCase):
             log = Path(directory) / "result.json"
             state = Path(directory) / "loop.json"
             template = (
-                f"/wait-loop resume {state}; watcher_log={log}; "
-                "event_id={event_id}; event={event}; status={status}"
+                f"/wait-loop resume {state}; watcher_log={log}; event_id={{event_id}}; event={{event}}; status={{status}}"
             )
             wait_for.validate_message_template(
                 wait_for.parser(),
@@ -309,6 +308,17 @@ class WaitForTest(unittest.TestCase):
             args.event_id = "stale"
             self.assertFalse(wait_for.loop_wait_is_current(args))
 
+    def test_native_claude_notification_does_not_spawn_resume(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            args = Namespace(client="claude", log_file=Path(directory) / "result.json")
+            result = {"event_id": "event-1", "event": "ready", "status": "Ready"}
+            with patch.object(wait_for, "notify_session") as notify:
+                self.assertIsNone(wait_for.deliver_notification(args, result))
+            notify.assert_not_called()
+            self.assertEqual(result["notification"], "native_pending")
+            with self.assertRaisesRegex(ValueError, "native background"):
+                wait_for.notification_command("claude", "session", "resume", "")
+
     def test_non_codex_notification_does_not_retry_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             log = Path(directory) / "result.json"
@@ -318,7 +328,7 @@ class WaitForTest(unittest.TestCase):
                 "--ready",
                 "Ready",
                 "--client",
-                "claude",
+                "cursor",
                 "--session",
                 "session-1",
                 "--log-file",
@@ -332,7 +342,7 @@ class WaitForTest(unittest.TestCase):
             with patch.object(
                 wait_for,
                 "notify_session",
-                side_effect=subprocess.TimeoutExpired("claude", 60),
+                side_effect=subprocess.TimeoutExpired("cursor", 60),
             ) as notify:
                 code = wait_for.deliver_notification(args, result)
 
@@ -433,21 +443,31 @@ class WaitForTest(unittest.TestCase):
             log = root / "result.json"
             event_id = "watch-1"
             arguments = [
-                "--label", "deployment",
-                "--ready", "Ready",
-                "--thread", "thread-1",
-                "--lock-file", str(root / "watcher.lock"),
-                "--log-file", str(log),
-                "--event-id", event_id,
-                "--goal-state", str(goal),
-                "--goal-node", "deploy",
-                "--startup-file", str(root / "started.json"),
+                "--label",
+                "deployment",
+                "--ready",
+                "Ready",
+                "--thread",
+                "thread-1",
+                "--lock-file",
+                str(root / "watcher.lock"),
+                "--log-file",
+                str(log),
+                "--event-id",
+                event_id,
+                "--goal-state",
+                str(goal),
+                "--goal-node",
+                "deploy",
+                "--startup-file",
+                str(root / "started.json"),
                 "--message-template",
                 (
                     f"$wait-goal resume {goal}; node=deploy; watcher_log={log}; "
                     "event_id={event_id}; event={event}; status={status}"
                 ),
-                "--", "query",
+                "--",
+                "query",
             ]
             with (
                 patch.object(wait_for, "wait_for_goal_activation", side_effect=KeyboardInterrupt),
@@ -955,8 +975,7 @@ class WaitForTest(unittest.TestCase):
             log = root / "result.json"
             wrong_log = root / "wrong.json"
             template = (
-                f"$wait resume {wrong_log}; $wait resume {log}; "
-                "event_id={event_id}; event={event}; status={status}"
+                f"$wait resume {wrong_log}; $wait resume {log}; event_id={{event_id}}; event={{event}}; status={{status}}"
             )
             with (
                 patch.object(wait_for.subprocess, "run") as run,

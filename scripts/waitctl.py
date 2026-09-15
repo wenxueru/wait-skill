@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import fcntl
 import json
+import math
 import os
 import socket
 import subprocess
@@ -120,6 +121,10 @@ def parser() -> argparse.ArgumentParser:
     commands.add_parser("list")
     show = commands.add_parser("show")
     show.add_argument("watch_id")
+    follow = commands.add_parser("follow", help="Block for a durable event; use as a native background task")
+    follow.add_argument("watch_id")
+    follow.add_argument("--timeout", type=float, required=True)
+    follow.add_argument("--socket", type=Path, default=SOCKET_PATH)
     cancel = commands.add_parser("cancel")
     cancel.add_argument("watch_id")
     for name in STATE_COMMANDS:
@@ -131,7 +136,14 @@ def parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     try:
-        if args.command == "daemon":
+        if args.command == "follow":
+            if not math.isfinite(args.timeout) or args.timeout <= 0:
+                raise ValueError("--timeout must be positive and finite")
+            response = request(
+                {"operation": "follow", "watch_id": args.watch_id, "timeout": args.timeout},
+                args.socket, timeout=args.timeout + 5,
+            )
+        elif args.command == "daemon":
             if args.action == "start":
                 response = start_daemon()
             elif args.action == "status":

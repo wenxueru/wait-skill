@@ -213,7 +213,7 @@ Otherwise, use the normal goal watcher protocol:
 1. Run `wait` to prepare metadata while the node remains `running`; retain its unique `watch_id` and returned absolute paths. State, log, lock, and startup paths must be distinct.
 2. Submit the watcher through `waitctl.py start -- ...` with those paths, the watch ID, and `--goal-node`. It acquires the watcher lock, writes the startup receipt, and waits without querying.
 3. Confirm the startup receipt, then run `activate-wait`. The node becomes `waiting`, and the watcher begins querying. Mark the corresponding Todo waiting with its condition and deadline.
-4. End the current model turn and stop querying that external state.
+4. Set up event delivery for the owning session through the [client adapter](clients.md). End the current model turn and stop querying that external state.
 5. Let the watcher send `$wait-goal resume <state-file>` in Codex or `/wait-goal resume <state-file>` in another client when an event occurs.
 6. On resume, read the log, run `wake`, and query the external state once more. Every event returns the node to `running`; only the root's verified `complete`, `fail`, or next `wait` decision changes its outcome. IDs from older wait cycles are rejected and exact duplicates are no-ops. Update Todo after the root records its decision.
 

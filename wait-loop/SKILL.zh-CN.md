@@ -23,7 +23,7 @@ description: 在 CodeWiz、Cursor、Claude Code、GitHub Copilot 和 Codex 中�
 1. 使用任务、间隔、客户端、会话和有限的总 `--duration` 运行 `waitctl.py loop -- init`，保留返回的 `state_file`。默认 24 小时只是安全上限；能确定合理期限时应明确设置。用户指定有限轮数时再传 `--max-iterations`。
 2. 立即执行一次已保存的任务。每轮都由根会话执行，不创建脱离控制的子 Agent 循环。
 3. 本轮成功后运行 `complete --summary`。返回 `completed` 时汇报最终结果并停止；否则保留 `watch_id` 和 `next_run_at`。
-4. 服务在 `complete` 返回前注册计时器。结束模型轮次，计时器会携带 loop 状态、watcher 日志和 event ID 恢复已保存会话。服务重启时会补齐状态提交后中断的计时器注册。
+4. 服务在 `complete` 返回前注册计时器。使用保存的 watch ID，按[客户端适配](../docs/clients.zh-CN.md)接好事件投递通道。结束轮次，由客户端适配器把 loop 状态、watcher 日志和 event ID 送回会话。服务重启时会补齐状态提交后中断的计时器注册。
 5. 收到 `ready` 后校验 watcher 日志，并运行 `begin --event-id`。返回 duplicate 时不得重复执行；如果消息送达时已经超过 loop 截止时间，`begin` 会结束 loop，此时报告完成并停止；否则执行下一轮并回到步骤 3。
 6. 收到 `Expired` 后运行 `expire --event-id` 并停止。如果等待期间循环被取消、完成或替换，所有权校验会直接停止旧 watcher，不再额外唤醒模型。
 

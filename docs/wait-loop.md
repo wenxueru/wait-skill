@@ -46,6 +46,8 @@ WATCH_ID=WATCH_ID_FROM_COMPLETE
 # complete has registered the next timer through the service.
 ```
 
+After each timer registration, set up event delivery using the saved watch ID and the [client adapter](clients.md), then end the turn.
+
 When the watcher reports `ready`, validate its log and consume the event before executing the task:
 
 ```bash

@@ -11,7 +11,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 SCRIPTS = Path(__file__).parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS))
@@ -21,6 +21,97 @@ import state_runner  # noqa: E402
 
 
 class WaitDaemonTest(unittest.IsolatedAsyncioTestCase):
+    async def test_native_goal_wait_retains_lock_until_ack_or_delivery_deadline(self) -> None:
+        for acknowledge in (False, True):
+            with self.subTest(acknowledge=acknowledge):
+                argv = self.watcher_argv("Ready")
+                argv[:0] = ["--client", "claude", "--session", "native-test",
+                            "--message-template",
+                            f"/wait resume {self.root / 'watch.json'}; event_id={{event_id}}; event={{event}}; status={{status}}"]
+                args, command = waitd.wait_for.parse_wait_args(argv)
+                args.goal_state = self.root / "goal.json"
+                args.wake_ack_timeout = .001
+                args.notification_timeout = .15
+                args.activation_interval = .005
+                available_at = time.time()
+                result = {"event": "ready", "notification": "native_pending", "available_at": available_at}
+                record = {"watch_id": "native", "argv": argv, "state": "active",
+                          "phase": "notifying", "code": 0, "result": result}
+                self.daemon.watchers["native"] = record
+                with patch.object(waitd.wait_for, "goal_wait_is_current", return_value=True) as current:
+                    task = asyncio.create_task(self.daemon._watch(args, command, record, asyncio.Event()))
+                    await asyncio.sleep(.03)
+                    self.assertFalse(task.done())
+                    with args.lock_file.open("a") as lock:
+                        with self.assertRaises(BlockingIOError):
+                            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    self.assertEqual(record["wake_ack_deadline_at"], available_at + .15)
+                    if acknowledge:
+                        response = await self.daemon.follow("native")
+                        self.assertEqual(response["result"]["event"], "ready")
+                        current.return_value = False
+                    _, code = await asyncio.wait_for(task, 1)
+                self.assertEqual(code, 0 if acknowledge else waitd.wait_for.EXIT_NOTIFY_FAILED)
+                self.assertEqual(result["notification"], "native_pending" if acknowledge else "unconfirmed")
+                self.assertEqual(json.loads(args.log_file.read_text())["event"], "ready")
+
+    async def test_follow_disconnect_cancels_pending_request(self) -> None:
+        started = asyncio.Event()
+        cancelled = asyncio.Event()
+
+        async def pending_request(request: object) -> dict[str, object]:
+            started.set()
+            try:
+                return await asyncio.Future()
+            finally:
+                cancelled.set()
+
+        reader = asyncio.StreamReader()
+        reader.feed_data(b'{"operation":"follow","watch_id":"test","timeout":60}\n')
+        writer = Mock(wait_closed=AsyncMock())
+        with patch.object(self.daemon, "dispatch", side_effect=pending_request):
+            client = asyncio.create_task(waitd.handle_client(self.daemon, reader, writer))
+            await asyncio.wait_for(started.wait(), 1)
+            reader.feed_eof()
+            await asyncio.wait_for(client, 1)
+        self.assertTrue(cancelled.is_set())
+        writer.write.assert_not_called()
+        writer.close.assert_called_once()
+
+    async def test_native_follow_receives_event_without_spawning_resume(self) -> None:
+        argv = self.watcher_argv("Ready")
+        argv[0:0] = ["--client", "claude", "--session", "native-test", "--message-template",
+                     f"/wait resume {self.root / 'watch.json'}; event_id={{event_id}}; event={{event}}; status={{status}}"]
+        with patch.object(waitd.wait_for, "notification_command", side_effect=AssertionError("must not resume")):
+            submitted = self.daemon.submit(argv, str(self.root))
+            task = self.daemon.tasks[submitted["watch_id"]]
+            response = await self.daemon.dispatch({"operation": "follow", "watch_id": submitted["watch_id"], "timeout": 2})
+            await task
+        self.assertEqual(response["result"]["event"], "ready")
+        self.assertEqual(response["result"]["notification"], "native_pending")
+        self.assertIn(submitted["watch_id"], response["resume_message"])
+        self.assertEqual(json.loads((self.root / "watch.json").read_text())["notification"], "native_pending")
+        repeated = await self.daemon.follow(submitted["watch_id"])
+        self.assertEqual(repeated["result"], response["result"])
+
+    async def test_follow_timeout_does_not_cancel_watcher(self) -> None:
+        submitted = self.daemon.submit(self.watcher_argv("Waiting"), str(self.root))
+        try:
+            with self.assertRaisesRegex(ValueError, "follow timed out"):
+                await self.daemon.dispatch({"operation": "follow", "watch_id": submitted["watch_id"], "timeout": .02})
+            self.assertEqual(self.daemon.watchers[submitted["watch_id"]]["state"], "active")
+        finally:
+            self.daemon.cancel(submitted["watch_id"])
+            await self.daemon.tasks[submitted["watch_id"]]
+
+    async def test_follow_reports_cancellation(self) -> None:
+        submitted = self.daemon.submit(self.watcher_argv("Waiting"), str(self.root))
+        follower = asyncio.create_task(self.daemon.follow(submitted["watch_id"]))
+        await asyncio.sleep(0)
+        self.daemon.cancel(submitted["watch_id"])
+        self.assertEqual((await asyncio.wait_for(follower, 1))["state"], "cancelled")
+        await self.daemon.tasks[submitted["watch_id"]]
+
     def setUp(self) -> None:
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
@@ -506,6 +597,14 @@ class WaitServiceTest(unittest.TestCase):
                     socket_path,
                 )
                 self.assertEqual(response["output"]["task"], "inspect queue")
+                submitted = waitctl.request({
+                    "operation": "submit", "cwd": str(root),
+                    "argv": ["--label", "socket-test", "--ready", "Ready", "--timeout", "2",
+                             "--", sys.executable, "-c", "import time; time.sleep(.1); print('Ready')"],
+                }, socket_path)
+                followed = waitctl.request({"operation": "follow", "watch_id": submitted["watch_id"], "timeout": 2}, socket_path)
+                self.assertTrue(followed["ok"])
+                self.assertEqual(followed["result"]["event"], "ready")
                 self.assertTrue(waitctl.stop_daemon(socket_path)["ok"])
                 process.communicate(timeout=2)
                 self.assertEqual(process.returncode, 0)

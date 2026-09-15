@@ -281,10 +281,14 @@ def notification_command(
     if client == "cursor":
         return ["cursor-agent", "--print", f"--resume={session}", *resume_args, message]
     if client == "claude":
-        return ["claude", "--print", "--resume", session, *resume_args, message]
+        raise ValueError("Claude requires a native background task running waitctl follow, not CLI resume")
     if client == "copilot":
         return ["copilot", f"--resume={session}", *resume_args, "--prompt", message]
     raise ValueError(f"unsupported client: {client}")
+
+
+def notification_success(client: str) -> str:
+    return "queued" if client == "codex" else "completed"
 
 
 def notify_session(
@@ -313,6 +317,10 @@ def deliver_notification(
     result: dict[str, object],
 ) -> int | None:
     """Persist delivery progress and retry with one stable event ID."""
+    if args.client == "claude":
+        result.update(notification="native_pending", notification_attempts=0)
+        persist_result(args.log_file, result)
+        return None
     max_attempts = args.max_notification_attempts
     if max_attempts is None:
         max_attempts = 12 if args.client == "codex" else 1
@@ -368,7 +376,7 @@ def deliver_notification(
                 persist_result(args.log_file, result)
                 return EXIT_INTERRUPTED
         else:
-            result["notification"] = "queued"
+            result["notification"] = notification_success(args.client)
             persist_result(args.log_file, result)
             return None
 
@@ -410,6 +418,7 @@ def goal_wait_is_current(args: argparse.Namespace) -> bool:
 
 def loop_wait_is_current(args: argparse.Namespace) -> bool:
     from wait_loop import goal_is_open
+
     try:
         state = json.loads(args.loop_state.read_text(encoding="utf-8"))
     except (FileNotFoundError, OSError, json.JSONDecodeError):

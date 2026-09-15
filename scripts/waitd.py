@@ -7,6 +7,7 @@ import argparse
 import asyncio
 import fcntl
 import json
+import math
 import os
 import re
 import signal
@@ -42,6 +43,7 @@ def atomic_write_json(path: Path, value: object) -> None:
 
 def absolute_wait_argv(argv: list[str], cwd: Path) -> list[str]:
     """Resolve watcher coordination paths against the submitting process."""
+
     def resolve_binding(match: re.Match[str]) -> str:
         return match[1] + os.fspath(cwd / match[2])
 
@@ -58,7 +60,8 @@ def absolute_wait_argv(argv: list[str], cwd: Path) -> list[str]:
 
             template = re.sub(
                 r"([$/](?:wait|wait-goal|wait-loop)\s+resume\s+|(?<![\w.-])watcher_log=)(.+?)(?=\s*;|$)",
-                resolve_binding, template,
+                resolve_binding,
+                template,
             )
             result.extend(("--message-template", template))
             if not separator:
@@ -120,8 +123,11 @@ async def wait_for_cancel(cancel_event: asyncio.Event, timeout: float) -> bool:
 async def query_status(command: list[str], timeout: float, json_path: str | None, cwd: str) -> str:
     """Own the query process until output, timeout, or cancellation is resolved."""
     process = await asyncio.create_subprocess_exec(
-        *command, cwd=cwd, stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.DEVNULL, start_new_session=True,
+        *command,
+        cwd=cwd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+        start_new_session=True,
     )
 
     async def read() -> str:
@@ -155,6 +161,7 @@ class WaitDaemon:
         self.cancel_events: dict[str, asyncio.Event] = {}
         self.state_commands = StateCommandRunner()
         self.shutdown_event = asyncio.Event()
+        self.changed = asyncio.Event()
 
     def _load_registry(self) -> dict[str, dict[str, Any]]:
         try:
@@ -178,8 +185,11 @@ class WaitDaemon:
             except (OSError, wait_loop.LoopError):
                 continue
         finished = sorted(
-            (watch_id for watch_id, record in self.watchers.items()
-             if record.get("state") != "active" and watch_id not in protected),
+            (
+                watch_id
+                for watch_id, record in self.watchers.items()
+                if record.get("state") != "active" and watch_id not in protected
+            ),
             key=lambda watch_id: float(self.watchers[watch_id].get("updated_at", 0)),
             reverse=True,
         )
@@ -190,6 +200,8 @@ class WaitDaemon:
     def _update_record(self, record: dict[str, Any], **changes: object) -> None:
         record.update(changes, updated_at=time.time())
         self.save()
+        self.changed.set()
+        self.changed = asyncio.Event()
 
     def _persist_result(
         self,
@@ -240,20 +252,45 @@ class WaitDaemon:
         log = path.with_name(f"{path.stem}-{watch_id}.watch.json")
         invocation = "$wait-loop" if state["client"] == "codex" else "/wait-loop"
         message = (
-            f"{invocation} resume {filename}; watcher_log={log}; "
-            "event_id={event_id}; event={event}; status={status}"
+            f"{invocation} resume {filename}; watcher_log={log}; event_id={{event_id}}; event={{event}}; status={{status}}"
         )
-        self.submit([
-            "--label", "loop timer", "--ready", "Ready", "--terminal", "Expired",
-            "--interval", str(min(60.0, state["interval_seconds"])),
-            "--timeout", str(max(1.0, state["deadline_at"] - time.time() + 60)),
-            "--client", str(state["client"]), "--session", str(state["session"]),
-            "--event-id", watch_id, "--loop-state", filename,
-            "--log-file", str(log), "--lock-file", str(log.with_suffix(".lock")),
-            "--message-template", message,
-            "--", sys.executable, str(Path(wait_loop.__file__).resolve()), "due",
-            "--state", filename, "--watch-id", watch_id,
-        ], cwd)
+        self.submit(
+            [
+                "--label",
+                "loop timer",
+                "--ready",
+                "Ready",
+                "--terminal",
+                "Expired",
+                "--interval",
+                str(min(60.0, state["interval_seconds"])),
+                "--timeout",
+                str(max(1.0, state["deadline_at"] - time.time() + 60)),
+                "--client",
+                str(state["client"]),
+                "--session",
+                str(state["session"]),
+                "--event-id",
+                watch_id,
+                "--loop-state",
+                filename,
+                "--log-file",
+                str(log),
+                "--lock-file",
+                str(log.with_suffix(".lock")),
+                "--message-template",
+                message,
+                "--",
+                sys.executable,
+                str(Path(wait_loop.__file__).resolve()),
+                "due",
+                "--state",
+                filename,
+                "--watch-id",
+                watch_id,
+            ],
+            cwd,
+        )
 
     def _schedule(self, watch_id: str) -> None:
         self.cancel_events[watch_id] = asyncio.Event()
@@ -333,6 +370,15 @@ class WaitDaemon:
             return self.watchers[watch_id]
         if operation == "cancel":
             return self.cancel(str(request.get("watch_id", "")))
+        if operation == "follow":
+            watch_id = str(request.get("watch_id", ""))
+            timeout = float(request.get("timeout", 0))
+            if not math.isfinite(timeout) or timeout <= 0:
+                raise ValueError("follow timeout must be positive and finite")
+            try:
+                return await asyncio.wait_for(self.follow(watch_id), timeout)
+            except asyncio.TimeoutError as exc:
+                raise ValueError("follow timed out; inspect the saved watch before resuming") from exc
         if isinstance(operation, str) and operation in STATE_COMMANDS:
             cwd = working_directory(str(request.get("cwd", "")))
             argv = string_list(request.get("argv"), "argv")
@@ -353,6 +399,32 @@ class WaitDaemon:
             self.shutdown_event.set()
             return {"status": "stopping"}
         raise ValueError(f"unknown operation: {operation}")
+
+    async def follow(self, watch_id: str) -> dict[str, object]:
+        """Block for a durable event, without waiting for a goal's wake acknowledgement."""
+        while True:
+            changed = self.changed
+            record = self.watchers.get(watch_id)
+            if record is None:
+                raise ValueError(f"unknown watch: {watch_id}")
+            result = record.get("result")
+            if result is not None or record.get("state") != "active":
+                break
+            await changed.wait()
+
+        args, _ = wait_for.parse_wait_args(record["argv"])
+        resume_message = None
+        if result and args.message_template:
+            fields: dict[str, object] = dict.fromkeys(wait_for.MESSAGE_FIELDS)
+            fields.update(result, label=args.label, event_id=watch_id)
+            resume_message = args.message_template.format(**fields)
+        return {
+            "watch_id": watch_id,
+            "state": record["state"],
+            "result": result,
+            "log_file": str(args.log_file) if args.log_file else None,
+            "resume_message": resume_message,
+        }
 
     async def _run_watch(self, watch_id: str) -> None:
         record = self.watchers[watch_id]
@@ -406,10 +478,13 @@ class WaitDaemon:
                     activation_deadline_at,
                 )
                 if activation != "active":
-                    result = {"event": f"activation_{activation}", "status": None,
-                              "label": args.label, "event_id": args.event_id}
-                    self._persist_result(args, record, result, phase="finalizing",
-                                         code=wait_for.EXIT_ACTIVATION_CANCELLED)
+                    result = {
+                        "event": f"activation_{activation}",
+                        "status": None,
+                        "label": args.label,
+                        "event_id": args.event_id,
+                    }
+                    self._persist_result(args, record, result, phase="finalizing", code=wait_for.EXIT_ACTIVATION_CANCELLED)
                     return result, wait_for.EXIT_ACTIVATION_CANCELLED
                 phase = "querying"
                 self._update_record(record, phase=phase)
@@ -447,7 +522,7 @@ class WaitDaemon:
                 self._persist_result(args, record, result, phase=phase, code=code)
 
             if phase == "notifying":
-                if result.get("notification") == "queued":
+                if result.get("notification") in {"queued", "native_pending", "completed"}:
                     delivery_code = None
                 else:
                     delivery_code = await self._deliver(args, result, record, cancel_event)
@@ -455,8 +530,12 @@ class WaitDaemon:
                     code = delivery_code
                 if delivery_code is None and args.goal_state:
                     phase = "awaiting_ack"
-                    delivered_at = float(result.get("delivered_at", time.time()))
-                    record["wake_ack_deadline_at"] = delivered_at + args.wake_ack_timeout
+                    if result.get("notification") == "native_pending":
+                        # Native task availability is not delivery confirmation.
+                        deadline = float(result["available_at"]) + (args.notification_timeout or 3600.0)
+                    else:
+                        deadline = float(result.get("delivered_at", time.time())) + args.wake_ack_timeout
+                    record["wake_ack_deadline_at"] = deadline
                 else:
                     phase = "finalizing"
                 self._update_record(record, phase=phase, code=code)
@@ -467,12 +546,20 @@ class WaitDaemon:
                     cancel_event,
                     float(record["wake_ack_deadline_at"]),
                 )
-                self._update_record(record, phase="finalizing")
+                if result.get("notification") == "native_pending" and wait_for.goal_wait_is_current(args):
+                    result["notification"] = "cancelled" if cancel_event.is_set() else "unconfirmed"
+                    code = wait_for.EXIT_ACTIVATION_CANCELLED if cancel_event.is_set() else wait_for.EXIT_NOTIFY_FAILED
+                self._persist_result(args, record, result, phase="finalizing", code=code)
             wait_for.persist_result(args.log_file, result)
             return result, code
         except (OSError, RuntimeError, TypeError, ValueError, KeyError) as exc:
-            result = {"event": "watcher_failed", "status": None, "label": args.label,
-                      "event_id": args.event_id, "error": str(exc)}
+            result = {
+                "event": "watcher_failed",
+                "status": None,
+                "label": args.label,
+                "event_id": args.event_id,
+                "error": str(exc),
+            }
             # A write error must not hide the original failure in the registry.
             with suppress(OSError):
                 wait_for.persist_result(args.log_file, result)
@@ -584,6 +671,10 @@ class WaitDaemon:
         record: dict[str, Any],
         cancel_event: asyncio.Event,
     ) -> int | None:
+        if args.client == "claude":
+            result.update(notification="native_pending", notification_attempts=0, available_at=time.time())
+            self._persist_result(args, record, result)
+            return None
         max_attempts = args.max_notification_attempts or (12 if args.client == "codex" else 1)
         timeout = args.notification_timeout or (60.0 if args.client == "codex" else 3600.0)
         previous_attempts = int(result.get("notification_attempts", 0))
@@ -603,8 +694,11 @@ class WaitDaemon:
             )
             try:
                 process = await asyncio.create_subprocess_exec(
-                    *command, cwd=record["cwd"], stdout=asyncio.subprocess.DEVNULL,
-                    stderr=asyncio.subprocess.DEVNULL, start_new_session=True,
+                    *command,
+                    cwd=record["cwd"],
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                    start_new_session=True,
                 )
             except OSError:
                 result["notification"] = "failed"
@@ -626,7 +720,7 @@ class WaitDaemon:
                 failed = "unconfirmed"
             else:
                 if returncode == 0:
-                    result.update(notification="queued", delivered_at=time.time())
+                    result.update(notification=wait_for.notification_success(args.client), delivered_at=time.time())
                     self._persist_result(args, record, result)
                     return None
                 failed = "failed"
@@ -665,7 +759,21 @@ async def handle_client(
             payload = await reader.readline()
             if len(payload) > 1024 * 1024:
                 raise ValueError("request is too large")
-            response = await daemon.dispatch(json.loads(payload))
+            request = json.loads(payload)
+            if isinstance(request, dict) and request.get("operation") == "follow":
+                waiting = asyncio.create_task(daemon.dispatch(request))
+                disconnected = asyncio.create_task(reader.read(1))
+                try:
+                    done, _ = await asyncio.wait({waiting, disconnected}, return_when=asyncio.FIRST_COMPLETED)
+                    if waiting not in done:
+                        return
+                    response = waiting.result()
+                finally:
+                    waiting.cancel()
+                    disconnected.cancel()
+                    await asyncio.gather(waiting, disconnected, return_exceptions=True)
+            else:
+                response = await daemon.dispatch(request)
             message = {"ok": True, **response}
         except (OSError, TypeError, ValueError, SystemExit) as exc:
             message = {"ok": False, "error": str(exc)}

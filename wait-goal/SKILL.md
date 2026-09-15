@@ -44,6 +44,6 @@ Here, `<invoke>` is `$wait-goal` or `/wait-goal` according to the client.
 - Do not fan out merely for the appearance of concurrency. Prefer parallel dispatch for nodes with clear dependencies, isolated context, independent acceptance, and non-overlapping writes; this shortens the critical path and can avoid repeated root-context work. Keep short ordered chains, tightly coupled work, and overlapping writes with one agent when their coordination cost outweighs parallelism.
 - Run `abort-agent` only after confirming that the prepared dispatch did not create a live child, or after terminating that child.
 - Store credentials outside argv, graph state, watcher logs, and notifications.
-- Client adapters resume only the session ID recorded at goal initialization. Codex queues a message; CodeWiz, Cursor, Claude Code, and GitHub Copilot CLI resume the named session in a subprocess and default to one delivery attempt to avoid duplicate turns.
+- After activating a watcher, set up event delivery for the session recorded at initialization using the [client adapter](../docs/clients.md), then end the turn.
 
 Run `python ../scripts/waitctl.py --help`, `python ../scripts/wait_goal.py --help`, and `python ../scripts/wait_for.py --help` for command details.

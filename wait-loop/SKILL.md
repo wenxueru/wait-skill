@@ -23,7 +23,7 @@ Here, `<invoke>` is `$wait-loop` or `/wait-loop` according to the client.
 1. Run `waitctl.py loop -- init` with the task, interval, client, session, and a finite overall `--duration`. Retain its returned `state_file`. The 24-hour default is a safety limit, not a reason to omit a more meaningful bound. Add `--max-iterations` when the requested count is finite.
 2. Execute the saved task once. The root session performs each iteration; do not create an autonomous child loop.
 3. After the iteration succeeds, run `complete --summary`. If it returns `completed`, report the final outcome and stop. Otherwise retain its `watch_id` and `next_run_at`.
-4. The service registers the timer before returning from `complete`. End the turn; the timer resumes the saved session with the loop state, watcher log, and event ID. Service restart repairs any timer registration interrupted after the state commit.
+4. The service registers the timer before returning from `complete`. Use the saved watch ID to set up event delivery through the [client adapter](../docs/clients.md). End the turn; the client adapter returns the loop state, watcher log, and event ID to the session. Service restart repairs any timer registration interrupted after the state commit.
 5. On a `ready` event, verify the watcher log and run `begin --event-id`. If it reports a duplicate, do not execute the task again. If delivery crossed the loop deadline, `begin` completes the loop; report completion and stop. Otherwise run the next iteration and return to step 3.
 6. On `Expired`, run `expire --event-id` and stop. If the loop is cancelled, completed, or superseded while waiting, ownership validation stops the stale watcher without another model wake-up.
 

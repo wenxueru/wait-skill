@@ -46,6 +46,8 @@ WATCH_ID=WATCH_ID_FROM_COMPLETE
 # complete 已由服务注册下一轮计时器。
 ```
 
+每次注册计时器后，使用保存的 watch ID，按[客户端适配](clients.zh-CN.md)接好事件投递通道，再结束轮次。
+
 watcher 报告 `ready` 后，先校验日志并消费事件，再执行任务：
 
 ```bash
