@@ -26,10 +26,10 @@ description: 在 CodeWiz、Cursor、Claude Code、GitHub Copilot 和 Codex 中�
 4. 只有节点的验收检查通过且预期产物存在时，才能将其标记为完成。在状态中记录简洁结果和产物，再调度新进入 ready 的节点。
 5. 没有 ready 节点时：
    - 如果仍有 Agent 在运行，使用运行时提供的阻塞式 Agent 等待，只在 Agent 完成或需要处理时恢复。如果 activity 为 `dispatching`，采取其他操作前必须用保存的 dispatch token 对照运行时 Agent；不得直接再次派发。
-   - 如果只剩外部状态，为每个外部对象准备一次 wait，使用持久化的客户端、会话和有限的总超时启动被动 watcher，确认启动回执并激活 wait，然后结束当前轮次。watcher 拥有该 wait 后，不要再由模型查询同一状态。
+   - 如果只剩外部状态，为每个外部对象准备一次 wait，使用持久化的客户端、会话和有限的总超时启动被动 watcher，确认启动回执并激活 wait，然后结束当前轮次。watcher 拥有该 wait 后，不要再由模型查询同一状态。如果 `check` 报告 `orphaned_wait`，应对同一节点执行 `abort-wait`，再建立新的 wait。
    - 如果 activity 为 `blocked`，报告失败或取消的依赖，以及恢复所需的决定。只有作出该决定后才能使用 `retry`，随后按正常流程调度重置后的节点。
    - 如果继续推进需要用户决定，报告所需的具体决定并停止。
-6. `wait` 会准备唯一 watch ID，同时让节点保持 `running`。启动 `wait_for.py` 时，使用该命令返回的 state、log、lock 和 startup 绝对路径。启动回执出现后运行 `activate-wait`；只有完成激活，watcher 才能开始查询。`wake` 只接受当前活动 ID，并把任何事件对应的节点恢复为 `running`。重新检查一次外部状态，然后完成节点、明确标记失败，或准备下一次 wait。完全相同的重复事件为空操作。如果 prepared 或 active watcher 无法继续，先使用准确的 watch ID 运行 `abort-wait`，再创建替代 watcher。
+6. `wait` 会准备唯一 watch ID，同时让节点保持 `running`。启动 `wait_for.py` 时，使用该命令返回的 state、log、lock 和 startup 绝对路径。启动回执出现后运行 `activate-wait`；只有完成激活，watcher 才能开始查询。`waiting` 节点必须始终有 watcher 持有其 lock；所有权消失时，`check` 报告 `orphaned_wait`，`show` 也返回同名 activity。`wake` 只接受当前活动 ID，并把任何事件对应的节点恢复为 `running`。重新检查一次外部状态，然后完成节点、明确标记失败，或准备下一次 wait。完全相同的重复事件为空操作。如果 prepared 或 active watcher 无法继续，先使用准确的 watch ID 对同一节点运行 `abort-wait`，再建立新 watcher。如果节点已失败，而同一个外部逻辑任务仍需继续，必须 `retry` 原节点；不得新增一个与原后继链断开的替代节点。
 7. 结束前，对照原始目标验证结果。如果目标尚未满足，把缺少的工作加入图中并继续；否则使用 `wait_goal.py verify` 记录证据，再运行 `wait_goal.py finish`。
 
 ## 不变量

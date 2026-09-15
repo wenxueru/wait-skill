@@ -236,7 +236,8 @@ class WaitGoalTest(unittest.TestCase):
         self.add("deploy", kind="external")
         self.start("deploy")
         watch_id = self.wait("deploy")
-        self.assertEqual(self.graph().activity(), "waiting")
+        with patch.object(wait_goal, "lock_is_held", return_value=True):
+            self.assertEqual(self.graph().activity(), "waiting")
 
         event = {
             "state": self.state,
@@ -321,6 +322,34 @@ class WaitGoalTest(unittest.TestCase):
         node = self.load()["nodes"]["deploy"]
         self.assertEqual(node["status"], "waiting")
         self.assertEqual(node["wait"]["phase"], "active")
+
+    def test_orphaned_wait_is_reported_by_check_and_show(self) -> None:
+        self.add("deploy", kind="external")
+        self.start("deploy")
+        self.wait("deploy")
+
+        with patch.object(wait_goal, "lock_is_held", return_value=False):
+            issues = self.graph().lint()
+            self.assertEqual(self.graph().activity(), "orphaned_wait")
+
+            check_output = StringIO()
+            with redirect_stdout(check_output):
+                wait_goal.command_check(Namespace(state=self.state))
+            show_output = StringIO()
+            with redirect_stdout(show_output):
+                wait_goal.command_show(Namespace(state=self.state))
+
+        self.assertEqual(
+            issues,
+            [{
+                "code": "orphaned_wait",
+                "severity": "error",
+                "node_id": "deploy",
+                "message": "waiting node no longer has a live watcher",
+            }],
+        )
+        self.assertFalse(json.loads(check_output.getvalue())["ok"])
+        self.assertEqual(json.loads(show_output.getvalue())["activity"], "orphaned_wait")
 
     def test_abort_wait_recovers_prepared_and_active_watchers(self) -> None:
         self.add("deploy", kind="external")

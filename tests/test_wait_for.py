@@ -469,6 +469,16 @@ class WaitForTest(unittest.TestCase):
             state.write_text("{", encoding="utf-8")
             self.assertFalse(wait_for.goal_wait_is_current(args))
 
+    def test_goal_watcher_retains_ownership_until_wake_is_recorded(self) -> None:
+        args = Namespace(wake_ack_timeout=60.0, activation_interval=0.25)
+        with (
+            patch.object(wait_for, "goal_wait_is_current", side_effect=[True, False]),
+            patch.object(wait_for.time, "sleep") as sleep,
+        ):
+            wait_for.wait_for_goal_wake(args)
+
+        sleep.assert_called_once_with(0.25)
+
     def test_goal_watch_must_match_persisted_client_and_session(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             state = Path(directory) / "goal.json"

@@ -8,7 +8,7 @@ English | [简体中文](wait-goal.zh-CN.md)
 
 `init` defaults to a unique JSON file under `/tmp/.wait-goal/<project-name>-<path-hash>/`. The nearest Git root identifies the project, so calls from its subdirectories share the same project directory; the path hash separates same-named checkouts. Retain the returned canonical `state_file` for later commands (`/tmp` may appear as `/private/tmp` on macOS). Pass `--state` only to override this location.
 
-The persisted goal status is limited to `open`, `paused`, `completed`, and `cancelled`. `show` derives current activity from the nodes as `idle`, `ready`, `dispatching`, `running`, `waiting`, `blocked`, `awaiting_verification`, or `verified`. Nodes can be:
+The persisted goal status is limited to `open`, `paused`, `completed`, and `cancelled`. `show` derives current activity from the nodes as `idle`, `ready`, `dispatching`, `running`, `waiting`, `orphaned_wait`, `blocked`, `awaiting_verification`, or `verified`. Nodes can be:
 
 - `local`: local work performed sequentially by the root agent.
 - `agent`: bounded work suitable for independent delegation.
@@ -92,6 +92,7 @@ Every start or resume follows the same loop:
 | `dispatching` | Reconcile the saved dispatch token with runtime agents; attach the existing child or, only after proving none is live, run `abort-agent` |
 | `running` | Activate a prepared external wait, or block for an agent event |
 | `waiting` | The watcher owns the wait; end the model turn |
+| `orphaned_wait` | Run `check`, then recover the same node with its current watch ID; do not leave it suspended or replace it with a detached node |
 | `blocked` | Report the blocking dependency and required decision; do not retry external work implicitly |
 | `awaiting_verification` | Check the original objective; add missing work or run `verify` |
 | `verified` | Run `finish` |
@@ -246,6 +247,8 @@ python scripts/wait_goal.py abort-wait \
 
 The node returns to `running` and can prepare a new wait. The watch ID guard prevents a stale recovery command from cancelling a newer watcher. A still-running old watcher observes the invalidated ID and exits before its next query or notification retry.
 
+`check` verifies that every `waiting` node still has a watcher holding its recorded lock. A missing owner is an `orphaned_wait` error, and `show` exposes `orphaned_wait` as the current activity. Recover the existing node with `abort-wait`; do not create a second node for the same external object.
+
 After deciding that a failed node may be attempted again, archive the failed attempt and reset it to `pending`:
 
 ```bash
@@ -253,6 +256,8 @@ python scripts/wait_goal.py retry --state "$GOAL_STATE" --id deploy
 ```
 
 `retry` changes scheduler state only. It does not authorize or perform an external retry, deployment, restart, or other side effect.
+
+When continuing the same logical external operation, retry the failed original node so its existing successors remain connected. Adding an unrelated replacement node does not repair dependencies blocked by the failed node.
 
 ## Finish a goal
 

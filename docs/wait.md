@@ -60,7 +60,8 @@ Each notification or session-resume attempt is bounded by `--notification-timeou
 3. **Query.** Each call is bounded by `--query-timeout` and any remaining overall timeout. A successful query resets the consecutive-failure count.
 4. **Persist.** On ready, terminal, overall timeout, or repeated query failure, the watcher chooses a stable `event_id`: standalone `$wait` generates one, while `wait-loop` and `wait-goal` integrations reuse their `watch_id`. It writes the result atomically before notification.
 5. **Notify.** The selected client adapter resumes the saved session with the stable event ID. Delivery progress is persisted first. Codex queue failures retry by default; synchronous CLI adapters default to one attempt because a timeout may already have started a turn. Before every retry, a goal-owned watcher confirms that its watch is still active.
-6. **Resume and verify.** A resume message is only a hint. The receiver validates the log and event ID, then independently queries the external system once before deciding what to do.
+6. **Hand off.** After a goal notification succeeds, the watcher retains its lock until the root records `wake`, bounded by `--wake-ack-timeout`. This keeps the notification-to-wake interval distinguishable from a dead watcher.
+7. **Resume and verify.** A resume message is only a hint. The receiver validates the log and event ID, then independently queries the external system once before deciding what to do.
 
 | Result or condition | Trigger | Exit | Receiver action |
 | --- | --- | ---: | --- |
@@ -73,7 +74,7 @@ Each notification or session-resume attempt is bounded by `--notification-timeou
 | `interrupted` | Watcher interrupted | `130` | Inspect log and goal state |
 | Notification failure | Configured retry limit exhausted | `70` | Read the persisted log and decide whether to redeliver |
 
-When an explicitly invoked `wait-goal` uses the watcher, startup adds a two-phase handshake. The watcher acquires the lock and writes a `watcher_started` receipt without querying. The root validates the node, watch ID, client, target session, log, receipt age, and live lock before running `activate-wait`. Only then does querying begin. A prepared watcher exits after `--activation-timeout`; an active watcher exits before its next query or notification retry if the saved wait is cancelled, replaced, missing, or invalid. Use `wait_goal.py abort-wait` with the exact watch ID before replacing an orphaned watcher.
+When an explicitly invoked `wait-goal` uses the watcher, startup adds a two-phase handshake. The watcher acquires the lock and writes a `watcher_started` receipt without querying. The root validates the node, watch ID, client, target session, log, receipt age, and live lock before running `activate-wait`. Only then does querying begin. A prepared watcher exits after `--activation-timeout`; an active watcher exits before its next query or notification retry if the saved wait is cancelled, replaced, missing, or invalid. After successful notification it keeps the lock for at most `--wake-ack-timeout`, releasing it as soon as `wake` changes the node state. Use `wait_goal.py abort-wait` with the exact watch ID before replacing an orphaned watcher.
 
 ## Run in the background
 

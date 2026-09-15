@@ -14,12 +14,11 @@ import re
 import tempfile
 import time
 import uuid
-from collections.abc import Mapping, Sequence
-from contextlib import suppress
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager, suppress
 from datetime import datetime, timezone
 from pathlib import Path
-from types import TracebackType
-from typing import IO, TypedDict, cast
+from typing import TypedDict, cast
 
 NODE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 NODE_KINDS = {"agent", "local", "external"}
@@ -624,6 +623,14 @@ class GoalGraph:
     def _nodes_with_status(self, *statuses: str) -> dict[str, GoalNode]:
         return {node_id: node for node_id, node in self.nodes.items() if node["status"] in statuses}
 
+    def orphaned_wait_ids(self) -> list[str]:
+        """Return waiting nodes whose watcher no longer owns its lock."""
+        return [
+            node_id
+            for node_id, node in self._nodes_with_status("waiting").items()
+            if not lock_is_held(Path(cast(WaitMetadata, node["wait"])["lock_file"]))
+        ]
+
     @staticmethod
     def nodes_conflict(first: GoalNode, second: GoalNode) -> bool:
         if first["read_only"] or second["read_only"]:
@@ -700,6 +707,13 @@ class GoalGraph:
                     "blocked_by": blockers,
                     "message": "pending node cannot become ready",
                 })
+        for node_id in self.orphaned_wait_ids():
+            issues.append({
+                "code": "orphaned_wait",
+                "severity": "error",
+                "node_id": node_id,
+                "message": "waiting node no longer has a live watcher",
+            })
         return issues
 
     def activity(self) -> str:
@@ -709,6 +723,8 @@ class GoalGraph:
         statuses = {node["status"] for node in nodes.values()}
         if "dispatching" in statuses:
             return "dispatching"
+        if "waiting" in statuses and self.orphaned_wait_ids():
+            return "orphaned_wait"
         if self.ready_nodes():
             return "ready"
         if "running" in statuses:
@@ -1085,7 +1101,7 @@ class GoalStore:
         return graph
 
     def create(self, graph: GoalGraph) -> None:
-        with self._acquire_lock():
+        with self._locked():
             if self.path.exists():
                 raise GoalError(f"state file already exists: {self.path}")
             graph.validate()
@@ -1110,56 +1126,24 @@ class GoalStore:
             with suppress(FileNotFoundError):
                 os.unlink(temporary)
 
-    def edit(self) -> GoalEdit:
-        return GoalEdit(self)
+    @contextmanager
+    def edit(self) -> Iterator[GoalGraph]:
+        with self._locked():
+            graph = self.load()
+            original_state = copy.deepcopy(graph.state)
+            yield graph  # noqa: RUF075 - failed edits must not be committed
+            if graph.state != original_state:
+                graph.validate()
+                graph.state["updated_at"] = utc_now()
+                self.write(graph.state)
 
-    def _acquire_lock(self) -> IO[str]:
+    @contextmanager
+    def _locked(self) -> Iterator[None]:
         lock_path = self.path.with_name(self.path.name + ".lock")
         lock_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        lock = lock_path.open("a", encoding="utf-8")
-        try:
+        with lock_path.open("a", encoding="utf-8") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
-        except BaseException:
-            lock.close()
-            raise
-        return lock
-
-
-class GoalEdit:
-    """Commit a locked goal only when its edit block succeeds."""
-
-    def __init__(self, store: GoalStore) -> None:
-        self.store = store
-        self.graph: GoalGraph
-        self.original_state: GoalState
-        self.lock: IO[str]
-
-    def __enter__(self) -> GoalGraph:
-        lock = self.store._acquire_lock()
-        try:
-            graph = self.store.load()
-        except BaseException:
-            lock.close()
-            raise
-        self.lock = lock
-        self.graph = graph
-        self.original_state = copy.deepcopy(graph.state)
-        return graph
-
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        _exc_value: BaseException | None,
-        _traceback: TracebackType | None,
-    ) -> bool:
-        try:
-            if exc_type is None and self.graph.state != self.original_state:
-                self.graph.validate()
-                self.graph.state["updated_at"] = utc_now()
-                self.store.write(self.graph.state)
-        finally:
-            self.lock.close()
-        return False
+            yield
 
 
 def print_json(value: object) -> None:

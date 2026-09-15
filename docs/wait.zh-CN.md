@@ -62,7 +62,8 @@ JSON 对象或数组必须选择一个标量字段，例如 `{"status":"ServiceR
 3. **watcher 执行查询循环。** 每次查询最多运行 `--query-timeout` 秒；设置总 `--timeout` 时，单次查询也不会越过剩余总时间。普通状态按 `--interval` 继续等待，成功查询会清零连续失败计数。
 4. **watcher 固化事件。** 遇到 ready、terminal、总超时或连续查询失败后，确定稳定的 `event_id`：独立 `$wait` 生成新 ID，与 `wait-loop` 或 `wait-goal` 集成时沿用其 `watch_id`。结果先原子写入 `--log-file`，再尝试通知。
 5. **watcher 投递通知。** 客户端适配器使用稳定 event ID 恢复已保存的会话，并先持久化投递进度。Codex 队列失败默认重试；同步 CLI 适配器默认只尝试一次，因为超时可能已经启动了模型轮次。goal watcher 每次重试前还会确认当前 watch 仍有效。
-6. **接收方恢复并复查。** 恢复消息只是提示。接收方先读取日志并校验 event ID，再对外部系统执行一次独立的只读查询；只有复查结果可以驱动后续完成或失败判断。
+6. **watcher 完成交接。** goal 通知成功后，watcher 会继续持有 lock，直到根 Agent 记录 `wake`，最长不超过 `--wake-ack-timeout`。这样能区分正常的“通知已送达、wake 尚未落盘”窗口与 watcher 消失。
+7. **接收方恢复并复查。** 恢复消息只是提示。接收方先读取日志并校验 event ID，再对外部系统执行一次独立的只读查询；只有复查结果可以驱动后续完成或失败判断。
 
 事件和退出状态如下：
 
@@ -77,7 +78,7 @@ JSON 对象或数组必须选择一个标量字段，例如 `{"status":"ServiceR
 | `interrupted` | watcher 被中断 | `130` | 检查日志和目标状态 |
 | 通知失败 | 已配置的重试次数耗尽 | `70` | 读取已持久化日志，人工决定是否补投 |
 
-用户明确调用的 `wait-goal` 使用 watcher 时，会增加两阶段握手：watcher 先取得 lock 并写 `watcher_started` 回执，但不查询；根 Agent 校验 node、watch ID、client、目标 session、日志、回执时效和仍被持有的 lock，再执行 `activate-wait`。prepared watcher 超过 `--activation-timeout` 未激活会退出；active wait 被取消、替换、删除或损坏后，也会在下一次查询或通知重试前退出。替换孤儿 watcher 前，先用准确 watch ID 执行 `abort-wait`。
+用户明确调用的 `wait-goal` 使用 watcher 时，会增加两阶段握手：watcher 先取得 lock 并写 `watcher_started` 回执，但不查询；根 Agent 校验 node、watch ID、client、目标 session、日志、回执时效和仍被持有的 lock，再执行 `activate-wait`。prepared watcher 超过 `--activation-timeout` 未激活会退出；active wait 被取消、替换、删除或损坏后，也会在下一次查询或通知重试前退出。通知成功后，它继续持有 lock，最长不超过 `--wake-ack-timeout`，并在 `wake` 改变节点状态后立即释放。替换孤儿 watcher 前，先用准确 watch ID 执行 `abort-wait`。
 
 ## 后台运行
 

@@ -441,6 +441,16 @@ def wait_for_goal_activation(args: argparse.Namespace) -> str:
         time.sleep(min(args.activation_interval, remaining))
 
 
+def wait_for_goal_wake(args: argparse.Namespace) -> None:
+    """Retain watcher ownership until the delivered event is recorded or the handoff expires."""
+    deadline = time.monotonic() + args.wake_ack_timeout
+    while goal_wait_is_current(args):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        time.sleep(min(args.activation_interval, remaining))
+
+
 def atomic_write_text(path: Path, payload: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
@@ -581,6 +591,12 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--activation-interval", type=positive_number, default=0.25)
     result.add_argument("--activation-timeout", type=positive_number, default=60.0)
     result.add_argument(
+        "--wake-ack-timeout",
+        type=positive_number,
+        default=60.0,
+        help="Maximum seconds to retain a goal watcher lock after successful notification",
+    )
+    result.add_argument(
         "--notification-timeout",
         type=positive_number,
         help="Maximum seconds per delivery attempt; defaults to 60 for Codex and 3600 otherwise",
@@ -644,6 +660,8 @@ def run_wait(args: argparse.Namespace, command: Sequence[str]) -> int:
         delivery_code = deliver_notification(args, result)
         if delivery_code is not None:
             code = delivery_code
+        elif args.goal_state:
+            wait_for_goal_wake(args)
     write_result(args.log_file, result)
     return code
 

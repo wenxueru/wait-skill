@@ -13,6 +13,7 @@ import re
 import tempfile
 import time
 import uuid
+from collections import UserDict
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager, suppress
 from pathlib import Path
@@ -116,27 +117,115 @@ def validate(state: object) -> dict[str, object]:
     return state
 
 
+class LoopState(UserDict[str, object]):
+    """Loop state with its lifecycle transitions."""
+
+    def __init__(self, state: object) -> None:
+        super().__init__(validate(state))
+
+    def append_event(self, operation: str, **details: object) -> None:
+        events = self["events"]
+        assert isinstance(events, list)
+        events.append({"at": time.time(), "operation": operation, **details})
+
+    def complete(self, summary: str) -> None:
+        if self["status"] != "active" or self["phase"] != "running":
+            raise LoopError("only a running iteration can complete")
+        now = time.time()
+        iteration = self["iteration"]
+        runs = self["runs"]
+        assert isinstance(runs, list)
+        runs.append({"iteration": iteration, "summary": summary, "completed_at": now})
+        limit = self["max_iterations"]
+        if now >= self["deadline_at"] or isinstance(limit, int) and iteration >= limit:
+            self.update(status="completed", phase=None, next_run_at=None, watch_id=None)
+            self.append_event("finish", iteration=iteration)
+            return
+        watch_id = uuid.uuid4().hex
+        self.update(
+            phase="waiting",
+            next_run_at=min(now + self["interval_seconds"], self["deadline_at"]),
+            watch_id=watch_id,
+        )
+        self.append_event("schedule", iteration=iteration, watch_id=watch_id)
+
+    def due(self, watch_id: str) -> str:
+        if self["status"] == "completed":
+            return "Completed"
+        if self["status"] == "cancelled":
+            return "Cancelled"
+        if self["phase"] != "waiting" or self["watch_id"] != watch_id:
+            return "Stale"
+        now = time.time()
+        if now >= self["deadline_at"]:
+            return "Expired"
+        return "Ready" if now >= self["next_run_at"] else "Waiting"
+
+    def begin(self, event_id: str) -> bool:
+        if self["last_event_id"] == event_id:
+            return True
+        self._require_active_wait(event_id)
+        if time.time() >= self["deadline_at"]:
+            self._expire(event_id)
+        else:
+            self["iteration"] = int(self["iteration"]) + 1
+            self.update(phase="running", next_run_at=None, watch_id=None, last_event_id=event_id)
+            self.append_event("begin", iteration=self["iteration"], event_id=event_id)
+        return False
+
+    def expire(self, event_id: str) -> bool:
+        if self["last_event_id"] == event_id:
+            return True
+        self._require_active_wait(event_id)
+        if time.time() < self["deadline_at"]:
+            raise LoopError("loop duration has not expired")
+        self._expire(event_id)
+        return False
+
+    def cancel(self) -> None:
+        if self["status"] == "completed":
+            raise LoopError("completed loop cannot be cancelled")
+        self.update(status="cancelled", phase=None, next_run_at=None, watch_id=None)
+        self.append_event("cancel")
+
+    def _require_active_wait(self, event_id: str) -> None:
+        if self["status"] != "active" or self["phase"] != "waiting":
+            raise LoopError("loop is not waiting")
+        if self["watch_id"] != event_id:
+            raise LoopError("event ID does not match the active wait")
+
+    def _expire(self, event_id: str) -> None:
+        self.update(
+            status="completed",
+            phase=None,
+            next_run_at=None,
+            watch_id=None,
+            last_event_id=event_id,
+        )
+        self.append_event("expire", event_id=event_id)
+
+
 class LoopStore:
     """Serialize loop state changes under an advisory lock."""
 
     def __init__(self, path: Path) -> None:
         self.path = Path(os.path.realpath(os.path.abspath(os.path.expanduser(path))))
 
-    def load(self) -> dict[str, object]:
+    def load(self) -> LoopState:
         try:
-            return validate(json.loads(self.path.read_text(encoding="utf-8")))
+            return LoopState(json.loads(self.path.read_text(encoding="utf-8")))
         except FileNotFoundError as exc:
             raise LoopError(f"state file not found: {self.path}") from exc
         except json.JSONDecodeError as exc:
             raise LoopError(f"invalid state JSON: {exc}") from exc
 
-    def write(self, state: dict[str, object]) -> None:
-        validate(state)
+    def write(self, state: LoopState) -> None:
+        validate(state.data)
         self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         descriptor, temporary = tempfile.mkstemp(prefix=f".{self.path.name}.", dir=self.path.parent)
         try:
             with os.fdopen(descriptor, "w", encoding="utf-8") as output:
-                json.dump(state, output, ensure_ascii=False, indent=2, sort_keys=True)
+                json.dump(state.data, output, ensure_ascii=False, indent=2, sort_keys=True)
                 output.write("\n")
                 output.flush()
                 os.fsync(output.fileno())
@@ -150,14 +239,14 @@ class LoopStore:
             with suppress(FileNotFoundError):
                 os.unlink(temporary)
 
-    def create(self, state: dict[str, object]) -> None:
+    def create(self, state: LoopState) -> None:
         with self.locked():
             if self.path.exists():
                 raise LoopError(f"state file already exists: {self.path}")
             self.write(state)
 
     @contextmanager
-    def edit(self) -> Iterator[dict[str, object]]:
+    def edit(self) -> Iterator[LoopState]:
         with self.locked():
             state = self.load()
             yield state  # noqa: RUF075 - failed edits must not be committed
@@ -172,30 +261,15 @@ class LoopStore:
             yield
 
 
-def append_event(state: dict[str, object], operation: str, **details: object) -> None:
-    events = state["events"]
-    assert isinstance(events, list)
-    events.append({"at": time.time(), "operation": operation, **details})
-
-
 def print_json(value: object) -> None:
+    if isinstance(value, LoopState):
+        value = value.data
     print(json.dumps(value, ensure_ascii=False, sort_keys=True))
-
-
-def expire_wait(state: dict[str, object], event_id: str) -> None:
-    state.update(
-        status="completed",
-        phase=None,
-        next_run_at=None,
-        watch_id=None,
-        last_event_id=event_id,
-    )
-    append_event(state, "expire", event_id=event_id)
 
 
 def command_init(args: argparse.Namespace) -> None:
     now = time.time()
-    state: dict[str, object] = {
+    state = LoopState({
         "task": args.task,
         "client": args.client,
         "session": args.session,
@@ -210,7 +284,7 @@ def command_init(args: argparse.Namespace) -> None:
         "last_event_id": None,
         "runs": [],
         "events": [{"at": now, "operation": "init"}],
-    }
+    })
     store = LoopStore(args.state or default_state_path())
     store.create(state)
     print_json({"state_file": os.fspath(store.path), **state})
@@ -219,95 +293,37 @@ def command_init(args: argparse.Namespace) -> None:
 def command_complete(args: argparse.Namespace) -> None:
     store = LoopStore(args.state)
     with store.edit() as state:
-        if state["status"] != "active" or state["phase"] != "running":
-            raise LoopError("only a running iteration can complete")
-        now = time.time()
-        iteration = state["iteration"]
-        deadline = state["deadline_at"]
-        runs = state["runs"]
-        assert isinstance(runs, list)
-        runs.append({"iteration": iteration, "summary": args.summary, "completed_at": now})
-        limit = state["max_iterations"]
-        limit_reached = isinstance(limit, int) and iteration >= limit
-        if now >= deadline or limit_reached:
-            state.update(status="completed", phase=None, next_run_at=None, watch_id=None)
-            append_event(state, "finish", iteration=iteration)
-        else:
-            watch_id = uuid.uuid4().hex
-            state.update(
-                phase="waiting",
-                next_run_at=min(now + state["interval_seconds"], deadline),
-                watch_id=watch_id,
-            )
-            append_event(state, "schedule", iteration=iteration, watch_id=watch_id)
+        state.complete(args.summary)
     print_json(state)
 
 
 def command_due(args: argparse.Namespace) -> None:
     state = LoopStore(args.state).load()
-    now = time.time()
-    if state["status"] == "completed":
-        outcome = "Completed"
-    elif state["status"] == "cancelled":
-        outcome = "Cancelled"
-    elif state["phase"] != "waiting" or state["watch_id"] != args.watch_id:
-        outcome = "Stale"
-    elif now >= state["deadline_at"]:
-        outcome = "Expired"
-    elif now >= state["next_run_at"]:
-        outcome = "Ready"
-    else:
-        outcome = "Waiting"
-    print(outcome)
+    print(state.due(args.watch_id))
 
 
 def command_begin(args: argparse.Namespace) -> None:
     store = LoopStore(args.state)
     with store.edit() as state:
-        if state["last_event_id"] == args.event_id:
+        if state.begin(args.event_id):
             print_json({"duplicate": True, "iteration": state["iteration"]})
             return
-        if state["status"] != "active" or state["phase"] != "waiting":
-            raise LoopError("loop is not waiting")
-        if state["watch_id"] != args.event_id:
-            raise LoopError("event ID does not match the active wait")
-        if time.time() >= state["deadline_at"]:
-            expire_wait(state, args.event_id)
-        else:
-            state["iteration"] = int(state["iteration"]) + 1
-            state.update(
-                phase="running",
-                next_run_at=None,
-                watch_id=None,
-                last_event_id=args.event_id,
-            )
-            append_event(state, "begin", iteration=state["iteration"], event_id=args.event_id)
     print_json(state)
 
 
 def command_expire(args: argparse.Namespace) -> None:
     store = LoopStore(args.state)
     with store.edit() as state:
-        if state["last_event_id"] == args.event_id:
+        if state.expire(args.event_id):
             print_json({"duplicate": True, "status": state["status"]})
             return
-        if state["status"] != "active" or state["phase"] != "waiting":
-            raise LoopError("loop is not waiting")
-        if state["watch_id"] != args.event_id:
-            raise LoopError("event ID does not match the active wait")
-        if time.time() < state["deadline_at"]:
-            raise LoopError("loop duration has not expired")
-        expire_wait(state, args.event_id)
     print_json(state)
 
 
 def command_cancel(args: argparse.Namespace) -> None:
     store = LoopStore(args.state)
     with store.edit() as state:
-        if state["status"] == "completed":
-            raise LoopError("completed loop cannot be cancelled")
-        state.update(status="cancelled", phase=None, next_run_at=None, watch_id=None)
-        append_event(state, "cancel")
+        state.cancel()
     print_json(state)
 
 

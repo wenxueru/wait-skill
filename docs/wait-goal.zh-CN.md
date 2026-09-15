@@ -8,7 +8,7 @@
 
 `init` 默认在 `/tmp/.wait-goal/<项目名>-<路径哈希>/` 下创建唯一 JSON 文件。项目由最近的 Git 根目录识别，因此从不同子目录调用仍使用同一项目目录；路径哈希会隔离同名 checkout。后续命令使用返回的规范化 `state_file`（macOS 可能显示为 `/private/tmp`）；只有需要覆盖默认位置时才传 `--state`。
 
-持久化的目标状态只有 `open`、`paused`、`completed` 和 `cancelled`。`show` 根据节点动态计算活动状态：`idle`、`ready`、`dispatching`、`running`、`waiting`、`blocked`、`awaiting_verification` 或 `verified`。节点可以是：
+持久化的目标状态只有 `open`、`paused`、`completed` 和 `cancelled`。`show` 根据节点动态计算活动状态：`idle`、`ready`、`dispatching`、`running`、`waiting`、`orphaned_wait`、`blocked`、`awaiting_verification` 或 `verified`。节点可以是：
 
 - `local`：由根 Agent 顺序完成的本地工作。
 - `agent`：适合独立委派的有界工作。
@@ -92,6 +92,7 @@ flowchart TD
 | `dispatching` | 使用保存的 dispatch token 对照运行时 Agent；关联已有子 Agent，或仅在确认没有存活实例后执行 `abort-agent` |
 | `running` | 激活已准备的 external wait，或阻塞等待 Agent 事件 |
 | `waiting` | watcher 已接管，结束当前模型轮次 |
+| `orphaned_wait` | 运行 `check`，再使用当前 watch ID 恢复同一节点；不得让它继续停滞，也不得用断开依赖链的新节点替代 |
 | `blocked` | 报告阻断依赖和所需决定，不自行重试外部操作 |
 | `awaiting_verification` | 对照原始目标；缺工作则加节点，否则 `verify` |
 | `verified` | `finish` |
@@ -246,6 +247,8 @@ python scripts/wait_goal.py abort-wait \
 
 节点会回到 `running`，随后可以准备新的 wait。watch ID 校验可以防止旧恢复命令误伤更新的 watcher；仍存活的旧 watcher 会在下一次查询或通知重试前发现 ID 已失效并退出。
 
+`check` 会确认每个 `waiting` 节点仍有 watcher 持有已记录的 lock。所有权消失时会报告 `orphaned_wait` 错误，`show` 的 activity 也会变为 `orphaned_wait`。应对原节点执行 `abort-wait`；不得为同一个外部对象新建第二个节点。
+
 确认失败节点允许再次尝试后，可归档失败记录并将它恢复为 `pending`：
 
 ```bash
@@ -253,6 +256,8 @@ python scripts/wait_goal.py retry --state "$GOAL_STATE" --id deploy
 ```
 
 `retry` 只修改调度状态，不会授权或执行外部重试、部署、重启等副作用。
+
+继续同一个外部逻辑任务时，应 retry 失败的原节点，使它原有的后继依赖保持连通。新增无关的替代节点不会解除被失败节点阻塞的依赖。
 
 ## 完成目标
 
