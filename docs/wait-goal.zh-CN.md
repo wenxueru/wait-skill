@@ -2,7 +2,7 @@
 
 [English](wait-goal.md) | 简体中文
 
-`wait-goal` 是 Goal 模式的一种事件驱动实现。只有用户明确调用时才启用：Codex 使用 `$wait-goal`，其他支持的客户端使用 `/wait-goal`。它不是 `wait` 的升级版或长程版；只有 goal 节点需要监视一个外部状态时，才调用父级 `wait` Skill。没有可执行工作时结束模型轮次，等待 Agent 或 watcher 事件恢复目标。
+`wait-goal` 是 Goal 模式的一种事件驱动实现。goal 节点需要监视外部状态时调用父级 `wait` Skill。没有可执行工作时结束模型轮次，等待 Agent 或 watcher 事件恢复目标。
 
 ## 状态模型
 
@@ -104,7 +104,7 @@ flowchart TD
 ## 开始目标
 
 ```bash
-python scripts/wait_goal.py init \
+python scripts/waitctl.py goal -- init \
   --objective "发布 API，并在健康检查通过后结束" \
   --client codex \
   --session "$AGENT_SESSION_ID"
@@ -112,7 +112,7 @@ python scripts/wait_goal.py init \
 # 设置为 init 返回的 state_file。
 GOAL_STATE=/tmp/.wait-goal/PROJECT/GOAL.json
 
-python scripts/wait_goal.py add \
+python scripts/waitctl.py goal -- add \
   --state "$GOAL_STATE" \
   --id test \
   --title "运行测试" \
@@ -121,7 +121,7 @@ python scripts/wait_goal.py add \
   --acceptance "测试套件通过" \
   --expects-artifact test-report
 
-python scripts/wait_goal.py add \
+python scripts/waitctl.py goal -- add \
   --state "$GOAL_STATE" \
   --id deploy \
   --title "等待部署就绪" \
@@ -135,14 +135,14 @@ python scripts/wait_goal.py add \
 将返回的 `state_file` 保存为 `GOAL_STATE`，供所有后续命令使用。`--input 名称=依赖节点ID` 声明输入由哪个直接依赖提供。依赖必须先于依赖它的节点加入。每个节点应使用 `--read-only` 或一个以上 `--write-path` 明确工作区访问范围；未声明的写入范围按未知处理，会与其他任务串行，路径冲突采用保守的大小写不敏感比较。运行以下命令获取当前可执行且写入互不冲突的节点：
 
 ```bash
-python scripts/wait_goal.py ready --state "$GOAL_STATE"
+python scripts/waitctl.py goal -- ready --state "$GOAL_STATE"
 ```
 
 使用 `check` 查看确定性的依赖图和调度诊断，使用 `events` 查看只追加的操作历史：
 
 ```bash
-python scripts/wait_goal.py check --state "$GOAL_STATE"
-python scripts/wait_goal.py events --state "$GOAL_STATE"
+python scripts/waitctl.py goal -- check --state "$GOAL_STATE"
+python scripts/waitctl.py goal -- events --state "$GOAL_STATE"
 ```
 
 ## 执行与演化 DAG
@@ -150,13 +150,13 @@ python scripts/wait_goal.py events --state "$GOAL_STATE"
 执行节点前先标记为运行：
 
 ```bash
-python scripts/wait_goal.py start --state "$GOAL_STATE" --id test
+python scripts/waitctl.py goal -- start --state "$GOAL_STATE" --id test
 ```
 
 对于 `agent` 节点，调用运行时前先预留节点：
 
 ```bash
-python scripts/wait_goal.py prepare-agent \
+python scripts/waitctl.py goal -- prepare-agent \
   --state "$GOAL_STATE" \
   --id review
 ```
@@ -164,7 +164,7 @@ python scripts/wait_goal.py prepare-agent \
 把 `DISPATCH_TOKEN_FROM_PREPARE` 写入子任务或确定性的任务名。派发返回后关联运行时 ID：
 
 ```bash
-python scripts/wait_goal.py start \
+python scripts/waitctl.py goal -- start \
   --state "$GOAL_STATE" \
   --id review \
   --dispatch-token DISPATCH_TOKEN_FROM_PREPARE \
@@ -176,7 +176,7 @@ python scripts/wait_goal.py start \
 验收条件通过后记录结果：
 
 ```bash
-python scripts/wait_goal.py complete \
+python scripts/waitctl.py goal -- complete \
   --state "$GOAL_STATE" \
   --id test \
   --summary "全部测试通过" \
@@ -190,7 +190,7 @@ python scripts/wait_goal.py complete \
 如果新工作必须在某个现有 `pending` 节点之前完成，可以使用 `--before` 插入：
 
 ```bash
-python scripts/wait_goal.py add \
+python scripts/waitctl.py goal -- add \
   --state "$GOAL_STATE" \
   --id security-review \
   --title "执行发布安全检查" \
@@ -204,8 +204,12 @@ python scripts/wait_goal.py add \
 
 如果只剩外部状态：
 
+外部等待超过一小时时，可提示根 Agent 使用 `wait-loop` 每小时执行只读检查。通过 `loop init --goal-state FILE --goal-node ID` 绑定监控；保存的任务说明检查内容及向根 Agent 汇报结果的方式。goal 响应会列出关联 loop，服务在目标或节点结束时取消监控。
+
+否则使用普通的 goal watcher 协议：
+
 1. 运行 `wait` 准备元数据，节点暂时保持 `running`；保存唯一 `watch_id` 和命令返回的绝对路径。state、log、lock 和 startup 路径必须互不相同。
-2. 使用这些路径、watch ID 和 `--goal-node` 启动 `wait_for.py`。它先取得 watcher lock、写入启动回执，然后在不查询外部系统的情况下等待激活。
+2. 通过 `waitctl.py start -- ...` 提交 watcher，并传入这些路径、watch ID 和 `--goal-node`。它先取得 watcher lock、写入启动回执，然后在不查询外部系统的情况下等待激活。
 3. 确认启动回执后运行 `activate-wait`。节点进入 `waiting`，watcher 才开始查询。
 4. 结束当前模型轮次，不再查询该外部状态。
 5. watcher 出现事件时，在 Codex 中发送 `$wait-goal resume <state-file>`，在其他客户端中发送 `/wait-goal resume <state-file>`。
@@ -218,20 +222,20 @@ watcher 协议见 [wait.zh-CN.md](wait.zh-CN.md)，会话恢复适配见 [client
 查看完整状态：
 
 ```bash
-python scripts/wait_goal.py show --state "$GOAL_STATE"
+python scripts/waitctl.py goal -- show --state "$GOAL_STATE"
 ```
 
 暂停或恢复调度：
 
 ```bash
-python scripts/wait_goal.py pause --state "$GOAL_STATE"
-python scripts/wait_goal.py resume --state "$GOAL_STATE"
+python scripts/waitctl.py goal -- pause --state "$GOAL_STATE"
+python scripts/waitctl.py goal -- resume --state "$GOAL_STATE"
 ```
 
 取消会把尚未完成的节点标记为 `cancelled`：
 
 ```bash
-python scripts/wait_goal.py cancel --state "$GOAL_STATE"
+python scripts/waitctl.py goal -- cancel --state "$GOAL_STATE"
 ```
 
 暂停或取消调度不会强制终止正在运行的 Agent 或已经提交的外部作业。goal 自己启动的 watcher 会在下一次查询或通知重试前发现 wait 已取消或替换，并自行退出。
@@ -239,7 +243,7 @@ python scripts/wait_goal.py cancel --state "$GOAL_STATE"
 如果 watcher 在激活前失败、没有投递事件便退出，或必须被替换，可以在不判定节点失败的情况下使本轮 wait 失效：
 
 ```bash
-python scripts/wait_goal.py abort-wait \
+python scripts/waitctl.py goal -- abort-wait \
   --state "$GOAL_STATE" \
   --id deploy \
   --watch-id CURRENT_WATCH_ID
@@ -252,7 +256,7 @@ python scripts/wait_goal.py abort-wait \
 确认失败节点允许再次尝试后，可归档失败记录并将它恢复为 `pending`：
 
 ```bash
-python scripts/wait_goal.py retry --state "$GOAL_STATE" --id deploy
+python scripts/waitctl.py goal -- retry --state "$GOAL_STATE" --id deploy
 ```
 
 `retry` 只修改调度状态，不会授权或执行外部重试、部署、重启等副作用。
@@ -264,7 +268,7 @@ python scripts/wait_goal.py retry --state "$GOAL_STATE" --id deploy
 所有节点都完成后，再对照原始需求运行 objective 级别的最终验证。如果需求仍未满足，应把缺失工作新增为节点并继续执行。验证通过后，先持久化验收证据：
 
 ```bash
-python scripts/wait_goal.py verify \
+python scripts/waitctl.py goal -- verify \
   --state "$GOAL_STATE" \
   --summary "原始需求已经满足" \
   --check "全部测试通过" \
@@ -274,7 +278,7 @@ python scripts/wait_goal.py verify \
 然后结束目标：
 
 ```bash
-python scripts/wait_goal.py finish \
+python scripts/waitctl.py goal -- finish \
   --state "$GOAL_STATE" \
   --summary "发布完成，测试与健康检查均通过"
 ```

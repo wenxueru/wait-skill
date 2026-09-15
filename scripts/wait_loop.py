@@ -14,7 +14,7 @@ import tempfile
 import time
 import uuid
 from collections import UserDict
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager, suppress
 from pathlib import Path
 
@@ -27,6 +27,24 @@ PHASES = {"running", "waiting"}
 
 class LoopError(ValueError):
     """Raised when a loop operation is invalid."""
+
+
+def goal_is_open(state: Mapping[str, object]) -> bool:
+    """A linked monitor belongs to one unfinished node of an open goal."""
+    owner = state.get("goal")
+    if owner is None:
+        return True
+    try:
+        goal = json.loads(Path(owner["state"]).read_text(encoding="utf-8"))
+        node = goal["nodes"][owner["node"]]
+        return (
+            goal["status"] == "open"
+            and node["status"] in {"pending", "running", "waiting"}
+            and goal.get("client", "codex") == state["client"]
+            and goal["thread"] == state["session"]
+        )
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
 
 
 def positive_number(value: str) -> float:
@@ -76,6 +94,13 @@ def validate(state: object) -> dict[str, object]:
     missing = required - state.keys()
     if missing:
         raise LoopError(f"state has missing fields: {sorted(missing)}")
+    owner = state.get("goal")
+    if owner is not None and (
+        not isinstance(owner, dict)
+        or set(owner) != {"state", "node"}
+        or any(not isinstance(value, str) or not value for value in owner.values())
+    ):
+        raise LoopError("goal must contain state and node strings")
     if not isinstance(state["task"], str) or not state["task"].strip():
         raise LoopError("task must be a non-empty string")
     if state["client"] not in CLIENTS:
@@ -131,6 +156,9 @@ class LoopState(UserDict[str, object]):
     def complete(self, summary: str) -> None:
         if self["status"] != "active" or self["phase"] != "running":
             raise LoopError("only a running iteration can complete")
+        if not goal_is_open(self):
+            self.cancel()
+            return
         now = time.time()
         iteration = self["iteration"]
         runs = self["runs"]
@@ -189,6 +217,8 @@ class LoopState(UserDict[str, object]):
         self.append_event("cancel")
 
     def _require_active_wait(self, event_id: str) -> None:
+        if not goal_is_open(self):
+            raise LoopError("goal monitor no longer owns an open goal node")
         if self["status"] != "active" or self["phase"] != "waiting":
             raise LoopError("loop is not waiting")
         if self["watch_id"] != event_id:
@@ -285,6 +315,14 @@ def command_init(args: argparse.Namespace) -> None:
         "runs": [],
         "events": [{"at": now, "operation": "init"}],
     })
+    goal_state = getattr(args, "goal_state", None)
+    goal_node = getattr(args, "goal_node", None)
+    if bool(goal_state) != bool(goal_node):
+        raise LoopError("--goal-state and --goal-node must be provided together")
+    if goal_state:
+        state["goal"] = {"state": str(goal_state.resolve()), "node": goal_node}
+        if not goal_is_open(state):
+            raise LoopError("goal monitor requires an open goal and unfinished node")
     store = LoopStore(args.state or default_state_path())
     store.create(state)
     print_json({"state_file": os.fspath(store.path), **state})
@@ -352,6 +390,8 @@ def parser() -> argparse.ArgumentParser:
     init.add_argument("--max-iterations", type=positive_int)
     init.add_argument("--client", choices=sorted(CLIENTS), default="codex")
     init.add_argument("--session", "--thread", dest="session", required=True)
+    init.add_argument("--goal-state", type=Path)
+    init.add_argument("--goal-node")
     init.set_defaults(handler=command_init)
 
     complete = commands.add_parser("complete")

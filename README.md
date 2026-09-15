@@ -7,10 +7,10 @@ English | [简体中文](README.zh-CN.md)
 Event-driven waiting for CodeWiz, Cursor, Claude Code, GitHub Copilot, and Codex:
 
 - `$wait` passively monitors one external state without spending model turns polling.
-- `$wait-loop` is a user-invoked Loop mode implementation that runs one task on a bounded timer.
-- `$wait-goal` is a user-invoked Goal mode implementation with a durable DAG, centralized agent scheduling, external waits, and final verification.
+- `$wait-loop` runs one task repeatedly on a bounded timer.
+- `$wait-goal` maintains a durable DAG with centralized agent scheduling, external waits, and final verification.
 
-`wait` is the primary skill. The derived `wait-loop` and `wait-goal` skills reuse its watcher, but are not upgrades or long-running variants of `wait`; use either only when the user explicitly invokes it.
+`wait` is the primary skill; the derived `wait-loop` and `wait-goal` skills reuse its watcher.
 
 ## Install
 
@@ -30,11 +30,9 @@ The repository root registers `wait`; `wait-loop/` and `wait-goal/` register the
 | Scenario | Use |
 | --- | --- |
 | Wait for one deployment, CI run, queue, job, or service state | `$wait` |
-| The user explicitly invokes Loop mode | `$wait-loop` |
-| The user explicitly invokes Goal mode | `$wait-goal` |
+| A `$wait-loop` request to run one task repeatedly on a bounded schedule | `$wait-loop` |
+| A `$wait-goal` request to execute and verify a goal through a durable dependency graph | `$wait-goal` |
 | A running goal reaches an external state | `$wait-goal`, which delegates that wait to `$wait` |
-
-Do not infer `$wait-loop` from repeated wording or `$wait-goal` from task length, dependencies, or agent count. Without an explicit invocation, handle the task normally and use `$wait` only when one external state actually needs passive monitoring.
 
 ## `$wait`: passively monitor external state
 
@@ -44,12 +42,12 @@ Describe the object and its ready and terminal conditions:
 $wait Wait for deployment api to become Ready; stop if it becomes Failed.
 ```
 
-`$wait` delegates queries to a normal local Python process. The client does not need to hold a model turn while nothing changes; the watcher resumes the existing session only when ready, terminal, timed out, or repeatedly unreachable.
+`$wait` delegates queries to one local `waitd` service. The client does not need to hold a model turn while nothing changes; the service resumes the existing session only when ready, terminal, timed out, or repeatedly unreachable. One service cooperatively manages all watcher schedules, replacing one tmux session per wait.
 
-The watcher can also be run directly:
+Submit a watcher through the service:
 
 ```bash
-python scripts/wait_for.py \
+python scripts/waitctl.py start -- \
   --label "deployment api" \
   --ready Ready \
   --terminal Failed \
@@ -65,35 +63,33 @@ python scripts/wait_for.py \
 
 Everything after `--` is executed directly without an implicit shell. JSON objects and arrays require `--json-path` to select a scalar status. Every wait has a finite overall limit: `--timeout` defaults to 24 hours. The default interval is five minutes and the consecutive-query-failure limit defaults to 12 and cannot be disabled.
 
-See [docs/wait.md](docs/wait.md) for the complete workflow, CLI, and security boundaries.
+See [docs/waitd.md](docs/waitd.md) for service management and [docs/wait.md](docs/wait.md) for watcher semantics and security boundaries. `wait_for.py` remains available as a standalone fallback.
 
-## `$wait-loop`: explicit Loop mode
+## `$wait-loop`: Loop mode
 
 ```text
 $wait-loop Every 10 minutes: inspect the queue and report actionable changes.
 ```
 
-The first iteration runs immediately. A successful iteration schedules one bounded `$wait` timer for the next run. Durable event IDs prevent duplicate wake-ups from repeating an iteration, while total duration and optional iteration limits prevent leaked loops. See [docs/wait-loop.md](docs/wait-loop.md) for the execution protocol and complete example.
+The first iteration runs immediately. A successful iteration schedules one bounded `$wait` timer for the next run. Durable event IDs prevent duplicate wake-ups from repeating an iteration, while total duration and optional iteration limits prevent leaked loops. Loop state commands use `waitctl.py loop -- ...`, sharing the same local service as watchers and goal commands. See [docs/wait-loop.md](docs/wait-loop.md) for the execution protocol and complete example.
 
-## `$wait-goal`: explicit Goal mode
-
-Use it only when the user explicitly requests this Goal mode:
+## `$wait-goal`: Goal mode
 
 ```text
 $wait-goal Ship the API and finish only after tests and the health check pass.
 ```
 
-`$wait-goal` persists an acyclic dependency graph and append-only event history, schedules a write-safe ready frontier, keeps child agents independent and reporting to the root, delegates external nodes to the parent `$wait` skill, and verifies the original objective before finishing. By default, each goal gets a unique state file under `/tmp/.wait-goal/<project-name>-<path-hash>/`; `--state` overrides it.
+`$wait-goal` persists an acyclic dependency graph and append-only event history, schedules a write-safe ready frontier, keeps child agents independent and reporting to the root, delegates external nodes to the parent `$wait` skill, and verifies the original objective before finishing. The root can route DAG commands through `waitctl.py goal -- ...`; the service serializes and persists those commands but never decides graph changes. By default, each goal gets a unique state file under `/tmp/.wait-goal/<project-name>-<path-hash>/`; `--state` overrides it.
 
 See [docs/wait-goal.md](docs/wait-goal.md) for the state model, dependency rules, resume flow, and CLI.
 
 For an external node, first create a wait cycle:
 
 ```bash
-# state_file returned by wait_goal.py init
+# state_file returned by init
 GOAL_STATE=/tmp/.wait-goal/PROJECT/GOAL.json
 
-python scripts/wait_goal.py wait \
+python scripts/waitctl.py goal -- wait \
   --state "$GOAL_STATE" \
   --id deploy \
   --label "deployment api" \

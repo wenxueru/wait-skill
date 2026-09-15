@@ -5,7 +5,7 @@ description: 在 CodeWiz、Cursor、Claude Code、GitHub Copilot 和 Codex 中�
 
 # Wait
 
-把一个外部对象的重复检查交给 `scripts/wait_for.py`，然后结束模型轮次，直到事件恢复当前会话。开始等待前阅读 [watcher 参考文档](docs/wait.zh-CN.md)和当前[客户端适配说明](docs/clients.zh-CN.md)。
+把一个外部对象的重复检查交给本地 `waitd` 管理服务，然后结束模型轮次，直到事件恢复当前会话。开始等待前阅读 [`waitd` 指南](docs/waitd.zh-CN.md)、[watcher 参考文档](docs/wait.zh-CN.md)和当前[客户端适配说明](docs/clients.zh-CN.md)。
 
 ## 调用方式
 
@@ -19,7 +19,7 @@ Codex 使用 `$wait`；其他客户端使用其斜杠 Skill 形式，通常为 `
 
 1. 确定一个只读查询命令、精确的 ready 与 terminal 值，以及有限的总超时时间。无法确定更合理的上限时才使用默认 24 小时。
 2. 为该外部对象和 Agent 会话选择唯一的 lock 与 log 文件。不得在命令参数、日志或通知中写入凭据。
-3. 使用 `--client` 和当前 `--session` 启动 `scripts/wait_for.py`。长时间等待应使用当前环境可靠支持的进程管理器；只有确认已安装 `tmux` 后才优先使用它。
+3. 使用 `scripts/waitctl.py start -- ...` 提交 watcher，并传入 `--client` 和当前 `--session`。该命令会按需启动唯一的本地 `waitd` 服务。只有兼容或故障恢复时才直接运行 `wait_for.py`。
 4. 设置显式调用 `wait resume` 的消息模板，写明 watcher 日志，并包含 `{event_id}`、`{event}` 和 `{status}`。watcher 会持久化投递进度。Codex 队列失败使用稳定 ID 重试，最多 12 次；会话恢复型客户端默认只尝试一次，因为超时不代表该轮次没有启动。
 5. watcher 取得 wait 所有权后，不要再从模型轮次查询同一对象。结束当前轮次。
 6. 恢复后读取持久日志，并查询一次当前状态。通知只是提示，不是事实证明。
@@ -32,6 +32,5 @@ Codex 使用 `$wait`；其他客户端使用其斜杠 Skill 形式，通常为 `
 - 相同 event ID 的重复通知应视为重复事件，不得重复已经完成的工作。
 - terminal、timeout 和连续查询失败应当报告，而不是无限重试。
 - 每个 watcher 都必须有有限的总超时，避免错误条件导致进程泄漏或任务永久停滞。
-- 不得因为工作重复而切换到 `wait-loop`，也不得因为任务更长或更复杂而切换到 `wait-goal`；它们分别是由用户主动调用的 Loop 和 Goal 模式实现。
 
-运行 `python scripts/wait_for.py --help` 查看 CLI 详情。
+运行 `python scripts/waitctl.py --help` 和 `python scripts/wait_for.py --help` 查看 CLI 详情。

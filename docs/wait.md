@@ -2,7 +2,7 @@
 
 English | [简体中文](wait.zh-CN.md)
 
-`wait` is the primary skill. It moves repeated state queries into `scripts/wait_for.py`; the model does not poll while the watcher waits. The watcher resumes the owning session only when the state becomes ready or terminal, the wait times out, or repeated queries fail. See [client adapters](clients.md) for invocation and resume commands.
+`wait` is the primary skill. It submits repeated state queries to the local `waitd` service; the model does not poll while a watcher waits. The service resumes the owning session only when the state becomes ready or terminal, the wait times out, or repeated queries fail. See the [`waitd` guide](waitd.md) and [client adapters](clients.md).
 
 ## Execution overview
 
@@ -27,14 +27,14 @@ sequenceDiagram
     end
 ```
 
-While state is unchanged, only the regular Python process runs. Without `--session`, the watcher writes its log and exits for the caller to inspect.
+While state is unchanged, one local service schedules all watchers. Without `--session`, a watcher writes its log and finishes for the caller to inspect.
 
 ## Query contract
 
 The query must be read-only and print one short status value. Everything after `--` is executed directly by the watcher without an implicit shell. Query stdout is capped at 64 KiB and stderr is discarded.
 
 ```bash
-python scripts/wait_for.py \
+python scripts/waitctl.py start -- \
   --label "deployment api" \
   --ready Ready \
   --terminal Failed \
@@ -74,11 +74,11 @@ Each notification or session-resume attempt is bounded by `--notification-timeou
 | `interrupted` | Watcher interrupted | `130` | Inspect log and goal state |
 | Notification failure | Configured retry limit exhausted | `70` | Read the persisted log and decide whether to redeliver |
 
-When an explicitly invoked `wait-goal` uses the watcher, startup adds a two-phase handshake. The watcher acquires the lock and writes a `watcher_started` receipt without querying. The root validates the node, watch ID, client, target session, log, receipt age, and live lock before running `activate-wait`. Only then does querying begin. A prepared watcher exits after `--activation-timeout`; an active watcher exits before its next query or notification retry if the saved wait is cancelled, replaced, missing, or invalid. After successful notification it keeps the lock for at most `--wake-ack-timeout`, releasing it as soon as `wake` changes the node state. Use `wait_goal.py abort-wait` with the exact watch ID before replacing an orphaned watcher.
+When `wait-goal` uses the watcher, startup adds a two-phase handshake. The watcher acquires the lock and writes a `watcher_started` receipt without querying. The root validates the node, watch ID, client, target session, log, receipt age, and live lock before running `activate-wait`. Only then does querying begin. A prepared watcher exits after `--activation-timeout`; an active watcher exits before its next query or notification retry if the saved wait is cancelled, replaced, missing, or invalid. After successful notification it keeps the lock for at most `--wake-ack-timeout`, releasing it as soon as `wake` changes the node state. Use `wait_goal.py abort-wait` with the exact watch ID before replacing an orphaned watcher.
 
-## Run in the background
+## Service ownership
 
-Use a process manager that the current environment supports reliably for long waits. Prefer `tmux` after confirming it is installed. Select a resume adapter with `--client` and identify the owning conversation with `--session`; `--remote` applies only to Codex.
+`waitctl start` starts the single local service on demand and submits the watcher. Use `waitctl list`, `show`, and `cancel` to inspect or stop it; see [waitd.md](waitd.md). Select a resume adapter with `--client` and identify the owning conversation with `--session`; `--remote` applies only to Codex. Run `wait_for.py` directly only as a compatibility or recovery path.
 
 Use a unique lock file for each external object and session. When `--session` is set, `--lock-file`, `--log-file`, and an explicit `--message-template` are required. The template contains exactly one resume directive and includes `{event_id}`, `{event}`, and `{status}`. A standalone `wait` template binds the exact log path; a loop template binds its state and watcher log; a goal template also binds one node. Use `--max-notification-attempts` to override the adapter's retry default.
 
@@ -89,7 +89,7 @@ First prepare the external wait; the node remains `running` until activation:
 ```bash
 GOAL_STATE=/tmp/.wait-goal/PROJECT/GOAL.json # state_file returned by init
 
-python scripts/wait_goal.py wait \
+python scripts/waitctl.py goal -- wait \
   --state "$GOAL_STATE" \
   --id deploy \
   --label "deployment api" \
@@ -103,7 +103,7 @@ This command returns the new `watch_id` together with absolute state, log, lock,
 Then start the watcher. Its message template must invoke the skill explicitly and include the state file, node, and watcher log:
 
 ```bash
-python scripts/wait_for.py \
+python scripts/waitctl.py start -- \
   --label "deployment api" \
   --ready Ready \
   --terminal Failed \
@@ -123,7 +123,7 @@ python scripts/wait_for.py \
 The watcher first writes the startup receipt and waits without querying. After confirming that receipt, activate the prepared wait:
 
 ```bash
-python scripts/wait_goal.py activate-wait \
+python scripts/waitctl.py goal -- activate-wait \
   --state "$GOAL_STATE" \
   --id deploy \
   --watch-id WATCH_ID_FROM_WAIT_OUTPUT
@@ -132,7 +132,7 @@ python scripts/wait_goal.py activate-wait \
 After wake-up, read the watcher log and record the event:
 
 ```bash
-python scripts/wait_goal.py wake \
+python scripts/waitctl.py goal -- wake \
   --state "$GOAL_STATE" \
   --id deploy \
   --event-id WATCH_ID_FROM_LOG \
@@ -147,7 +147,7 @@ sequenceDiagram
     autonumber
     participant A as Root agent
     participant G as Goal state file
-    participant W as wait_for.py
+    participant W as waitd watcher
     participant E as External system
     participant C as Agent session
 

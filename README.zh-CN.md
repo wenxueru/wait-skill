@@ -7,10 +7,10 @@
 为 CodeWiz、Cursor、Claude Code、GitHub Copilot 和 Codex 提供事件驱动等待：
 
 - `$wait`：被动等待一个外部状态，不占用模型轮次反复轮询。
-- `$wait-loop`：由用户主动调用的 Loop 模式实现，通过有界计时器重复执行一个任务。
-- `$wait-goal`：用户主动调用的 Goal 模式实现，使用持久 DAG、中心化 Agent 调度、外部等待和最终验收。
+- `$wait-loop`：通过有界计时器重复执行一个任务。
+- `$wait-goal`：使用持久 DAG、中心化 Agent 调度、外部等待和最终验收。
 
-`wait` 是主 Skill。衍生的 `wait-loop` 和 `wait-goal` 会复用它，但都不是 `wait` 的升级版或长程版，只在用户明确调用时启用。
+`wait` 是主 Skill，衍生的 `wait-loop` 和 `wait-goal` 会复用它的 watcher。
 
 ## 安装
 
@@ -30,11 +30,9 @@ ln -s "$skill_dir/wait/wait-loop" "$skill_dir/wait-loop"
 | 场景 | 使用 |
 | --- | --- |
 | 等待一次部署、CI、队列或服务状态变化 | `$wait` |
-| 用户明确调用 Loop 模式 | `$wait-loop` |
-| 用户明确调用 Goal 模式 | `$wait-goal` |
+| 使用 `$wait-loop` 请求按有界周期重复执行一个任务 | `$wait-loop` |
+| 使用 `$wait-goal` 请求通过持久依赖图执行并验收目标 | `$wait-goal` |
 | 正在运行的 goal 进入外部等待 | `$wait-goal` 把该等待交给 `$wait` |
-
-不得从重复任务措辞推断 `$wait-loop`，也不得根据任务长度、依赖数量或 Agent 数量推断 `$wait-goal`。用户没有明确调用时，正常处理任务；只有确实需要被动监视一个外部状态时才使用 `$wait`。
 
 ## `$wait`：被动等待外部状态
 
@@ -44,12 +42,12 @@ ln -s "$skill_dir/wait/wait-loop" "$skill_dir/wait-loop"
 $wait 等待 deployment api 进入 Ready；如果进入 Failed 则停止。
 ```
 
-`$wait` 把查询交给普通本地 Python 进程。等待期间客户端不需要持续占用模型轮次；监视器只在状态就绪、进入终止状态、超时或连续查询失败时恢复现有会话。
+`$wait` 把查询交给唯一的本地 `waitd` 服务。等待期间客户端不需要持续占用模型轮次；服务只在状态就绪、进入终止状态、超时或连续查询失败时恢复现有会话。一个服务以协作式调度管理全部 watcher，不再为每个 wait 创建 tmux session。
 
-底层 watcher 也可以直接运行：
+通过服务提交 watcher：
 
 ```bash
-python scripts/wait_for.py \
+python scripts/waitctl.py start -- \
   --label "deployment api" \
   --ready Ready \
   --terminal Failed \
@@ -65,19 +63,17 @@ python scripts/wait_for.py \
 
 查询命令是 `--` 后面的全部内容，并且不会隐式调用 shell。JSON 对象或数组必须使用 `--json-path` 选择标量状态。每次 wait 都有有限总时长：`--timeout` 默认为 24 小时。默认查询间隔为五分钟；连续失败上限默认为 12，且不能关闭。
 
-完整流程、安全边界和 CLI 参数见 [docs/wait.zh-CN.md](docs/wait.zh-CN.md)。
+服务管理见 [docs/waitd.zh-CN.md](docs/waitd.zh-CN.md)，watcher 语义和安全边界见 [docs/wait.zh-CN.md](docs/wait.zh-CN.md)。`wait_for.py` 仍可作为独立 fallback 使用。
 
-## `$wait-loop`：显式 Loop 模式
+## `$wait-loop`：Loop 模式
 
 ```text
 $wait-loop 每 10 分钟检查队列，并报告需要处理的变化。
 ```
 
-第一轮立即执行；成功后只安排一个有界 `$wait` 计时器来触发下一轮。持久 event ID 防止重复唤醒造成重复执行，总时长和可选轮数上限避免循环泄漏。执行协议和完整示例见 [docs/wait-loop.zh-CN.md](docs/wait-loop.zh-CN.md)。
+第一轮立即执行；成功后只安排一个有界 `$wait` 计时器来触发下一轮。持久 event ID 防止重复唤醒造成重复执行，总时长和可选轮数上限避免循环泄漏。loop 状态命令统一使用 `waitctl.py loop -- ...`，与 watcher 和 goal 命令共用同一本地服务。执行协议和完整示例见 [docs/wait-loop.zh-CN.md](docs/wait-loop.zh-CN.md)。
 
-## `$wait-goal`：显式 Goal 模式
-
-只有用户明确要求这种 Goal 模式时才使用 `$wait-goal`：
+## `$wait-goal`：Goal 模式
 
 ```text
 $wait-goal 发布 API，仅在测试和健康检查均通过后结束。
@@ -93,15 +89,17 @@ $wait-goal 发布 API，仅在测试和健康检查均通过后结束。
 - 对外部节点使用 `$wait`，收到带 event ID 的事件后恢复调度。
 - 所有节点完成后再次验证原始需求，通过后才结束目标。
 
+根 Agent 可以通过 `waitctl.py goal -- ...` 管理 DAG；服务只负责串行化和持久化这些命令，不会自行决定图修改。
+
 完整的状态模型、依赖图规则、恢复流程和 CLI 参数见 [docs/wait-goal.zh-CN.md](docs/wait-goal.zh-CN.md)。
 
 外部节点的组合示例：
 
 ```bash
-# wait_goal.py init 返回的 state_file
+# init 返回的 state_file
 GOAL_STATE=/tmp/.wait-goal/PROJECT/GOAL.json
 
-python scripts/wait_goal.py wait \
+python scripts/waitctl.py goal -- wait \
   --state "$GOAL_STATE" \
   --id deploy \
   --label "deployment api" \

@@ -2,7 +2,7 @@
 
 [English](clients.md)
 
-依赖图和 watcher 与客户端无关。`wait_for.py --client CLIENT --session ID` 只选择最后的投递方式：
+依赖图和 watcher 与客户端无关。通过 `waitctl.py start --` 提交的 watcher 参数使用 `--client CLIENT --session ID` 选择最后的投递方式：
 
 | 客户端 | 恢复命令 | Skill 调用 |
 | --- | --- | --- |
@@ -25,7 +25,7 @@ Codex 会把消息加入队列并快速返回，因此投递失败默认最多�
 在目标中持久化客户端和会话：
 
 ```bash
-python scripts/wait_goal.py init \
+python scripts/waitctl.py goal -- init \
   --objective "CI 通过后发布" \
   --client claude \
   --session "$AGENT_SESSION_ID"
@@ -36,7 +36,7 @@ python scripts/wait_goal.py init \
 启动 watcher 时使用相同值。Codex 以外的客户端使用斜杠恢复指令：
 
 ```bash
-python scripts/wait_for.py \
+python scripts/waitctl.py start -- \
   --client claude \
   --session "$AGENT_SESSION_ID" \
   --label "CI" \

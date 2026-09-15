@@ -118,12 +118,18 @@ def extract_status(output: str, json_path: str | None = None) -> str:
     return status
 
 
-def query_status(command: Sequence[str], query_timeout: float, json_path: str | None) -> str:
+def query_status(
+    command: Sequence[str],
+    query_timeout: float,
+    json_path: str | None,
+    cwd: str | None = None,
+) -> str:
     process = subprocess.Popen(
         command,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
         start_new_session=True,
+        cwd=cwd,
     )
     output = bytearray()
     deadline = time.monotonic() + query_timeout
@@ -403,6 +409,7 @@ def goal_wait_is_current(args: argparse.Namespace) -> bool:
 
 
 def loop_wait_is_current(args: argparse.Namespace) -> bool:
+    from wait_loop import goal_is_open
     try:
         state = json.loads(args.loop_state.read_text(encoding="utf-8"))
     except (FileNotFoundError, OSError, json.JSONDecodeError):
@@ -414,6 +421,7 @@ def loop_wait_is_current(args: argparse.Namespace) -> bool:
         and state.get("watch_id") == args.event_id
         and state.get("client", "codex") == args.client
         and state.get("session") == args.thread
+        and goal_is_open(state)
     )
 
 
@@ -666,7 +674,8 @@ def run_wait(args: argparse.Namespace, command: Sequence[str]) -> int:
     return code
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def parse_wait_args(argv: Sequence[str] | None = None) -> tuple[argparse.Namespace, list[str]]:
+    """Parse and validate one watcher specification for CLI or daemon use."""
     command_parser = parser()
     args = command_parser.parse_args(argv)
     command = list(args.command)
@@ -722,6 +731,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         command_parser.error("--event-id is required with --loop-state")
     if args.loop_state and not args.thread:
         command_parser.error("--session is required with --loop-state")
+    return args, command
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args, command = parse_wait_args(argv)
 
     with ExitStack() as resources:
         if args.lock_file:

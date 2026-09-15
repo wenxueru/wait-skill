@@ -2,7 +2,7 @@
 
 [简体中文](clients.zh-CN.md)
 
-The graph and watcher are client-neutral. `wait_for.py --client CLIENT --session ID` selects only the final delivery step:
+The graph and watcher are client-neutral. Watcher arguments submitted through `waitctl.py start --` use `--client CLIENT --session ID` to select only the final delivery step:
 
 | Client | Resume command | Skill invocation |
 | --- | --- | --- |
@@ -25,7 +25,7 @@ Automatic resume targets CLI sessions. An IDE chat without a documented session-
 Persist the client and session with the goal:
 
 ```bash
-python scripts/wait_goal.py init \
+python scripts/waitctl.py goal -- init \
   --objective "Ship after CI passes" \
   --client claude \
   --session "$AGENT_SESSION_ID"
@@ -36,7 +36,7 @@ Without `--state`, `init` returns a unique per-project path under `/tmp/.wait-go
 Start its watcher with the same values. Use a slash resume directive outside Codex:
 
 ```bash
-python scripts/wait_for.py \
+python scripts/waitctl.py start -- \
   --client claude \
   --session "$AGENT_SESSION_ID" \
   --label "CI" \

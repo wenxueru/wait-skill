@@ -2,7 +2,7 @@
 
 [English](wait.md) | 简体中文
 
-`wait` 是主 Skill。它把重复状态查询移到 `scripts/wait_for.py`，等待期间模型不参与轮询；只有状态就绪、进入终止状态、超时或连续查询失败时，watcher 才用唯一事件 ID 恢复所属会话。调用和恢复命令见[客户端适配](clients.zh-CN.md)。
+`wait` 是主 Skill。它把重复状态查询提交给本地 `waitd` 服务，等待期间模型不参与轮询；只有状态就绪、进入终止状态、超时或连续查询失败时，服务才用唯一事件 ID 恢复所属会话。服务管理见 [`waitd` 指南](waitd.zh-CN.md)，调用和恢复命令见[客户端适配](clients.zh-CN.md)。
 
 ## 运行流程总览
 
@@ -27,14 +27,14 @@ sequenceDiagram
     end
 ```
 
-状态未变化时只有普通 Python 进程运行。未配置 `--session` 时，watcher 写入日志并退出，由调用方读取结果。
+状态未变化时，只有一个本地服务负责调度所有 watcher。未配置 `--session` 时，watcher 写入日志并结束，由调用方读取结果。
 
 ## 查询约定
 
 查询命令必须是只读命令，并输出一个短状态值。命令位于 `--` 之后，由监视器直接执行，不会隐式调用 shell。查询 stdout 上限为 64 KiB，stderr 会被丢弃。
 
 ```bash
-python scripts/wait_for.py \
+python scripts/waitctl.py start -- \
   --label "deployment api" \
   --ready Ready \
   --terminal Failed \
@@ -78,11 +78,11 @@ JSON 对象或数组必须选择一个标量字段，例如 `{"status":"ServiceR
 | `interrupted` | watcher 被中断 | `130` | 检查日志和目标状态 |
 | 通知失败 | 已配置的重试次数耗尽 | `70` | 读取已持久化日志，人工决定是否补投 |
 
-用户明确调用的 `wait-goal` 使用 watcher 时，会增加两阶段握手：watcher 先取得 lock 并写 `watcher_started` 回执，但不查询；根 Agent 校验 node、watch ID、client、目标 session、日志、回执时效和仍被持有的 lock，再执行 `activate-wait`。prepared watcher 超过 `--activation-timeout` 未激活会退出；active wait 被取消、替换、删除或损坏后，也会在下一次查询或通知重试前退出。通知成功后，它继续持有 lock，最长不超过 `--wake-ack-timeout`，并在 `wake` 改变节点状态后立即释放。替换孤儿 watcher 前，先用准确 watch ID 执行 `abort-wait`。
+`wait-goal` 使用 watcher 时，会增加两阶段握手：watcher 先取得 lock 并写 `watcher_started` 回执，但不查询；根 Agent 校验 node、watch ID、client、目标 session、日志、回执时效和仍被持有的 lock，再执行 `activate-wait`。prepared watcher 超过 `--activation-timeout` 未激活会退出；active wait 被取消、替换、删除或损坏后，也会在下一次查询或通知重试前退出。通知成功后，它继续持有 lock，最长不超过 `--wake-ack-timeout`，并在 `wake` 改变节点状态后立即释放。替换孤儿 watcher 前，先用准确 watch ID 执行 `abort-wait`。
 
-## 后台运行
+## 服务所有权
 
-长时间等待使用当前环境可靠支持的进程管理方式；确认安装后可优先使用 `tmux`。通过 `--client` 选择恢复适配器，以 `--session` 指定所属会话；`--remote` 仅供 Codex 使用。
+`waitctl start` 会按需启动唯一的本地服务并提交 watcher。使用 `waitctl list`、`show` 和 `cancel` 查看或停止 watcher，详见 [waitd.zh-CN.md](waitd.zh-CN.md)。通过 `--client` 选择恢复适配器，以 `--session` 指定所属会话；`--remote` 仅供 Codex 使用。只有兼容或故障恢复时才直接运行 `wait_for.py`。
 
 为每个外部对象和会话使用唯一 lock。设置 `--session` 时必须同时提供 `--lock-file`、`--log-file` 和显式 `--message-template`。模板必须且只能包含一条恢复指令，并包含 `{event_id}`、`{event}` 和 `{status}`。独立 `wait` 模板绑定准确日志路径；loop 模板绑定状态和 watcher 日志；goal 模板还绑定唯一节点。`--max-notification-attempts` 可覆盖适配器默认重试次数。
 
@@ -93,7 +93,7 @@ JSON 对象或数组必须选择一个标量字段，例如 `{"status":"ServiceR
 ```bash
 GOAL_STATE=/tmp/.wait-goal/PROJECT/GOAL.json # init 返回的 state_file
 
-python scripts/wait_goal.py wait \
+python scripts/waitctl.py goal -- wait \
   --state "$GOAL_STATE" \
   --id deploy \
   --label "deployment api" \
@@ -107,7 +107,7 @@ python scripts/wait_goal.py wait \
 随后启动 watcher。消息模板必须显式重新调用技能，并包含 state、node 和 watcher log：
 
 ```bash
-python scripts/wait_for.py \
+python scripts/waitctl.py start -- \
   --label "deployment api" \
   --ready Ready \
   --terminal Failed \
@@ -127,7 +127,7 @@ python scripts/wait_for.py \
 watcher 会先写入启动回执，并在不查询外部状态的情况下等待。确认回执后激活本轮等待：
 
 ```bash
-python scripts/wait_goal.py activate-wait \
+python scripts/waitctl.py goal -- activate-wait \
   --state "$GOAL_STATE" \
   --id deploy \
   --watch-id WATCH_ID_FROM_WAIT_OUTPUT
@@ -136,7 +136,7 @@ python scripts/wait_goal.py activate-wait \
 唤醒后读取 watcher log，并记录事件：
 
 ```bash
-python scripts/wait_goal.py wake \
+python scripts/waitctl.py goal -- wake \
   --state "$GOAL_STATE" \
   --id deploy \
   --event-id WATCH_ID_FROM_LOG \
@@ -151,7 +151,7 @@ sequenceDiagram
     autonumber
     participant A as 根 Agent
     participant G as 目标状态文件
-    participant W as wait_for.py
+    participant W as waitd watcher
     participant E as 外部系统
     participant C as Agent 会话
 
