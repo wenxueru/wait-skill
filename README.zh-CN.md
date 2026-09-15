@@ -1,5 +1,7 @@
 # wait-skill
 
+![wait-skill — 等到真正重要时再唤醒](assets/readme-hero.png)
+
 [English](README.md) | 简体中文
 
 为 CodeWiz、Cursor、Claude Code、GitHub Copilot 和 Codex 提供事件驱动等待：

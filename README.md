@@ -1,5 +1,7 @@
 # wait-skill
 
+![wait-skill — Sleep until it matters](assets/readme-hero.png)
+
 English | [简体中文](README.zh-CN.md)
 
 Event-driven waiting for CodeWiz, Cursor, Claude Code, GitHub Copilot, and Codex:
