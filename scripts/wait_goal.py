@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import copy
 import fcntl
+import hashlib
 import json
 import math
 import os
@@ -26,10 +27,13 @@ NODE_STATUSES = {"pending", "dispatching", "running", "waiting", "completed", "f
 GOAL_STATUSES = {"open", "paused", "completed", "cancelled"}
 WAIT_EVENTS = {"ready", "terminal", "timeout", "query_failed"}
 WAIT_PHASES = {"prepared", "active"}
+CLIENTS = {"claude", "codewiz", "codex", "copilot", "cursor"}
+DEFAULT_STATE_ROOT = Path("/tmp/.wait-goal")
 
 
 class WaitMetadata(TypedDict):
     label: str
+    client: str
     thread: str
     log_file: str
     lock_file: str
@@ -117,6 +121,7 @@ class ReadyNode(GoalNode):
 class GoalStateFields(TypedDict):
     objective: str
     status: str
+    client: str
     thread: str | None
     verification: Verification | None
     created_at: str
@@ -140,6 +145,17 @@ def utc_now() -> str:
 
 def absolute_path(value: str | Path) -> str:
     return os.path.abspath(os.path.expanduser(os.fspath(value)))
+
+
+def default_state_path(start: Path | None = None) -> Path:
+    project = (start or Path.cwd()).resolve()
+    for candidate in (project, *project.parents):
+        if (candidate / ".git").exists():
+            project = candidate
+            break
+    project_name = (re.sub(r"[^A-Za-z0-9._-]+", "-", project.name).strip("-.") or "project")[:48]
+    project_hash = hashlib.sha256(os.fspath(project).encode()).hexdigest()[:12]
+    return DEFAULT_STATE_ROOT / f"{project_name}-{project_hash}" / f"goal-{uuid.uuid4().hex[:8]}.json"
 
 
 def canonical_path(value: str | Path) -> str:
@@ -223,6 +239,7 @@ def startup_receipt_deadline(
         receipt.get("event") == "watcher_started"
         and receipt.get("event_id") == watch_id
         and receipt.get("goal_node") == node_id
+        and receipt.get("client", "codex") == wait.get("client", "codex")
         and receipt.get("thread") == wait["thread"]
         and receipt.get("log_file") == wait["log_file"]
         and receipt.get("lock_file") == wait["lock_file"]
@@ -241,14 +258,16 @@ class GoalGraph:
             raise GoalError("state must be a JSON object")
         if "version" in state:
             raise GoalError("state must not contain a version field")
+        state.setdefault("client", "codex")
         self.state = cast(GoalState, state)
 
     @classmethod
-    def create(cls, objective: str, thread: str | None) -> GoalGraph:
+    def create(cls, objective: str, thread: str | None, client: str = "codex") -> GoalGraph:
         now = utc_now()
         state: GoalState = {
             "objective": objective,
             "status": "open",
+            "client": client,
             "thread": thread,
             "verification": None,
             "created_at": now,
@@ -311,6 +330,8 @@ class GoalGraph:
                 "watch_id",
             ):
                 require_string(wait.get(field), f"node {node_id!r} wait.{field}")
+            if wait.get("client", "codex") not in CLIENTS:
+                raise GoalError(f"node {node_id!r} has invalid wait client")
             phase = wait.get("phase")
             if not isinstance(phase, str) or phase not in WAIT_PHASES:
                 raise GoalError(f"node {node_id!r} has invalid wait phase")
@@ -356,6 +377,7 @@ class GoalGraph:
             (
                 "objective",
                 "status",
+                "client",
                 "thread",
                 "verification",
                 "created_at",
@@ -368,6 +390,9 @@ class GoalGraph:
         goal_status = self.state.get("status")
         if not isinstance(goal_status, str) or goal_status not in GOAL_STATUSES:
             raise GoalError("invalid goal status")
+        client = self.state.get("client")
+        if not isinstance(client, str) or client not in CLIENTS:
+            raise GoalError("invalid client")
         require_string(self.state.get("thread"), "thread", allow_none=True)
         require_string(self.state.get("created_at"), "created_at")
         require_string(self.state.get("updated_at"), "updated_at")
@@ -836,7 +861,9 @@ class GoalGraph:
         lock_file: str,
         startup_file: str,
     ) -> str:
-        require_string(self.state.get("thread"), "goal thread")
+        if self.state["status"] != "open":
+            raise GoalError(f"cannot prepare a wait while goal is {self.state['status']}")
+        require_string(self.state.get("thread"), "goal session")
         node = self.get_node(node_id)
         if node["kind"] != "external":
             raise GoalError(f"node {node_id} is {node['kind']}, not external")
@@ -847,6 +874,7 @@ class GoalGraph:
         watch_id = uuid.uuid4().hex
         node["wait"] = {
             "label": label,
+            "client": self.state["client"],
             "thread": cast(str, self.state["thread"]),
             "log_file": absolute_path(log_file),
             "lock_file": absolute_path(lock_file),
@@ -1064,7 +1092,7 @@ class GoalStore:
             self.write(graph.state)
 
     def write(self, state: GoalState) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         payload = json.dumps(state, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
         descriptor, temporary = tempfile.mkstemp(prefix=f".{self.path.name}.", dir=self.path.parent)
         try:
@@ -1087,7 +1115,7 @@ class GoalStore:
 
     def _acquire_lock(self) -> IO[str]:
         lock_path = self.path.with_name(self.path.name + ".lock")
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         lock = lock_path.open("a", encoding="utf-8")
         try:
             fcntl.flock(lock, fcntl.LOCK_EX)
@@ -1146,9 +1174,11 @@ def parse_input(value: str) -> tuple[str, str]:
 
 
 def command_init(args: argparse.Namespace) -> None:
-    graph = GoalGraph.create(args.objective, args.thread)
-    GoalStore(args.state).create(graph)
-    print_json(graph.state)
+    state = args.state or default_state_path()
+    graph = GoalGraph.create(args.objective, args.thread, getattr(args, "client", "codex"))
+    store = GoalStore(state)
+    store.create(graph)
+    print_json({"state_file": os.fspath(store.path), **graph.state})
 
 
 def command_add(args: argparse.Namespace) -> None:
@@ -1306,8 +1336,13 @@ def command_show(args: argparse.Namespace) -> None:
     print_json({**graph.state, "activity": graph.activity()})
 
 
-def add_state_argument(command: argparse.ArgumentParser) -> None:
-    command.add_argument("--state", type=Path, required=True, help="Path to durable goal JSON")
+def add_state_argument(command: argparse.ArgumentParser, *, required: bool = True) -> None:
+    command.add_argument(
+        "--state",
+        type=Path,
+        required=required,
+        help="Goal JSON path; init defaults to a per-project path under /tmp/.wait-goal",
+    )
 
 
 def parser() -> argparse.ArgumentParser:
@@ -1315,9 +1350,15 @@ def parser() -> argparse.ArgumentParser:
     commands = result.add_subparsers(dest="command", required=True)
 
     init = commands.add_parser("init", help="Create a new goal state")
-    add_state_argument(init)
+    add_state_argument(init, required=False)
     init.add_argument("--objective", required=True)
-    init.add_argument("--thread", help="Codex thread ID used by external watchers")
+    init.add_argument("--client", choices=sorted(CLIENTS), default="codex")
+    init.add_argument(
+        "--session",
+        "--thread",
+        dest="thread",
+        help="Agent session ID used by external watchers; --thread is a compatibility alias",
+    )
     init.set_defaults(handler=command_init)
 
     add = commands.add_parser("add", help="Add a node and optionally insert it before a pending node")

@@ -2,11 +2,11 @@
 
 English | [简体中文](wait-goal.zh-CN.md)
 
-`$wait-goal` runs objectives that contain dependent steps, parallel agents, or long external waits. It does not use native `/goal` or spend model turns repeatedly checking unchanged state. When no work is actionable, the model turn ends; an explicit `$wait-goal resume` message resumes the task after an external event.
+`wait-goal` is an event-driven implementation of Goal mode. It activates only when the user explicitly invokes `$wait-goal` in Codex or `/wait-goal` in another supported client. It is not an upgrade or long-running form of `wait`; the parent `wait` skill is used only when a goal node must monitor one external state. When nothing is actionable, the model turn ends and an agent or watcher event resumes the goal.
 
 ## State model
 
-Each goal is stored in a JSON file, preferably `.wait-goal/<goal-id>.json`. This directory is excluded by `.gitignore` so runtime state is not committed accidentally.
+`init` defaults to a unique JSON file under `/tmp/.wait-goal/<project-name>-<path-hash>/`. The nearest Git root identifies the project, so calls from its subdirectories share the same project directory; the path hash separates same-named checkouts. Retain the returned canonical `state_file` for later commands (`/tmp` may appear as `/private/tmp` on macOS). Pass `--state` only to override this location.
 
 The persisted goal status is limited to `open`, `paused`, `completed`, and `cancelled`. `show` derives current activity from the nodes as `idle`, `ready`, `dispatching`, `running`, `waiting`, `blocked`, `awaiting_verification`, or `verified`. Nodes can be:
 
@@ -74,7 +74,7 @@ flowchart TD
     verify -->|Objective satisfied| finish[finish]
 ```
 
-The root remains the sole scheduler. Children and watchers return results or events but never mutate the dependency graph.
+The root remains the sole scheduler. Children and watchers return results or events to the root and never communicate with each other or mutate the dependency graph.
 
 ## Execution protocol
 
@@ -104,12 +104,15 @@ Mutation commands run under the state-file lock: load, validate, mutate, append 
 
 ```bash
 python scripts/wait_goal.py init \
-  --state .wait-goal/release.json \
   --objective "Ship the API and finish after the health check passes" \
-  --thread "$CODEX_THREAD_ID"
+  --client codex \
+  --session "$AGENT_SESSION_ID"
+
+# Set this to the state_file returned by init.
+GOAL_STATE=/tmp/.wait-goal/PROJECT/GOAL.json
 
 python scripts/wait_goal.py add \
-  --state .wait-goal/release.json \
+  --state "$GOAL_STATE" \
   --id test \
   --title "Run tests" \
   --kind local \
@@ -118,7 +121,7 @@ python scripts/wait_goal.py add \
   --expects-artifact test-report
 
 python scripts/wait_goal.py add \
-  --state .wait-goal/release.json \
+  --state "$GOAL_STATE" \
   --id deploy \
   --title "Wait for deployment readiness" \
   --kind external \
@@ -128,17 +131,17 @@ python scripts/wait_goal.py add \
   --acceptance "Deployment status is Ready"
 ```
 
-`--input NAME=DEPENDENCY_ID` declares which direct dependency supplies an input. Dependencies must be added before the nodes that depend on them. Declare each node's workspace access with `--read-only` or one or more `--write-path` options. An omitted write scope is treated as unknown and serialized against other work. Path conflict checks are conservatively case-insensitive. List currently actionable, mutually write-safe nodes with:
+Retain the returned `state_file` as `GOAL_STATE` for every later command. `--input NAME=DEPENDENCY_ID` declares which direct dependency supplies an input. Dependencies must be added before the nodes that depend on them. Declare each node's workspace access with `--read-only` or one or more `--write-path` options. An omitted write scope is treated as unknown and serialized against other work. Path conflict checks are conservatively case-insensitive. List currently actionable, mutually write-safe nodes with:
 
 ```bash
-python scripts/wait_goal.py ready --state .wait-goal/release.json
+python scripts/wait_goal.py ready --state "$GOAL_STATE"
 ```
 
 Inspect deterministic graph and scheduling diagnostics with `check`. Inspect the append-only operation history with `events`:
 
 ```bash
-python scripts/wait_goal.py check --state .wait-goal/release.json
-python scripts/wait_goal.py events --state .wait-goal/release.json
+python scripts/wait_goal.py check --state "$GOAL_STATE"
+python scripts/wait_goal.py events --state "$GOAL_STATE"
 ```
 
 ## Execute and evolve the DAG
@@ -146,14 +149,14 @@ python scripts/wait_goal.py events --state .wait-goal/release.json
 Mark a node as running before executing it:
 
 ```bash
-python scripts/wait_goal.py start --state .wait-goal/release.json --id test
+python scripts/wait_goal.py start --state "$GOAL_STATE" --id test
 ```
 
 For an `agent` node, reserve the node before calling the runtime:
 
 ```bash
 python scripts/wait_goal.py prepare-agent \
-  --state .wait-goal/release.json \
+  --state "$GOAL_STATE" \
   --id review
 ```
 
@@ -161,7 +164,7 @@ Include `DISPATCH_TOKEN_FROM_PREPARE` in the child task or deterministic task na
 
 ```bash
 python scripts/wait_goal.py start \
-  --state .wait-goal/release.json \
+  --state "$GOAL_STATE" \
   --id review \
   --dispatch-token DISPATCH_TOKEN_FROM_PREPARE \
   --agent-id AGENT_ID_FROM_RUNTIME
@@ -173,7 +176,7 @@ Record the result after its acceptance criteria pass:
 
 ```bash
 python scripts/wait_goal.py complete \
-  --state .wait-goal/release.json \
+  --state "$GOAL_STATE" \
   --id test \
   --summary "All tests passed" \
   --artifact test-report
@@ -187,7 +190,7 @@ To insert newly discovered work before an existing pending node, add it with `--
 
 ```bash
 python scripts/wait_goal.py add \
-  --state .wait-goal/release.json \
+  --state "$GOAL_STATE" \
   --id security-review \
   --title "Review release security" \
   --before deploy \
@@ -204,30 +207,30 @@ When only external state remains:
 2. Start `wait_for.py` with those paths, the watch ID, and `--goal-node`. It acquires the watcher lock, writes the startup receipt, and waits without querying.
 3. Confirm the startup receipt, then run `activate-wait`. The node becomes `waiting`, and the watcher begins querying.
 4. End the current model turn and stop querying that external state.
-5. Let the watcher send `$wait-goal resume <state-file>` when an event occurs.
+5. Let the watcher send `$wait-goal resume <state-file>` in Codex or `/wait-goal resume <state-file>` in another client when an event occurs.
 6. On resume, read the log, run `wake`, and query the external state once more. Every event returns the node to `running`; only the root's verified `complete`, `fail`, or next `wait` decision changes its outcome. IDs from older wait cycles are rejected and exact duplicates are no-ops.
 
-See [wait.md](wait.md) for all watcher options and the notification template.
+See [wait.md](wait.md) for the watcher protocol and [clients.md](clients.md) for resume adapters.
 
 ## Control and resume
 
 Show the full state:
 
 ```bash
-python scripts/wait_goal.py show --state .wait-goal/release.json
+python scripts/wait_goal.py show --state "$GOAL_STATE"
 ```
 
 Pause or resume scheduling:
 
 ```bash
-python scripts/wait_goal.py pause --state .wait-goal/release.json
-python scripts/wait_goal.py resume --state .wait-goal/release.json
+python scripts/wait_goal.py pause --state "$GOAL_STATE"
+python scripts/wait_goal.py resume --state "$GOAL_STATE"
 ```
 
 Cancellation marks every unfinished node as `cancelled`:
 
 ```bash
-python scripts/wait_goal.py cancel --state .wait-goal/release.json
+python scripts/wait_goal.py cancel --state "$GOAL_STATE"
 ```
 
 Pausing or cancelling scheduling does not forcibly terminate running agents or submitted external jobs. A goal-owned watcher observes a cancelled or replaced wait before its next query or notification retry and exits itself.
@@ -236,7 +239,7 @@ If a watcher fails before activation, exits without delivering an event, or must
 
 ```bash
 python scripts/wait_goal.py abort-wait \
-  --state .wait-goal/release.json \
+  --state "$GOAL_STATE" \
   --id deploy \
   --watch-id CURRENT_WATCH_ID
 ```
@@ -246,7 +249,7 @@ The node returns to `running` and can prepare a new wait. The watch ID guard pre
 After deciding that a failed node may be attempted again, archive the failed attempt and reset it to `pending`:
 
 ```bash
-python scripts/wait_goal.py retry --state .wait-goal/release.json --id deploy
+python scripts/wait_goal.py retry --state "$GOAL_STATE" --id deploy
 ```
 
 `retry` changes scheduler state only. It does not authorize or perform an external retry, deployment, restart, or other side effect.
@@ -257,7 +260,7 @@ After every node is complete, verify the result against the original request. If
 
 ```bash
 python scripts/wait_goal.py verify \
-  --state .wait-goal/release.json \
+  --state "$GOAL_STATE" \
   --summary "The original request is satisfied" \
   --check "all tests passed" \
   --check "the health endpoint is Ready"
@@ -267,7 +270,7 @@ Then finish the goal:
 
 ```bash
 python scripts/wait_goal.py finish \
-  --state .wait-goal/release.json \
+  --state "$GOAL_STATE" \
   --summary "Release completed; tests and health checks passed"
 ```
 

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Wait Goal"
+  short_description: "Run durable goals with event-driven waiting"
+  default_prompt: "Use $wait-goal because the user explicitly requested Goal mode; persist and execute the objective as an event-driven DAG."

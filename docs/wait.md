@@ -2,7 +2,7 @@
 
 English | [简体中文](wait.zh-CN.md)
 
-`$wait` uses `scripts/wait_for.py` to move repeated state queries into a regular Python process. The model does not actively poll while waiting; the watcher queues an event with a unique ID when the state becomes ready or terminal, the wait times out, or repeated queries fail.
+`wait` is the primary skill. It moves repeated state queries into `scripts/wait_for.py`; the model does not poll while the watcher waits. The watcher resumes the owning session only when the state becomes ready or terminal, the wait times out, or repeated queries fail. See [client adapters](clients.md) for invocation and resume commands.
 
 ## Execution overview
 
@@ -12,7 +12,7 @@ sequenceDiagram
     participant W as Watcher
     participant E as External system
     participant L as Durable log
-    participant C as Codex task
+    participant C as Agent session
 
     R->>W: Start read-only query and wait conditions
     loop Status does not match
@@ -21,13 +21,13 @@ sequenceDiagram
     end
     W->>L: Persist event and stable event ID first
     opt Thread configured
-        W->>C: Queue resume message
+        W->>C: Resume with event message
         C->>L: Read and validate event
         C->>E: Independently re-check current state
     end
 ```
 
-While state is unchanged, only the regular Python process runs; the model does not participate. Without `--thread`, the watcher writes its log and exits for the caller to inspect.
+While state is unchanged, only the regular Python process runs. Without `--session`, the watcher writes its log and exits for the caller to inspect.
 
 ## Query contract
 
@@ -39,25 +39,27 @@ python scripts/wait_for.py \
   --ready Ready \
   --terminal Failed \
   --interval 60 \
-  --thread "$CODEX_THREAD_ID" \
+  --timeout 3600 \
+  --client codex \
+  --session "$AGENT_SESSION_ID" \
   --lock-file /tmp/wait-deployment-api.lock \
   --log-file /tmp/wait-deployment-api.json \
   --message-template '$wait resume /tmp/wait-deployment-api.json; event_id={event_id}; event={event}; status={status}. Re-check external state before acting.' \
   -- deployctl status api --output status
 ```
 
-For JSON output, add an option such as `--json-path run.status` to select one scalar field.
+JSON objects and arrays require an option such as `--json-path status` for `{"status":"ServiceReady"}` or `--json-path run.status` for a nested field. Without it, the watcher immediately emits `query_failed` with a safe configuration error instead of retrying an invalid contract.
 
-Omit `--timeout` to wait indefinitely. The default query interval is five minutes and the default consecutive-failure limit is 12. Use `--max-consecutive-failures 0` to disable that limit.
-Codex queue delivery is bounded by `--notification-timeout` (60 seconds by default).
+Every watcher has a finite overall limit; `--timeout` defaults to 24 hours. The default query interval is five minutes and the positive consecutive-failure limit defaults to 12. Neither safeguard can be disabled.
+Each notification or session-resume attempt is bounded by `--notification-timeout`. Retry defaults differ by client because queue failures and synchronous session-resume timeouts have different duplicate-delivery risks; see [client adapters](clients.md).
 
 ## Execution protocol
 
 1. **Define conditions.** `--ready` and `--terminal` use exact, disjoint string matches. The read-only query should emit one short scalar; use `--json-path` for JSON.
 2. **Acquire ownership.** The watcher takes `--lock-file` without blocking. A second watcher returns `already_watching` and does not start another query loop.
 3. **Query.** Each call is bounded by `--query-timeout` and any remaining overall timeout. A successful query resets the consecutive-failure count.
-4. **Persist.** On ready, terminal, overall timeout, or repeated query failure, the watcher chooses a stable `event_id`: standalone `$wait` generates one, while `$wait-goal` integration reuses its `watch_id`. It writes the result atomically before notification.
-5. **Notify.** Each queue attempt is bounded by `--notification-timeout`. Definite failures and timed-out attempts retry with exponential backoff and the same ID. Duplicate messages are safe because the receiver deduplicates that stable ID. Before every retry, a goal-integrated watcher confirms that its watch is still active. Delivery progress is persisted first.
+4. **Persist.** On ready, terminal, overall timeout, or repeated query failure, the watcher chooses a stable `event_id`: standalone `$wait` generates one, while `wait-loop` and `wait-goal` integrations reuse their `watch_id`. It writes the result atomically before notification.
+5. **Notify.** The selected client adapter resumes the saved session with the stable event ID. Delivery progress is persisted first. Codex queue failures retry by default; synchronous CLI adapters default to one attempt because a timeout may already have started a turn. Before every retry, a goal-owned watcher confirms that its watch is still active.
 6. **Resume and verify.** A resume message is only a hint. The receiver validates the log and event ID, then independently queries the external system once before deciding what to do.
 
 | Result or condition | Trigger | Exit | Receiver action |
@@ -67,25 +69,27 @@ Codex queue delivery is bounded by `--notification-timeout` (60 seconds by defau
 | `query_failed` | Consecutive failure limit reached | `3` | Diagnose the query; do not infer external state |
 | `timeout` | Overall wait expired | `124` | Re-query, then continue or stop |
 | `already_watching` | Lock is held | `75` | Keep the existing watcher |
-| Activation cancelled | Goal wait became invalid, or was not activated within `--activation-timeout` | `76` | Re-read goal state |
+| Ownership or activation cancelled | Loop ownership was lost, or a goal wait became invalid or was not activated in time | `76` | Re-read the owning state |
 | `interrupted` | Watcher interrupted | `130` | Inspect log and goal state |
 | Notification failure | Configured retry limit exhausted | `70` | Read the persisted log and decide whether to redeliver |
 
-With `$wait-goal`, startup uses a two-phase handshake. The watcher first acquires the lock and writes a `watcher_started` receipt without querying. The root validates the node, watch ID, target thread, log, unexpired receipt, and live watcher lock before running `activate-wait`. Only after observing that exact active wait does the watcher begin querying. A prepared watcher exits after `--activation-timeout` (60 seconds by default), and an active watcher exits before its next query or notification retry if the saved wait is cancelled, replaced, missing, or invalid. Use `wait_goal.py abort-wait` with the exact watch ID to recover an orphaned prepared or active wait before starting a replacement.
+When an explicitly invoked `wait-goal` uses the watcher, startup adds a two-phase handshake. The watcher acquires the lock and writes a `watcher_started` receipt without querying. The root validates the node, watch ID, client, target session, log, receipt age, and live lock before running `activate-wait`. Only then does querying begin. A prepared watcher exits after `--activation-timeout`; an active watcher exits before its next query or notification retry if the saved wait is cancelled, replaced, missing, or invalid. Use `wait_goal.py abort-wait` with the exact watch ID before replacing an orphaned watcher.
 
 ## Run in the background
 
-Use a process manager that the current environment supports reliably for long waits. Prefer `tmux` after confirming it is installed. The watcher connects to the existing Codex App Server using `--remote` and `--thread`; the default endpoint is `unix://`.
+Use a process manager that the current environment supports reliably for long waits. Prefer `tmux` after confirming it is installed. Select a resume adapter with `--client` and identify the owning conversation with `--session`; `--remote` applies only to Codex.
 
-Use a unique lock file for each external object and Codex task. When `--thread` is set, `--lock-file`, `--log-file`, and an explicit `--message-template` are required. The template must contain exactly one resume directive. A standalone template binds the exact log path as `$wait resume <log path>`; a goal-integrated template binds it once as `watcher_log=<log path>` and binds one goal node. The template must also contain `{event_id}`, `{event}`, and `{status}`. Use `--max-notification-attempts` to limit retries after delivery failures or timeouts.
+Use a unique lock file for each external object and session. When `--session` is set, `--lock-file`, `--log-file`, and an explicit `--message-template` are required. The template contains exactly one resume directive and includes `{event_id}`, `{event}`, and `{status}`. A standalone `wait` template binds the exact log path; a loop template binds its state and watcher log; a goal template also binds one node. Use `--max-notification-attempts` to override the adapter's retry default.
 
 ## Integrate with `$wait-goal`
 
 First prepare the external wait; the node remains `running` until activation:
 
 ```bash
+GOAL_STATE=/tmp/.wait-goal/PROJECT/GOAL.json # state_file returned by init
+
 python scripts/wait_goal.py wait \
-  --state .wait-goal/release.json \
+  --state "$GOAL_STATE" \
   --id deploy \
   --label "deployment api" \
   --log-file /tmp/wait-deployment-api.json \
@@ -102,14 +106,16 @@ python scripts/wait_for.py \
   --label "deployment api" \
   --ready Ready \
   --terminal Failed \
-  --thread "$CODEX_THREAD_ID" \
+  --timeout 3600 \
+  --client codex \
+  --session "$AGENT_SESSION_ID" \
   --lock-file /tmp/wait-deployment-api.lock \
   --log-file /tmp/wait-deployment-api.json \
   --event-id WATCH_ID_FROM_WAIT_OUTPUT \
-  --goal-state /absolute/path/to/.wait-goal/release.json \
+  --goal-state "$GOAL_STATE" \
   --goal-node deploy \
   --startup-file /tmp/wait-deployment-api.started.json \
-  --message-template '$wait-goal resume /absolute/path/to/.wait-goal/release.json; node=deploy; watcher_log=/tmp/wait-deployment-api.json; event_id={event_id}; event={event}; status={status}. Re-check external state before acting.' \
+  --message-template "\$wait-goal resume $GOAL_STATE; node=deploy; watcher_log=/tmp/wait-deployment-api.json; event_id={event_id}; event={event}; status={status}. Re-check external state before acting." \
   -- deployctl status api --output status
 ```
 
@@ -117,7 +123,7 @@ The watcher first writes the startup receipt and waits without querying. After c
 
 ```bash
 python scripts/wait_goal.py activate-wait \
-  --state .wait-goal/release.json \
+  --state "$GOAL_STATE" \
   --id deploy \
   --watch-id WATCH_ID_FROM_WAIT_OUTPUT
 ```
@@ -126,14 +132,14 @@ After wake-up, read the watcher log and record the event:
 
 ```bash
 python scripts/wait_goal.py wake \
-  --state .wait-goal/release.json \
+  --state "$GOAL_STATE" \
   --id deploy \
   --event-id WATCH_ID_FROM_LOG \
   --event ready \
   --external-status Ready
 ```
 
-Every watcher event returns the node to `running`; it does not complete or fail the node. Codex must query the current external state once more, then explicitly run `complete`, `fail`, or prepare another wait. The event ID must equal the active `watch_id`; stale events from older wait cycles are rejected. Replaying the current event is a safe no-op, while reusing its ID with different data is rejected.
+Every watcher event returns the node to `running`; it does not complete or fail the node. The root must query the current external state once more, then explicitly run `complete`, `fail`, or prepare another wait. The event ID must equal the active `watch_id`; stale events are rejected. Replaying the current event is a safe no-op, while reusing its ID with different data is rejected.
 
 ```mermaid
 sequenceDiagram
@@ -142,7 +148,7 @@ sequenceDiagram
     participant G as Goal state file
     participant W as wait_for.py
     participant E as External system
-    participant C as Codex task
+    participant C as Agent session
 
     A->>G: wait: prepare watch ID; node stays running
     A->>W: Start background watcher
@@ -156,7 +162,7 @@ sequenceDiagram
     end
 
     W->>W: Write event and delivery state
-    W->>C: Queue resume; retry definite failures with the stable ID
+    W->>C: Resume session with the stable event ID
     C->>A: Resume the goal
     A->>G: Read state and run wake
     A->>W: Read watcher log

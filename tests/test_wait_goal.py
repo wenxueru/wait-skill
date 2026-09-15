@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import importlib.util
 import json
+import os
 import tempfile
 import time
 import unittest
@@ -36,6 +37,51 @@ class WaitGoalTest(unittest.TestCase):
     def invoke(self, handler: Callable[[Namespace], None], **arguments: object) -> None:
         with redirect_stdout(StringIO()):
             handler(Namespace(**arguments))
+
+    def test_init_persists_client_and_session(self) -> None:
+        state = Path(self.directory.name) / "claude.json"
+        args = wait_goal.parser().parse_args([
+            "init",
+            "--state",
+            str(state),
+            "--objective",
+            "ship safely",
+            "--client",
+            "claude",
+            "--session",
+            "session-1",
+        ])
+        self.invoke(args.handler, **{key: value for key, value in vars(args).items() if key != "handler"})
+
+        saved = json.loads(state.read_text(encoding="utf-8"))
+        self.assertEqual(saved["client"], "claude")
+        self.assertEqual(saved["thread"], "session-1")
+
+    def test_init_defaults_to_a_per_project_temporary_state(self) -> None:
+        project = Path(self.directory.name) / "demo"
+        nested = project / "src"
+        nested.mkdir(parents=True)
+        (project / ".git").mkdir()
+
+        first = wait_goal.default_state_path(nested)
+        second = wait_goal.default_state_path(project)
+        self.assertEqual(first.parent, second.parent)
+        self.assertEqual(first.parents[1], wait_goal.DEFAULT_STATE_ROOT)
+
+        state = first.parent / "goal.json"
+        args = wait_goal.parser().parse_args([
+            "init",
+            "--objective",
+            "ship safely",
+            "--session",
+            "session-1",
+        ])
+        output = StringIO()
+        with patch.object(wait_goal, "default_state_path", return_value=state), redirect_stdout(output):
+            args.handler(args)
+
+        self.assertTrue(state.exists())
+        self.assertEqual(json.loads(output.getvalue())["state_file"], os.path.realpath(state))
 
     def add(
         self,
@@ -333,6 +379,16 @@ class WaitGoalTest(unittest.TestCase):
         self.state.write_text(json.dumps(state), encoding="utf-8")
         with self.assertRaises(wait_goal.GoalError):
             self.prepare_wait("deploy")
+
+    def test_paused_goal_cannot_prepare_external_wait(self) -> None:
+        self.add("deploy", kind="external")
+        self.start("deploy")
+        self.invoke(wait_goal.command_pause, state=self.state)
+
+        with self.assertRaises(wait_goal.GoalError):
+            self.prepare_wait("deploy")
+
+        self.assertIsNone(self.load()["nodes"]["deploy"]["wait"])
 
     def test_failed_dependency_makes_goal_blocked(self) -> None:
         self.add("build", kind="external")

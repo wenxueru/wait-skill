@@ -42,6 +42,8 @@ class WaitForTest(unittest.TestCase):
         self.assertEqual(wait_for.extract_status('{"ready":false}', "ready"), "false")
         with self.assertRaises(ValueError):
             wait_for.extract_status('{"status":NaN}', "status")
+        with self.assertRaisesRegex(ValueError, "specify --json-path"):
+            wait_for.extract_status('{"status":"ServiceReady"}')
 
     def test_query_output_is_bounded(self) -> None:
         with self.assertRaises(ValueError):
@@ -109,6 +111,27 @@ class WaitForTest(unittest.TestCase):
         self.assertEqual(code, wait_for.EXIT_QUERY_FAILED)
         self.assertEqual(result["query_failures"], 2)
 
+    def test_structured_json_without_path_fails_immediately(self) -> None:
+        calls = 0
+
+        def query(_remaining: float | None) -> str:
+            nonlocal calls
+            calls += 1
+            return wait_for.extract_status('{"status":"ServiceReady"}')
+
+        result, code = wait_for.StatusWaiter(
+            query,
+            {"ServiceReady"},
+            set(),
+            interval=300,
+            timeout=3600,
+            max_consecutive_failures=12,
+        ).run()
+
+        self.assertEqual(code, wait_for.EXIT_QUERY_FAILED)
+        self.assertEqual(calls, 1)
+        self.assertEqual(result["error"], "query produced structured JSON; specify --json-path")
+
     def test_result_returned_after_deadline_is_rejected(self) -> None:
         clock = Clock()
         budgets = []
@@ -155,7 +178,8 @@ class WaitForTest(unittest.TestCase):
             "elapsed_seconds": 1.0,
         }
         with patch.object(wait_for.subprocess, "run") as run:
-            wait_for.notify_thread(
+            wait_for.notify_session(
+                "codex",
                 "thread-id",
                 "unix://",
                 "build 42",
@@ -166,6 +190,156 @@ class WaitForTest(unittest.TestCase):
         self.assertEqual(command[-1], "build 42: ready (Running)")
         self.assertEqual(run.call_args.kwargs["timeout"], 60.0)
 
+    def test_notification_commands_cover_supported_clients(self) -> None:
+        expected = {
+            "codex": ["codex", "queue", "--remote", "unix://", "--thread", "session-1", "--message", "resume"],
+            "codewiz": ["codewiz", "run", "--session", "session-1", "resume"],
+            "cursor": ["cursor-agent", "--print", "--resume=session-1", "resume"],
+            "claude": ["claude", "--print", "--resume", "session-1", "resume"],
+            "copilot": ["copilot", "--resume=session-1", "--prompt", "resume"],
+        }
+        for client, command in expected.items():
+            with self.subTest(client=client):
+                self.assertEqual(
+                    wait_for.notification_command(client, "session-1", "resume", "unix://"),
+                    command,
+                )
+
+        self.assertEqual(
+            wait_for.notification_command(
+                "cursor",
+                "session-1",
+                "resume",
+                "unix://",
+                ["--force"],
+            ),
+            ["cursor-agent", "--print", "--resume=session-1", "--force", "resume"],
+        )
+
+    def test_session_option_and_client_are_parsed(self) -> None:
+        args = wait_for.parser().parse_args([
+            "--label",
+            "demo",
+            "--ready",
+            "Ready",
+            "--client",
+            "claude",
+            "--session",
+            "session-1",
+            "--",
+            "query",
+        ])
+        self.assertEqual(args.client, "claude")
+        self.assertEqual(args.thread, "session-1")
+        self.assertEqual(args.timeout, wait_for.DEFAULT_WAIT_TIMEOUT)
+
+        for option in ("--max-consecutive-failures", "--max-notification-attempts"):
+            with self.subTest(option=option), self.assertRaises(SystemExit), redirect_stderr(StringIO()):
+                wait_for.parser().parse_args([
+                    "--label",
+                    "demo",
+                    "--ready",
+                    "Ready",
+                    option,
+                    "0",
+                    "--",
+                    "query",
+                ])
+
+    def test_slash_resume_directive_is_supported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "result.json"
+            wait_for.validate_message_template(
+                wait_for.parser(),
+                f"/wait resume {log}; event_id={{event_id}}; event={{event}}; status={{status}}",
+                log,
+            )
+
+    def test_wait_loop_resume_template_binds_watcher_log(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "result.json"
+            state = Path(directory) / "loop.json"
+            template = (
+                f"/wait-loop resume {state}; watcher_log={log}; "
+                "event_id={event_id}; event={event}; status={status}"
+            )
+            wait_for.validate_message_template(
+                wait_for.parser(),
+                template,
+                log,
+                loop_state=state,
+            )
+
+            with self.assertRaises(SystemExit), redirect_stderr(StringIO()):
+                wait_for.validate_message_template(
+                    wait_for.parser(),
+                    template.replace(str(log), "/tmp/wrong.json"),
+                    log,
+                    loop_state=state,
+                )
+
+            with self.assertRaises(SystemExit), redirect_stderr(StringIO()):
+                wait_for.validate_message_template(
+                    wait_for.parser(),
+                    template,
+                    log,
+                )
+
+    def test_loop_watch_must_still_own_the_event(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory) / "loop.json"
+            state.write_text(
+                json.dumps({
+                    "status": "active",
+                    "phase": "waiting",
+                    "watch_id": "watch-1",
+                    "client": "claude",
+                    "session": "session-1",
+                }),
+                encoding="utf-8",
+            )
+            args = Namespace(
+                loop_state=state,
+                event_id="watch-1",
+                client="claude",
+                thread="session-1",
+            )
+            self.assertTrue(wait_for.loop_wait_is_current(args))
+
+            args.event_id = "stale"
+            self.assertFalse(wait_for.loop_wait_is_current(args))
+
+    def test_non_codex_notification_does_not_retry_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "result.json"
+            args = wait_for.parser().parse_args([
+                "--label",
+                "demo",
+                "--ready",
+                "Ready",
+                "--client",
+                "claude",
+                "--session",
+                "session-1",
+                "--log-file",
+                str(log),
+                "--message-template",
+                f"$wait resume {log}; event_id={{event_id}}; event={{event}}; status={{status}}",
+                "--",
+                "query",
+            ])
+            result = {"event_id": "stable", "event": "ready", "status": "Ready"}
+            with patch.object(
+                wait_for,
+                "notify_session",
+                side_effect=subprocess.TimeoutExpired("claude", 60),
+            ) as notify:
+                code = wait_for.deliver_notification(args, result)
+
+            self.assertEqual(code, wait_for.EXIT_NOTIFY_FAILED)
+            self.assertEqual(notify.call_count, 1)
+            self.assertEqual(notify.call_args.kwargs["timeout"], 3600.0)
+
     def test_single_notification_attempt_reports_ambiguous_failure(self) -> None:
         result = {
             "event_id": "event-1",
@@ -174,20 +348,23 @@ class WaitForTest(unittest.TestCase):
             "query_failures": 0,
             "elapsed_seconds": 1.0,
         }
-        with patch.object(
-            wait_for.subprocess,
-            "run",
-            side_effect=subprocess.TimeoutExpired("codex", 60),
-        ) as run:
-            with self.assertRaises(subprocess.TimeoutExpired):
-                wait_for.notify_thread(
-                    "thread-id",
-                    "unix://",
-                    "build 42",
-                    result,
-                    "{event_id}",
-                    timeout=7,
-                )
+        with (
+            patch.object(
+                wait_for.subprocess,
+                "run",
+                side_effect=subprocess.TimeoutExpired("codex", 60),
+            ) as run,
+            self.assertRaises(subprocess.TimeoutExpired),
+        ):
+            wait_for.notify_session(
+                "codex",
+                "thread-id",
+                "unix://",
+                "build 42",
+                result,
+                "{event_id}",
+                timeout=7,
+            )
         self.assertEqual(run.call_count, 1)
         self.assertEqual(run.call_args.kwargs["timeout"], 7)
 
@@ -249,6 +426,40 @@ class WaitForTest(unittest.TestCase):
         self.assertEqual(result, "timeout")
         self.assertEqual(clock.value, 1.0)
 
+    def test_activation_interrupt_is_persisted(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            goal = root / "goal.json"
+            log = root / "result.json"
+            event_id = "watch-1"
+            arguments = [
+                "--label", "deployment",
+                "--ready", "Ready",
+                "--thread", "thread-1",
+                "--lock-file", str(root / "watcher.lock"),
+                "--log-file", str(log),
+                "--event-id", event_id,
+                "--goal-state", str(goal),
+                "--goal-node", "deploy",
+                "--startup-file", str(root / "started.json"),
+                "--message-template",
+                (
+                    f"$wait-goal resume {goal}; node=deploy; watcher_log={log}; "
+                    "event_id={event_id}; event={event}; status={status}"
+                ),
+                "--", "query",
+            ]
+            with (
+                patch.object(wait_for, "wait_for_goal_activation", side_effect=KeyboardInterrupt),
+                redirect_stdout(StringIO()),
+            ):
+                code = wait_for.main(arguments)
+
+            result = json.loads(log.read_text(encoding="utf-8"))
+            self.assertEqual(code, wait_for.EXIT_INTERRUPTED)
+            self.assertEqual(result["event"], "interrupted")
+            self.assertEqual(result["event_id"], event_id)
+
     def test_missing_or_corrupt_goal_state_invalidates_watch(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             state = Path(directory) / "goal.json"
@@ -258,7 +469,7 @@ class WaitForTest(unittest.TestCase):
             state.write_text("{", encoding="utf-8")
             self.assertFalse(wait_for.goal_wait_is_current(args))
 
-    def test_goal_watch_must_match_persisted_thread(self) -> None:
+    def test_goal_watch_must_match_persisted_client_and_session(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             state = Path(directory) / "goal.json"
             state.write_text(
@@ -269,6 +480,7 @@ class WaitForTest(unittest.TestCase):
                             "wait": {
                                 "phase": "active",
                                 "watch_id": "watch-1",
+                                "client": "claude",
                                 "thread": "expected-thread",
                             },
                         }
@@ -280,8 +492,13 @@ class WaitForTest(unittest.TestCase):
                 goal_state=state,
                 goal_node="deploy",
                 event_id="watch-1",
-                thread="wrong-thread",
+                client="codex",
+                thread="expected-thread",
             )
+            self.assertFalse(wait_for.goal_wait_is_current(args))
+
+            args.client = "claude"
+            args.thread = "wrong-thread"
             self.assertFalse(wait_for.goal_wait_is_current(args))
 
     def test_cancelled_goal_suppresses_a_completed_query_notification(self) -> None:
@@ -366,7 +583,7 @@ class WaitForTest(unittest.TestCase):
             with (
                 patch.object(
                     wait_for,
-                    "notify_thread",
+                    "notify_session",
                     side_effect=[subprocess.CalledProcessError(1, "codex"), None],
                 ) as notify,
                 patch.object(wait_for.time, "sleep"),
@@ -412,7 +629,7 @@ class WaitForTest(unittest.TestCase):
                 patch.object(wait_for, "goal_wait_is_current", side_effect=[True, False]),
                 patch.object(
                     wait_for,
-                    "notify_thread",
+                    "notify_session",
                     side_effect=subprocess.CalledProcessError(1, "codex"),
                 ) as notify,
                 patch.object(wait_for.time, "sleep"),
@@ -450,7 +667,7 @@ class WaitForTest(unittest.TestCase):
             result = {"event_id": "stable", "event": "ready", "status": "Ready"}
             with patch.object(
                 wait_for,
-                "notify_thread",
+                "notify_session",
                 side_effect=subprocess.TimeoutExpired("codex", 60),
             ) as notify:
                 code = wait_for.deliver_notification(args, result)
@@ -487,7 +704,7 @@ class WaitForTest(unittest.TestCase):
             with (
                 patch.object(
                     wait_for,
-                    "notify_thread",
+                    "notify_session",
                     side_effect=[subprocess.TimeoutExpired("codex", 60), None],
                 ) as notify,
                 patch.object(wait_for.time, "sleep"),
@@ -498,6 +715,39 @@ class WaitForTest(unittest.TestCase):
             persisted = json.loads(log.read_text(encoding="utf-8"))
             self.assertEqual(persisted["event_id"], "stable")
             self.assertEqual(persisted["notification"], "queued")
+
+    def test_codex_notification_retries_are_bounded_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "result.json"
+            args = wait_for.parser().parse_args([
+                "--label",
+                "demo",
+                "--ready",
+                "Ready",
+                "--session",
+                "session-1",
+                "--lock-file",
+                str(Path(directory) / "watcher.lock"),
+                "--log-file",
+                str(log),
+                "--message-template",
+                f"$wait resume {log}; event_id={{event_id}}; event={{event}}; status={{status}}",
+                "--",
+                "query",
+            ])
+            result = {"event_id": "stable", "event": "ready", "status": "Ready"}
+            with (
+                patch.object(
+                    wait_for,
+                    "notify_session",
+                    side_effect=subprocess.CalledProcessError(1, "codex"),
+                ) as notify,
+                patch.object(wait_for.time, "sleep"),
+            ):
+                code = wait_for.deliver_notification(args, result)
+
+            self.assertEqual(code, wait_for.EXIT_NOTIFY_FAILED)
+            self.assertEqual(notify.call_count, 12)
 
     def test_cli_without_notification(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -655,15 +905,23 @@ class WaitForTest(unittest.TestCase):
                 str(log),
             ]
             templates = [
-                f"$wait-goal resume {goal}-old; node=deploy; watcher_log={log}; "
-                "event_id={event_id}; event={event}; status={status}",
-                f"$wait-goal resume {goal}; node=deploy-old; watcher_log={log}; "
-                "event_id={event_id}; event={event}; status={status}",
-                f"$wait-goal resume {goal}; node=deploy; watcher_log={log}.wrong; "
-                f"note={log}; event_id={{event_id}}; event={{event}}; status={{status}}",
-                f"$wait-goal resume {goal}-old; node=old; watcher_log={log}.old; "
-                f"$wait-goal resume {goal}; node=deploy; watcher_log={log}; "
-                "event_id={event_id}; event={event}; status={status}",
+                (
+                    f"$wait-goal resume {goal}-old; node=deploy; watcher_log={log}; "
+                    "event_id={event_id}; event={event}; status={status}"
+                ),
+                (
+                    f"$wait-goal resume {goal}; node=deploy-old; watcher_log={log}; "
+                    "event_id={event_id}; event={event}; status={status}"
+                ),
+                (
+                    f"$wait-goal resume {goal}; node=deploy; watcher_log={log}.wrong; "
+                    f"note={log}; event_id={{event_id}}; event={{event}}; status={{status}}"
+                ),
+                (
+                    f"$wait-goal resume {goal}-old; node=old; watcher_log={log}.old; "
+                    f"$wait-goal resume {goal}; node=deploy; watcher_log={log}; "
+                    "event_id={event_id}; event={event}; status={status}"
+                ),
             ]
             for template in templates:
                 with (
@@ -687,7 +945,8 @@ class WaitForTest(unittest.TestCase):
             log = root / "result.json"
             wrong_log = root / "wrong.json"
             template = (
-                f"$wait resume {wrong_log}; $wait resume {log}; event_id={{event_id}}; event={{event}}; status={{status}}"
+                f"$wait resume {wrong_log}; $wait resume {log}; "
+                "event_id={event_id}; event={event}; status={status}"
             )
             with (
                 patch.object(wait_for.subprocess, "run") as run,
@@ -771,26 +1030,28 @@ class WaitForTest(unittest.TestCase):
                 self.assertEqual(persisted["event"], "ready")
                 self.assertTrue(persisted["event_id"])
 
-            with patch.object(wait_for, "notify_thread", side_effect=notify):
-                with redirect_stdout(StringIO()):
-                    code = wait_for.main([
-                        "--label",
-                        "demo",
-                        "--ready",
-                        "Running",
-                        "--thread",
-                        "thread-1",
-                        "--lock-file",
-                        str(Path(directory) / "watcher.lock"),
-                        "--log-file",
-                        str(log),
-                        "--message-template",
-                        f"$wait resume {log}; event_id={{event_id}}; event={{event}}; status={{status}}",
-                        "--",
-                        sys.executable,
-                        "-c",
-                        "print('Running')",
-                    ])
+            with (
+                patch.object(wait_for, "notify_session", side_effect=notify),
+                redirect_stdout(StringIO()),
+            ):
+                code = wait_for.main([
+                    "--label",
+                    "demo",
+                    "--ready",
+                    "Running",
+                    "--thread",
+                    "thread-1",
+                    "--lock-file",
+                    str(Path(directory) / "watcher.lock"),
+                    "--log-file",
+                    str(log),
+                    "--message-template",
+                    f"$wait resume {log}; event_id={{event_id}}; event={{event}}; status={{status}}",
+                    "--",
+                    sys.executable,
+                    "-c",
+                    "print('Running')",
+                ])
             self.assertEqual(code, wait_for.EXIT_READY)
 
     def test_cli_overall_timeout_limits_query(self) -> None:

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Wait Loop"
+  short_description: "Run an explicit event-driven timer loop"
+  default_prompt: "Use $wait-loop because the user explicitly requested Loop mode; run the task on a bounded event-driven timer."

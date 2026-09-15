@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Wait for command-reported state and durably wake a Codex thread."""
+"""Wait for command-reported state and durably resume an agent session."""
 
 from __future__ import annotations
 
@@ -39,6 +39,12 @@ MESSAGE_FIELDS = {
     "notification_attempts",
 }
 MAX_QUERY_OUTPUT_BYTES = 64 * 1024
+CLIENTS = {"claude", "codewiz", "codex", "copilot", "cursor"}
+DEFAULT_WAIT_TIMEOUT = 86400.0
+
+
+class QueryConfigurationError(ValueError):
+    """A safe-to-report query contract error that retries cannot fix."""
 
 
 def positive_number(value: str) -> float:
@@ -48,10 +54,10 @@ def positive_number(value: str) -> float:
     return number
 
 
-def nonnegative_int(value: str) -> int:
+def positive_int(value: str) -> int:
     number = int(value)
-    if number < 0:
-        raise argparse.ArgumentTypeError("must be non-negative")
+    if number <= 0:
+        raise argparse.ArgumentTypeError("must be positive")
     return number
 
 
@@ -95,6 +101,13 @@ def extract_status(output: str, json_path: str | None = None) -> str:
         else:
             status = str(value)
     else:
+        try:
+            structured = json.loads(output)
+        except json.JSONDecodeError:
+            pass
+        else:
+            if isinstance(structured, (dict, list)):
+                raise QueryConfigurationError("query produced structured JSON; specify --json-path")
         lines = [line.strip() for line in output.splitlines() if line.strip()]
         if not lines:
             raise ValueError("query produced no status")
@@ -186,6 +199,7 @@ class StatusWaiter:
         self.status: str | None
         self.failures: int
         self.consecutive_failures: int
+        self.error: str | None
 
     def run(self) -> tuple[dict[str, object], int]:
         self.started = self.now()
@@ -193,6 +207,7 @@ class StatusWaiter:
         self.status = None
         self.failures = 0
         self.consecutive_failures = 0
+        self.error = None
 
         while True:
             if self.is_active is not None and not self.is_active():
@@ -202,6 +217,10 @@ class StatusWaiter:
                 return self._result("timeout", EXIT_TIMEOUT)
             try:
                 candidate = self.query(remaining)
+            except QueryConfigurationError as exc:
+                self.failures += 1
+                self.error = str(exc)
+                return self._result("query_failed", EXIT_QUERY_FAILED)
             except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired):
                 outcome = self._record_failure()
             else:
@@ -215,7 +234,7 @@ class StatusWaiter:
             return "timeout", EXIT_TIMEOUT
         self.failures += 1
         self.consecutive_failures += 1
-        if self.max_consecutive_failures and self.consecutive_failures >= self.max_consecutive_failures:
+        if self.consecutive_failures >= self.max_consecutive_failures:
             return "query_failed", EXIT_QUERY_FAILED
         return None
 
@@ -231,35 +250,51 @@ class StatusWaiter:
         return None
 
     def _result(self, event: str, code: int) -> tuple[dict[str, object], int]:
-        return {
+        result: dict[str, object] = {
             "event": event,
             "status": self.status,
             "query_failures": self.failures,
             "elapsed_seconds": round(self.now() - self.started, 3),
-        }, code
+        }
+        if self.error:
+            result["error"] = self.error
+        return result, code
 
 
-def notify_thread(
-    thread: str,
+def notification_command(
+    client: str,
+    session: str,
+    message: str,
+    remote: str,
+    resume_args: Sequence[str] = (),
+) -> list[str]:
+    if client == "codex":
+        return ["codex", "queue", "--remote", remote, "--thread", session, *resume_args, "--message", message]
+    if client == "codewiz":
+        return ["codewiz", "run", "--session", session, *resume_args, message]
+    if client == "cursor":
+        return ["cursor-agent", "--print", f"--resume={session}", *resume_args, message]
+    if client == "claude":
+        return ["claude", "--print", "--resume", session, *resume_args, message]
+    if client == "copilot":
+        return ["copilot", f"--resume={session}", *resume_args, "--prompt", message]
+    raise ValueError(f"unsupported client: {client}")
+
+
+def notify_session(
+    client: str,
+    session: str,
     remote: str,
     label: str,
     result: dict[str, object],
     template: str,
     timeout: float = 60.0,
+    resume_args: Sequence[str] = (),
 ) -> None:
     fields = {**result, "label": label}
     message = template.format(**fields)
     subprocess.run(
-        [
-            "codex",
-            "queue",
-            "--remote",
-            remote,
-            "--thread",
-            thread,
-            "--message",
-            message,
-        ],
+        notification_command(client, session, message, remote, resume_args),
         check=True,
         capture_output=True,
         text=True,
@@ -272,6 +307,12 @@ def deliver_notification(
     result: dict[str, object],
 ) -> int | None:
     """Persist delivery progress and retry with one stable event ID."""
+    max_attempts = args.max_notification_attempts
+    if max_attempts is None:
+        max_attempts = 12 if args.client == "codex" else 1
+    notification_timeout = args.notification_timeout
+    if notification_timeout is None:
+        notification_timeout = 60.0 if args.client == "codex" else 3600.0
     attempts = 0
     result["notification"] = "pending"
     result["notification_attempts"] = attempts
@@ -286,20 +327,22 @@ def deliver_notification(
         result["notification"] = "attempting"
         persist_result(args.log_file, result)
         try:
-            notify_thread(
+            notify_session(
+                args.client,
                 args.thread,
                 args.remote,
                 args.label,
                 result,
                 args.message_template,
-                timeout=args.notification_timeout,
+                timeout=notification_timeout,
+                resume_args=args.resume_args,
             )
         except KeyboardInterrupt:
             result["notification"] = "interrupted"
             persist_result(args.log_file, result)
             return EXIT_INTERRUPTED
         except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
-            exhausted = args.max_notification_attempts and attempts >= args.max_notification_attempts
+            exhausted = attempts >= max_attempts
             ambiguous = isinstance(exc, subprocess.TimeoutExpired)
             if exhausted:
                 result["notification"] = "unconfirmed" if ambiguous else "failed"
@@ -339,7 +382,12 @@ def goal_wait_phase(args: argparse.Namespace) -> str:
     if not isinstance(node, dict):
         return "invalid"
     wait = node.get("wait")
-    if not isinstance(wait, dict) or wait.get("watch_id") != args.event_id or wait.get("thread") != args.thread:
+    if (
+        not isinstance(wait, dict)
+        or wait.get("watch_id") != args.event_id
+        or wait.get("client", "codex") != getattr(args, "client", "codex")
+        or wait.get("thread") != args.thread
+    ):
         return "invalid"
     phase = wait.get("phase")
     if node.get("status") == "running" and phase == "prepared":
@@ -354,9 +402,28 @@ def goal_wait_is_current(args: argparse.Namespace) -> bool:
     return goal_wait_phase(args) == "active"
 
 
+def loop_wait_is_current(args: argparse.Namespace) -> bool:
+    try:
+        state = json.loads(args.loop_state.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return False
+    return (
+        isinstance(state, dict)
+        and state.get("status") == "active"
+        and state.get("phase") == "waiting"
+        and state.get("watch_id") == args.event_id
+        and state.get("client", "codex") == args.client
+        and state.get("session") == args.thread
+    )
+
+
 def watch_is_current(args: argparse.Namespace) -> bool:
-    """Standalone waits are always current; goal waits must still own their watch."""
-    return not args.goal_state or goal_wait_is_current(args)
+    """Integrated waits must still own their persisted watch."""
+    if getattr(args, "goal_state", None):
+        return goal_wait_is_current(args)
+    if getattr(args, "loop_state", None):
+        return loop_wait_is_current(args)
+    return True
 
 
 def wait_for_goal_activation(args: argparse.Namespace) -> str:
@@ -412,6 +479,7 @@ def validate_message_template(
     log_file: Path | None,
     goal_state: Path | None = None,
     goal_node: str | None = None,
+    loop_state: Path | None = None,
 ) -> None:
     try:
         fields = {field_name for _, field_name, _, _ in string.Formatter().parse(template) if field_name}
@@ -436,24 +504,29 @@ def validate_message_template(
         )
     except (IndexError, KeyError, ValueError) as exc:
         command_parser.error(f"invalid --message-template: {exc}")
-    resume_directives = re.findall(
-        r"\$(wait(?:-goal)?)\s+resume\s+(.+?)\s*(?=;|$)",
-        template,
-    )
+    resume_directives = re.findall(r"[$/](wait(?:-goal|-loop)?)\s+resume\s+(.+?)\s*(?=;|$)", template)
     if len(resume_directives) != 1:
-        command_parser.error("--message-template must contain exactly one $wait or $wait-goal resume directive")
+        command_parser.error("--message-template must contain exactly one wait, wait-loop, or wait-goal resume directive")
     resume_skill, resume_target = resume_directives[0]
+    if goal_state or loop_state:
+        watcher_logs = re.findall(r"(?<![A-Za-z0-9._-])watcher_log=(.+?)\s*(?=;|$)", template)
     if goal_state:
         if resume_skill != "wait-goal" or resume_target != str(goal_state):
             command_parser.error("--message-template must resume the active goal state")
-        watcher_logs = re.findall(r"(?<![A-Za-z0-9._-])watcher_log=(.+?)\s*(?=;|$)", template)
         nodes = re.findall(r"(?<![A-Za-z0-9._-])node=(.+?)\s*(?=;|$)", template)
         if watcher_logs != [str(log_file)]:
             command_parser.error("--message-template must contain exactly one active watcher_log binding")
         if nodes != [goal_node]:
             command_parser.error("--message-template must contain exactly one active goal node binding")
-    elif log_file and (resume_skill != "wait" or resume_target != str(log_file)):
-        command_parser.error("--message-template must bind the watcher log as $wait resume <log path>")
+    elif loop_state:
+        if resume_skill != "wait-loop" or resume_target != str(loop_state):
+            command_parser.error("--message-template must resume the active loop state")
+        if watcher_logs != [str(log_file)]:
+            command_parser.error("--message-template must contain exactly one active watcher_log binding")
+    elif log_file:
+        if resume_skill == "wait" and resume_target == str(log_file):
+            return
+        command_parser.error("--message-template must bind the active wait watcher log")
 
 
 def parser() -> argparse.ArgumentParser:
@@ -464,15 +537,33 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--json-path", help="Dot-separated path to a scalar status in JSON stdout")
     result.add_argument("--interval", type=positive_number, default=300.0)
     result.add_argument("--query-timeout", type=positive_number, default=30.0)
-    result.add_argument("--timeout", type=positive_number, help="Overall seconds; omitted means unlimited")
+    result.add_argument(
+        "--timeout",
+        type=positive_number,
+        default=DEFAULT_WAIT_TIMEOUT,
+        help="Overall wait limit in seconds; defaults to 86400 (24 hours)",
+    )
     result.add_argument(
         "--max-consecutive-failures",
-        type=nonnegative_int,
+        type=positive_int,
         default=12,
-        help="Wake after this many query failures; 0 disables the limit",
+        help="Wake after this many consecutive query failures; must be positive",
     )
-    result.add_argument("--thread", help="Existing Codex thread ID to wake")
+    result.add_argument("--client", choices=sorted(CLIENTS), default="codex")
+    result.add_argument(
+        "--session",
+        "--thread",
+        dest="thread",
+        help="Existing agent session ID to resume; --thread is a compatibility alias",
+    )
     result.add_argument("--remote", default="unix://", help="Codex app-server endpoint")
+    result.add_argument(
+        "--resume-arg",
+        dest="resume_args",
+        action="append",
+        default=[],
+        help="Explicit client resume argument; repeat as needed and use --resume-arg=VALUE for flags",
+    )
     result.add_argument("--lock-file", type=Path, help="Reject another watcher holding this lock")
     result.add_argument("--log-file", type=Path, help="Write the final JSON result here")
     result.add_argument(
@@ -481,6 +572,7 @@ def parser() -> argparse.ArgumentParser:
     )
     result.add_argument("--goal-state", type=Path, help="Goal state used for startup activation")
     result.add_argument("--goal-node", help="External goal node used for startup activation")
+    result.add_argument("--loop-state", type=Path, help="Loop state that owns this timer watch")
     result.add_argument(
         "--startup-file",
         type=Path,
@@ -491,8 +583,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument(
         "--notification-timeout",
         type=positive_number,
-        default=60.0,
-        help="Maximum seconds to wait for one Codex queue attempt",
+        help="Maximum seconds per delivery attempt; defaults to 60 for Codex and 3600 otherwise",
     )
     result.add_argument(
         "--notification-retry-interval",
@@ -502,14 +593,14 @@ def parser() -> argparse.ArgumentParser:
     )
     result.add_argument(
         "--max-notification-attempts",
-        type=nonnegative_int,
-        default=0,
-        help="Stop after this many notification failures or timeouts; 0 keeps retrying",
+        type=positive_int,
+        default=None,
+        help="Positive delivery-attempt limit; defaults to 12 for Codex and one otherwise",
     )
     result.add_argument(
         "--message-template",
         help=(
-            "Required with --thread; format string using label, event, event_id, status, query_failures, and elapsed_seconds"
+            "Required with --session; format string using label, event, event_id, status, query_failures, and elapsed_seconds"
         ),
     )
     result.add_argument("command", nargs=argparse.REMAINDER, help="Read-only query command after --")
@@ -565,24 +656,25 @@ def main(argv: Sequence[str] | None = None) -> int:
         command = command[1:]
     if not command:
         command_parser.error("a query command is required after --")
-    if args.goal_state:
-        for field in ("goal_state", "startup_file", "log_file", "lock_file"):
+    if args.goal_state or args.loop_state:
+        for field in ("goal_state", "loop_state", "startup_file", "log_file", "lock_file"):
             path = getattr(args, field)
             if path is not None:
                 setattr(args, field, absolute_path(path))
     validate_distinct_paths(
         command_parser,
         goal_state=args.goal_state,
+        loop_state=args.loop_state,
         startup_file=args.startup_file,
         log_file=args.log_file,
         lock_file=args.lock_file,
     )
     if args.thread and not args.log_file:
-        command_parser.error("--log-file is required with --thread")
+        command_parser.error("--log-file is required with --session")
     if args.thread and not args.lock_file:
-        command_parser.error("--lock-file is required with --thread")
+        command_parser.error("--lock-file is required with --session")
     if args.thread and not args.message_template:
-        command_parser.error("--message-template is required with --thread")
+        command_parser.error("--message-template is required with --session")
     overlap = set(args.ready) & set(args.terminal)
     if overlap:
         command_parser.error(f"ready and terminal statuses must be disjoint: {sorted(overlap)}")
@@ -593,6 +685,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.log_file,
             args.goal_state,
             args.goal_node,
+            args.loop_state,
         )
     if args.event_id is not None and (
         not args.event_id.strip() or len(args.event_id) > 128 or any(character.isspace() for character in args.event_id)
@@ -604,7 +697,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.goal_state and not args.event_id:
         command_parser.error("--event-id is required with goal activation")
     if args.goal_state and not args.thread:
-        command_parser.error("--thread is required with goal activation")
+        command_parser.error("--session is required with goal activation")
+    if args.goal_state and args.loop_state:
+        command_parser.error("--goal-state and --loop-state are mutually exclusive")
+    if args.loop_state and not args.event_id:
+        command_parser.error("--event-id is required with --loop-state")
+    if args.loop_state and not args.thread:
+        command_parser.error("--session is required with --loop-state")
 
     with ExitStack() as resources:
         if args.lock_file:
@@ -631,6 +730,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "event_id": args.event_id,
                     "event": "watcher_started",
                     "goal_node": args.goal_node,
+                    "client": args.client,
                     "thread": args.thread,
                     "log_file": str(args.log_file),
                     "lock_file": str(args.lock_file),
@@ -640,6 +740,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             try:
                 activation = wait_for_goal_activation(args)
             except KeyboardInterrupt:
+                write_result(
+                    args.log_file,
+                    {
+                        "label": args.label,
+                        "event_id": args.event_id,
+                        "event": "interrupted",
+                        "status": None,
+                    },
+                )
                 return EXIT_INTERRUPTED
             if activation != "active":
                 write_result(
