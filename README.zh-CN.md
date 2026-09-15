@@ -61,7 +61,7 @@ python scripts/waitctl.py start -- \
   -- deployctl status api --output status
 ```
 
-查询命令是 `--` 后面的全部内容，并且不会隐式调用 shell。JSON 对象或数组必须使用 `--json-path` 选择标量状态。每次 wait 都有有限总时长：`--timeout` 默认为 24 小时。默认查询间隔为五分钟；连续失败上限默认为 12，且不能关闭。
+查询命令是 `--` 后面的全部内容，并且不会隐式调用 shell。JSON 对象或数组必须使用 `--json-path` 选择标量状态。每次 wait 都有有限总时长：`--timeout` 默认为一小时。默认查询间隔为五分钟；连续失败上限默认为 12，且不能关闭。更长的等待应评估任务稳定性与触发条件的可靠性，并考虑用 `wait-loop` 定期检查健康状态和实际进展。
 
 服务管理见 [docs/waitd.zh-CN.md](docs/waitd.zh-CN.md)，watcher 语义和安全边界见 [docs/wait.zh-CN.md](docs/wait.zh-CN.md)。`wait_for.py` 仍可作为独立 fallback 使用。
 

@@ -204,11 +204,9 @@ python scripts/waitctl.py goal -- add \
 
 如果 Agent 仍在运行，根 Agent 使用运行时提供的阻塞等待，只在完成或需要关注时恢复。
 
-如果只剩外部状态：
+如果只剩外部状态，按[等待时限](wait.zh-CN.md#等待时限)选择上限。长等待需要定期评估健康与进展时，根 Agent 可使用 `wait-loop` 每小时执行只读检查。通过 `loop init --goal-state FILE --goal-node ID` 绑定监控；保存的任务说明检查内容及向根 Agent 汇报结果的方式。goal 响应会列出关联 loop，服务在目标或节点结束时取消监控。
 
-外部等待超过一小时时，可提示根 Agent 使用 `wait-loop` 每小时执行只读检查。通过 `loop init --goal-state FILE --goal-node ID` 绑定监控；保存的任务说明检查内容及向根 Agent 汇报结果的方式。goal 响应会列出关联 loop，服务在目标或节点结束时取消监控。
-
-否则使用普通的 goal watcher 协议：
+按状态条件等待时，使用 goal watcher 协议：
 
 1. 运行 `wait` 准备元数据，节点暂时保持 `running`；保存唯一 `watch_id` 和命令返回的绝对路径。state、log、lock 和 startup 路径必须互不相同。
 2. 通过 `waitctl.py start -- ...` 提交 watcher，并传入这些路径、watch ID 和 `--goal-node`。它先取得 watcher lock、写入启动回执，然后在不查询外部系统的情况下等待激活。

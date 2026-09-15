@@ -50,7 +50,12 @@ python scripts/waitctl.py start -- \
 
 JSON 对象或数组必须选择一个标量字段，例如 `{"status":"ServiceReady"}` 使用 `--json-path status`，嵌套字段可使用 `--json-path run.status`；否则 watcher 会立即产生带安全配置错误的 `query_failed`，不会反复重试无效约定。
 
-每个 watcher 都有有限的总时长，`--timeout` 默认为 24 小时。默认查询间隔为五分钟；连续失败上限必须为正数，默认为 12。两项保护都不能关闭。
+## 等待时限
+
+每个 watcher 都有有限的总时长，`--timeout` 默认为一小时（3600 秒）。默认查询间隔为五分钟；连续失败上限必须为正数，默认为 12。两项保护都不能关闭。
+
+将超时延长到一小时以上前，检查任务稳定性、选取的状态字段与精确值、失败状态覆盖，以及如何发现进展停滞。查询成功并返回 `Running` 不代表任务健康。很长的等待应考虑 [wait-loop](wait-loop.zh-CN.md)，约每小时检查健康状态、实际进展和触发条件是否仍有效。为循环设置有限总时长与停止、汇报条件，不要每轮只是续上同一个 wait。
+
 每次通知或会话恢复受 `--notification-timeout` 限制。队列失败与同步恢复超时的重复投递风险不同，因此默认重试策略按客户端区分，详见[客户端适配](clients.zh-CN.md)。
 
 ## 执行协议
@@ -58,11 +63,11 @@ JSON 对象或数组必须选择一个标量字段，例如 `{"status":"ServiceR
 一次 `$wait` 由发送方、watcher、外部系统和接收方共同完成：
 
 1. **发送方定义条件。** `--ready` 和 `--terminal` 使用精确字符串匹配且不能重叠。查询命令必须只读，并且只输出一个短标量状态；JSON 输出通过 `--json-path` 提取。按[客户端进度工具规则](clients.zh-CN.md#进度工具)复用任务的原生 Todo 条目，需要时创建。
-2. **watcher 取得所有权。** 它以非阻塞方式取得 `--lock-file`。已有进程持有同一 lock 时，新 watcher 返回 `already_watching`，不会启动第二个查询循环。调用方确认 lock 和服务记录后，将 Todo 标记等待，记录条件、截止时间和日志路径，然后结束轮次。
+2. **watcher 取得所有权。** 它以非阻塞方式取得 `--lock-file`。已有进程持有同一 lock 时，新 watcher 返回 `already_watching`，不会启动第二个查询循环。调用方确认 lock 和服务记录后，将 Todo 标记等待，记录条件、截止时间和日志路径，按[客户端适配](clients.zh-CN.md)接好投递通道，再结束轮次。
 3. **watcher 执行查询循环。** 每次查询最多运行 `--query-timeout` 秒；设置总 `--timeout` 时，单次查询也不会越过剩余总时间。普通状态按 `--interval` 继续等待，成功查询会清零连续失败计数。
 4. **watcher 固化事件。** 遇到 ready、terminal、总超时或连续查询失败后，确定稳定的 `event_id`：独立 `$wait` 生成新 ID，与 `wait-loop` 或 `wait-goal` 集成时沿用其 `watch_id`。结果先原子写入 `--log-file`，再尝试通知。
-5. **watcher 投递通知。** 客户端适配器投递稳定 event ID。结束轮次前，按[客户端适配](clients.zh-CN.md)接好投递通道。投递进度先持久化；goal watcher 每次重试前还会确认当前 watch 仍有效。
-6. **watcher 完成交接。** goal 通知成功后，watcher 会继续持有 lock，直到根 Agent 记录 `wake`，最长不超过 `--wake-ack-timeout`。这样能区分正常的“通知已送达、wake 尚未落盘”窗口与 watcher 消失。
+5. **watcher 投递通知。** 已配置的客户端适配器投递稳定 event ID。投递进度先持久化；goal watcher 每次重试前还会确认当前 watch 仍有效。
+6. **watcher 完成交接。** goal 的 watcher 在有界确认窗口内继续持有 lock，直到根 Agent 记录 `wake`。投递状态和对应截止时间由[客户端适配](clients.zh-CN.md)定义。
 7. **接收方恢复并复查。** 恢复消息只是提示。接收方先读取日志并校验 event ID，再对外部系统执行一次独立的只读查询；只有复查结果可以驱动后续完成或失败判断。依据核实结果更新同一 Todo。Ready 只有满足等待条目的验收条件时才能完成该条目；goal 或 loop 条目遵循所属协议。失败结果记录原因和下一步。
 
 事件和退出状态如下：
@@ -78,7 +83,7 @@ JSON 对象或数组必须选择一个标量字段，例如 `{"status":"ServiceR
 | `interrupted` | watcher 被中断 | `130` | 检查日志和目标状态 |
 | 通知失败 | 已配置的重试次数耗尽 | `70` | 读取已持久化日志，人工决定是否补投 |
 
-`wait-goal` 使用 watcher 时，会增加两阶段握手：watcher 先取得 lock 并写 `watcher_started` 回执，但不查询；根 Agent 校验 node、watch ID、client、目标 session、日志、回执时效和仍被持有的 lock，再执行 `activate-wait`。prepared watcher 超过 `--activation-timeout` 未激活会退出；active wait 被取消、替换、删除或损坏后，也会在下一次查询或通知重试前退出。通知成功后，它继续持有 lock，最长不超过 `--wake-ack-timeout`，并在 `wake` 改变节点状态后立即释放。替换孤儿 watcher 前，先用准确 watch ID 执行 `abort-wait`。
+`wait-goal` 使用 watcher 时，会增加两阶段握手：watcher 先取得 lock 并写 `watcher_started` 回执，但不查询；根 Agent 校验 node、watch ID、client、目标 session、日志、回执时效和仍被持有的 lock，再执行 `activate-wait`。prepared watcher 超过 `--activation-timeout` 未激活会退出；active wait 被取消、替换、删除或损坏后，也会在下一次查询或通知重试前退出。替换孤儿 watcher 前，先用准确 watch ID 执行 `abort-wait`。
 
 ## 服务所有权
 
@@ -159,7 +164,7 @@ sequenceDiagram
     A->>W: 启动后台 watcher
     W-->>A: 写入启动回执，等待激活
     A->>G: activate-wait：节点进入 waiting
-    A-->>A: 结束模型轮次
+    A-->>A: 接好客户端投递通道，结束模型轮次
 
     loop 直到 ready、terminal、timeout 或 query_failed
         W->>E: 执行只读状态查询

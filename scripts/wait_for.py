@@ -40,7 +40,7 @@ MESSAGE_FIELDS = {
 }
 MAX_QUERY_OUTPUT_BYTES = 64 * 1024
 CLIENTS = {"claude", "codewiz", "codex", "copilot", "cursor"}
-DEFAULT_WAIT_TIMEOUT = 86400.0
+DEFAULT_WAIT_TIMEOUT = 3600.0
 
 
 class QueryConfigurationError(ValueError):
@@ -291,6 +291,17 @@ def notification_success(client: str) -> str:
     return "queued" if client == "codex" else "completed"
 
 
+def notification_limits(args: argparse.Namespace) -> tuple[int, float]:
+    """Resolve the shared CLI and service delivery policy."""
+    attempts = args.max_notification_attempts
+    timeout = args.notification_timeout
+    if attempts is None:
+        attempts = 12 if args.client == "codex" else 1
+    if timeout is None:
+        timeout = 60.0 if args.client == "codex" else 3600.0
+    return attempts, timeout
+
+
 def notify_session(
     client: str,
     session: str,
@@ -321,12 +332,7 @@ def deliver_notification(
         result.update(notification="native_pending", notification_attempts=0)
         persist_result(args.log_file, result)
         return None
-    max_attempts = args.max_notification_attempts
-    if max_attempts is None:
-        max_attempts = 12 if args.client == "codex" else 1
-    notification_timeout = args.notification_timeout
-    if notification_timeout is None:
-        notification_timeout = 60.0 if args.client == "codex" else 3600.0
+    max_attempts, notification_timeout = notification_limits(args)
     attempts = 0
     result["notification"] = "pending"
     result["notification_attempts"] = attempts
@@ -568,7 +574,7 @@ def parser() -> argparse.ArgumentParser:
         "--timeout",
         type=positive_number,
         default=DEFAULT_WAIT_TIMEOUT,
-        help="Overall wait limit in seconds; defaults to 86400 (24 hours)",
+        help="Overall wait limit in seconds; defaults to 3600 (1 hour)",
     )
     result.add_argument(
         "--max-consecutive-failures",

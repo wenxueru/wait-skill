@@ -532,7 +532,8 @@ class WaitDaemon:
                     phase = "awaiting_ack"
                     if result.get("notification") == "native_pending":
                         # Native task availability is not delivery confirmation.
-                        deadline = float(result["available_at"]) + (args.notification_timeout or 3600.0)
+                        _, timeout = wait_for.notification_limits(args)
+                        deadline = float(result["available_at"]) + timeout
                     else:
                         deadline = float(result.get("delivered_at", time.time())) + args.wake_ack_timeout
                     record["wake_ack_deadline_at"] = deadline
@@ -547,8 +548,10 @@ class WaitDaemon:
                     float(record["wake_ack_deadline_at"]),
                 )
                 if result.get("notification") == "native_pending" and wait_for.goal_wait_is_current(args):
-                    result["notification"] = "cancelled" if cancel_event.is_set() else "unconfirmed"
-                    code = wait_for.EXIT_ACTIVATION_CANCELLED if cancel_event.is_set() else wait_for.EXIT_NOTIFY_FAILED
+                    if cancel_event.is_set():
+                        result["notification"], code = "cancelled", wait_for.EXIT_ACTIVATION_CANCELLED
+                    else:
+                        result["notification"], code = "unconfirmed", wait_for.EXIT_NOTIFY_FAILED
                 self._persist_result(args, record, result, phase="finalizing", code=code)
             wait_for.persist_result(args.log_file, result)
             return result, code
@@ -675,8 +678,7 @@ class WaitDaemon:
             result.update(notification="native_pending", notification_attempts=0, available_at=time.time())
             self._persist_result(args, record, result)
             return None
-        max_attempts = args.max_notification_attempts or (12 if args.client == "codex" else 1)
-        timeout = args.notification_timeout or (60.0 if args.client == "codex" else 3600.0)
+        max_attempts, timeout = wait_for.notification_limits(args)
         previous_attempts = int(result.get("notification_attempts", 0))
         for attempt in range(previous_attempts + 1, max_attempts + 1):
             if cancel_event.is_set() or not wait_for.watch_is_current(args):

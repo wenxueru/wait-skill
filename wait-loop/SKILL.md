@@ -1,6 +1,6 @@
 ---
 name: wait-loop
-description: Implement Loop mode across CodeWiz, Cursor, Claude Code, GitHub Copilot, and Codex by scheduling bounded timer waits with the parent wait skill. Use when the user directly invokes wait-loop or the root of an explicitly invoked wait-goal deliberately selects it for a necessary long wait; never infer it from ordinary repeated or long-running work.
+description: Implement Loop mode across CodeWiz, Cursor, Claude Code, GitHub Copilot, and Codex by scheduling bounded timer waits with the parent wait skill. Use when the user directly invokes wait-loop or the root deliberately selects periodic health checks for a long wait in wait or wait-goal.
 ---
 
 # Wait Loop

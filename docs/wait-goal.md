@@ -204,11 +204,9 @@ python scripts/waitctl.py goal -- add \
 
 When agents are still running, the root agent uses the runtime's blocking wait and resumes only when an agent completes or needs attention.
 
-When only external state remains:
+When only external state remains, choose a bound using the [wait limits](wait.md#wait-limits). If a long wait needs periodic health and progress assessment, the root can use `wait-loop` for hourly read-only checks. Bind the monitor with `loop init --goal-state FILE --goal-node ID`; its saved task describes the checks and how to report results to the root. Goal responses list linked loops, and the service cancels the monitor when the goal or node ends.
 
-For an external wait exceeding one hour, the root can use `wait-loop` for hourly read-only checks. Bind the monitor with `loop init --goal-state FILE --goal-node ID`; its saved task describes the checks and how to report results to the root. Goal responses list linked loops, and the service cancels the monitor when the goal or node ends.
-
-Otherwise, use the normal goal watcher protocol:
+For a condition-based wait, use the goal watcher protocol:
 
 1. Run `wait` to prepare metadata while the node remains `running`; retain its unique `watch_id` and returned absolute paths. State, log, lock, and startup paths must be distinct.
 2. Submit the watcher through `waitctl.py start -- ...` with those paths, the watch ID, and `--goal-node`. It acquires the watcher lock, writes the startup receipt, and waits without querying.

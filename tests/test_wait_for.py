@@ -32,6 +32,24 @@ class Clock:
 
 
 class WaitForTest(unittest.TestCase):
+    def test_notification_limits_preserve_defaults_and_overrides(self) -> None:
+        for client in sorted(wait_for.CLIENTS):
+            with self.subTest(client=client):
+                args = Namespace(client=client, max_notification_attempts=None, notification_timeout=None)
+                expected = (12, 60.0) if client == "codex" else (1, 3600.0)
+                self.assertEqual(wait_for.notification_limits(args), expected)
+                args.max_notification_attempts = 3
+                self.assertEqual(wait_for.notification_limits(args), (3, expected[1]))
+                args.notification_timeout = 90.0
+                self.assertEqual(wait_for.notification_limits(args), (3, 90.0))
+
+    def test_wait_timeout_defaults_to_one_hour_and_allows_explicit_override(self) -> None:
+        argv = ["--label", "demo", "--ready", "Ready"]
+        args, _ = wait_for.parse_wait_args([*argv, "--", "echo", "Running"])
+        self.assertEqual(args.timeout, 3600)
+        args, _ = wait_for.parse_wait_args([*argv, "--timeout", "7200", "--", "echo", "Running"])
+        self.assertEqual(args.timeout, 7200)
+
     def test_extracts_plain_and_json_status(self) -> None:
         self.assertEqual(wait_for.extract_status("diagnostic\nRunning\n"), "Running")
         self.assertEqual(

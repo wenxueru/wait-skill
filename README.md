@@ -61,7 +61,7 @@ python scripts/waitctl.py start -- \
   -- deployctl status api --output status
 ```
 
-Everything after `--` is executed directly without an implicit shell. JSON objects and arrays require `--json-path` to select a scalar status. Every wait has a finite overall limit: `--timeout` defaults to 24 hours. The default interval is five minutes and the consecutive-query-failure limit defaults to 12 and cannot be disabled.
+Everything after `--` is executed directly without an implicit shell. JSON objects and arrays require `--json-path` to select a scalar status. Every wait has a finite overall limit: `--timeout` defaults to one hour. The default interval is five minutes and the consecutive-query-failure limit defaults to 12 and cannot be disabled. For longer waits, assess task stability and trigger reliability; consider `wait-loop` for periodic health and progress checks.
 
 See [docs/waitd.md](docs/waitd.md) for service management and [docs/wait.md](docs/wait.md) for watcher semantics and security boundaries. `wait_for.py` remains available as a standalone fallback.
 

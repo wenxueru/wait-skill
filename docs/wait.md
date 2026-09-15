@@ -50,17 +50,22 @@ python scripts/waitctl.py start -- \
 
 JSON objects and arrays require an option such as `--json-path status` for `{"status":"ServiceReady"}` or `--json-path run.status` for a nested field. Without it, the watcher immediately emits `query_failed` with a safe configuration error instead of retrying an invalid contract.
 
-Every watcher has a finite overall limit; `--timeout` defaults to 24 hours. The default query interval is five minutes and the positive consecutive-failure limit defaults to 12. Neither safeguard can be disabled.
+## Wait limits
+
+Every watcher has a finite overall limit; `--timeout` defaults to one hour (3600 seconds). The default query interval is five minutes and the positive consecutive-failure limit defaults to 12. Neither safeguard can be disabled.
+
+Before extending the timeout beyond one hour, check task stability, the selected status field and exact values, failure-state coverage, and how stalled progress will be detected. A successful query returning `Running` does not prove the task is healthy. For very long waits, consider [wait-loop](wait-loop.md) to inspect health, progress, and whether the trigger is still valid about once per hour. Give the loop a finite duration and stop/report criteria; do not merely renew the same wait on every tick.
+
 Each notification or session-resume attempt is bounded by `--notification-timeout`. Retry defaults differ by client because queue failures and synchronous session-resume timeouts have different duplicate-delivery risks; see [client adapters](clients.md).
 
 ## Execution protocol
 
 1. **Define conditions.** `--ready` and `--terminal` use exact, disjoint string matches. The read-only query should emit one short scalar; use `--json-path` for JSON. Reuse the task's native Todo item, or create one if needed, following the [client progress-tool rules](clients.md#progress-tools).
-2. **Acquire ownership.** The watcher takes `--lock-file` without blocking. A second watcher returns `already_watching` and does not start another query loop. After confirming the lock and service record, the caller marks its Todo waiting with the condition, deadline, and log path, then ends the turn.
+2. **Acquire ownership.** The watcher takes `--lock-file` without blocking. A second watcher returns `already_watching` and does not start another query loop. After confirming the lock and service record, the caller marks Todo waiting with the condition, deadline, and log path, sets up the [client adapter](clients.md), then ends the turn.
 3. **Query.** Each call is bounded by `--query-timeout` and any remaining overall timeout. A successful query resets the consecutive-failure count.
 4. **Persist.** On ready, terminal, overall timeout, or repeated query failure, the watcher chooses a stable `event_id`: standalone `$wait` generates one, while `wait-loop` and `wait-goal` integrations reuse their `watch_id`. It writes the result atomically before notification.
-5. **Notify.** The client adapter delivers the stable event ID. Before ending the turn, set up delivery through the [client adapter](clients.md). Delivery progress is persisted first. Before every retry, a goal-owned watcher confirms that its watch is still active.
-6. **Hand off.** After a goal notification succeeds, the watcher retains its lock until the root records `wake`, bounded by `--wake-ack-timeout`. This keeps the notification-to-wake interval distinguishable from a dead watcher.
+5. **Notify.** The configured client adapter delivers the stable event ID. Delivery progress is persisted first. Before every retry, a goal-owned watcher confirms that its watch is still active.
+6. **Hand off.** For a goal, the watcher retains its lock during the bounded acknowledgement window until the root records `wake`. The [client adapter](clients.md) defines delivery status and the applicable deadline.
 7. **Resume and verify.** A resume message is only a hint. The receiver validates the log and event ID, then independently queries the external system once before deciding what to do. Update the same Todo from the verified outcome. Ready completes a wait item only when its acceptance condition is met; a goal or loop item follows its owning protocol. Record unsuccessful outcomes with their cause and next action.
 
 | Result or condition | Trigger | Exit | Receiver action |
@@ -74,7 +79,7 @@ Each notification or session-resume attempt is bounded by `--notification-timeou
 | `interrupted` | Watcher interrupted | `130` | Inspect log and goal state |
 | Notification failure | Configured retry limit exhausted | `70` | Read the persisted log and decide whether to redeliver |
 
-When `wait-goal` uses the watcher, startup adds a two-phase handshake. The watcher acquires the lock and writes a `watcher_started` receipt without querying. The root validates the node, watch ID, client, target session, log, receipt age, and live lock before running `activate-wait`. Only then does querying begin. A prepared watcher exits after `--activation-timeout`; an active watcher exits before its next query or notification retry if the saved wait is cancelled, replaced, missing, or invalid. After successful notification it keeps the lock for at most `--wake-ack-timeout`, releasing it as soon as `wake` changes the node state. Use `wait_goal.py abort-wait` with the exact watch ID before replacing an orphaned watcher.
+When `wait-goal` uses the watcher, startup adds a two-phase handshake. The watcher acquires the lock and writes a `watcher_started` receipt without querying. The root validates the node, watch ID, client, target session, log, receipt age, and live lock before running `activate-wait`. Only then does querying begin. A prepared watcher exits after `--activation-timeout`; an active watcher exits before its next query or notification retry if the saved wait is cancelled, replaced, missing, or invalid. Use `wait_goal.py abort-wait` with the exact watch ID before replacing an orphaned watcher.
 
 ## Service ownership
 
@@ -155,7 +160,7 @@ sequenceDiagram
     A->>W: Start background watcher
     W-->>A: Write startup receipt; wait for activation
     A->>G: activate-wait: move node to waiting
-    A-->>A: End the model turn
+    A-->>A: Set up client delivery; end the model turn
 
     loop Until ready, terminal, timeout, or query_failed
         W->>E: Run read-only status query

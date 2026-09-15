@@ -18,9 +18,19 @@ Codex queues the message and returns promptly, so delivery failures retry at mos
 
 Resume commands keep the client's default permission policy. If a resumed turn needs permissions unavailable in non-interactive mode, pass each required option explicitly with `--resume-arg=VALUE`, within the user's authorization; otherwise require a manual resume.
 
-CLI resume commands run a separate process; they do not prove that an existing interactive UI received a message. Their successful result is `notification: completed`; Codex queue acceptance is `queued`.
+CLI resume commands run a separate process; they do not prove that an existing interactive UI received a message. Their successful result is `notification: completed`; Codex queue acceptance is `queued`. For these successful goal deliveries, the service retains the lock until root `wake`, bounded by `--wake-ack-timeout` (default 60 seconds).
 
 In every client, the resumed root reads the referenced log, validates the event against saved state, and follows the [wait](wait.md), [goal](wait-goal.md), or [loop](wait-loop.md) resume protocol. Delivery status alone does not complete the task.
+
+## Session binding
+
+Use the owning conversation's exact `--client` and `--session` for watcher submission, goal `init`, and loop `init`. A goal-owned watcher must also use the prepared watch ID and `--goal-state`, `--goal-node`, and `--startup-file` bindings from the [goal handshake](wait.md#integrate-with-wait-goal). For a loop, use the timer's saved watch ID. The resume template binds the durable state and log; see the [wait](wait.md) and [loop](wait-loop.md) examples.
+
+## Requirements
+
+- CLI delivery requires an installed, authenticated client on the watcher's `PATH`. Claude native delivery instead requires the owning interactive session's background Bash tool.
+- The saved session must be resumable and must have access to the goal state, watcher log, and workspace.
+- Do not pass credentials in the session ID, message template, query argv, or persisted files.
 
 ## CodeWiz
 
@@ -75,39 +85,3 @@ The execution protocols specify when to update progress: after persisted state t
 | Failed, cancelled, or timed out | Matching status or an explicit outcome label, distinct from success |
 
 For large graphs, group nodes by phase and retain their IDs in the description. If only one item can be in progress, use an execution-phase item listing concurrent nodes.
-
-## Goal initialization
-
-Persist the client and session with the goal:
-
-```bash
-python scripts/waitctl.py goal -- init \
-  --objective "Ship after CI passes" \
-  --client claude \
-  --session "$AGENT_SESSION_ID"
-```
-
-Without `--state`, `init` returns a unique per-project path under `/tmp/.wait-goal/`. Use that `state_file` for later goal commands.
-
-Start its watcher with the same values. Use a slash resume directive outside Codex:
-
-```bash
-python scripts/waitctl.py start -- \
-  --client claude \
-  --session "$AGENT_SESSION_ID" \
-  --label "CI" \
-  --ready success \
-  --timeout 3600 \
-  --lock-file /tmp/wait-ci.lock \
-  --log-file /tmp/wait-ci.json \
-  --message-template '/wait resume /tmp/wait-ci.json; event_id={event_id}; event={event}; status={status}' \
-  -- ci status --output state
-```
-
-For a goal-owned watcher, also pass the prepared watch ID and the `--goal-state`, `--goal-node`, and `--startup-file` handshake arguments described in [wait.md](wait.md).
-
-## Requirements
-
-- CLI delivery requires an installed, authenticated client on the watcher's `PATH`. Claude native delivery instead requires the owning interactive session's background Bash tool.
-- The saved session must be resumable and must have access to the goal state, watcher log, and workspace.
-- Do not pass credentials in the session ID, message template, query argv, or persisted files.

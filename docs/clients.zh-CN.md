@@ -18,9 +18,19 @@ Codex 会把消息加入队列并快速返回，因此投递失败默认最多�
 
 恢复命令默认沿用客户端自身的权限策略。恢复后的轮次若需要非交互模式默认不授予的权限，应在用户授权范围内使用 `--resume-arg=值` 逐项显式传入；否则应要求用户手动恢复。
 
-CLI 恢复命令运行在独立进程中，不能证明已有交互界面收到消息；成功结果记为 `notification: completed`，Codex 队列接收记为 `queued`。
+CLI 恢复命令运行在独立进程中，不能证明已有交互界面收到消息；成功结果记为 `notification: completed`，Codex 队列接收记为 `queued`。 对这两类已成功投递的 goal 通知，服务继续持有 lock，直到 Root 执行 `wake`，最长为 `--wake-ack-timeout`（默认 60 秒）。
 
 所有客户端恢复后，都由 Root 读取消息引用的日志、对照持久状态校验事件，再执行 [wait](wait.zh-CN.md)、[goal](wait-goal.zh-CN.md) 或 [loop](wait-loop.zh-CN.md) 的恢复协议。投递状态本身不代表任务完成。
+
+## 会话绑定
+
+提交 watcher、初始化 goal 和 loop 时，使用所属对话准确的 `--client` 和 `--session`。goal watcher 还需使用[目标握手](wait.zh-CN.md#与-wait-goal-集成)返回的 watch ID，以及 `--goal-state`、`--goal-node` 和 `--startup-file` 绑定；loop 使用计时器保存的 watch ID。恢复模板绑定持久状态和日志，示例见 [wait](wait.zh-CN.md) 和 [loop](wait-loop.zh-CN.md)。
+
+## 要求
+
+- CLI 投递要求客户端已安装、认证并位于 watcher 的 `PATH` 中；Claude 原生投递要求所属交互会话提供后台 Bash 工具。
+- 保存的会话可以恢复，并能访问目标状态、watcher 日志和工作区。
+- 不要在会话 ID、消息模板、查询 argv 或持久化文件中传递凭据。
 
 ## CodeWiz
 
@@ -75,39 +85,3 @@ goal 等待期间，服务保留所有权直到 Root 执行 `wake`，上限由 `
 | 失败、取消或超时 | 对应状态或明确的结果标签，与成功区分 |
 
 图较大时按阶段分组，在说明中保留节点 ID。工具只允许一个进行中条目时，用执行阶段条目列出并行节点。
-
-## 初始化目标
-
-在目标中持久化客户端和会话：
-
-```bash
-python scripts/waitctl.py goal -- init \
-  --objective "CI 通过后发布" \
-  --client claude \
-  --session "$AGENT_SESSION_ID"
-```
-
-不传 `--state` 时，`init` 会返回 `/tmp/.wait-goal/` 下按项目隔离的唯一路径；后续 goal 命令使用该 `state_file`。
-
-启动 watcher 时使用相同值。Codex 以外的客户端使用斜杠恢复指令：
-
-```bash
-python scripts/waitctl.py start -- \
-  --client claude \
-  --session "$AGENT_SESSION_ID" \
-  --label "CI" \
-  --ready success \
-  --timeout 3600 \
-  --lock-file /tmp/wait-ci.lock \
-  --log-file /tmp/wait-ci.json \
-  --message-template '/wait resume /tmp/wait-ci.json; event_id={event_id}; event={event}; status={status}' \
-  -- ci status --output state
-```
-
-目标所属的 watcher 还必须传入准备阶段生成的 watch ID，以及 [wait.zh-CN.md](wait.zh-CN.md) 说明的 `--goal-state`、`--goal-node` 和 `--startup-file` 握手参数。
-
-## 要求
-
-- CLI 投递要求客户端已安装、认证并位于 watcher 的 `PATH` 中；Claude 原生投递要求所属交互会话提供后台 Bash 工具。
-- 保存的会话可以恢复，并能访问目标状态、watcher 日志和工作区。
-- 不要在会话 ID、消息模板、查询 argv 或持久化文件中传递凭据。

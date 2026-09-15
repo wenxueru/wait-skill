@@ -17,11 +17,11 @@ Use `$wait` in Codex and the client's slash-skill form, usually `/wait`, elsewhe
 
 ## Workflow
 
-1. Define the read-only query, exact ready and terminal values, and finite timeout. Use the 24-hour default only when a more meaningful bound is unavailable. With a native Todo or plan tool, reuse the task's item or create one; a goal node or loop iteration keeps its caller's item.
-2. Choose unique lock and log files for this object and session. Prepare a message template invoking `wait resume` with the log path, `{event_id}`, `{event}`, and `{status}`.
-3. Submit through `scripts/waitctl.py start -- ...` with `--client` and the current `--session`. The command starts the local service on demand. Confirm ownership through `show WATCH_ID` and the live watcher lock; submission alone only confirms registration. Use `wait_for.py` directly for compatibility or recovery.
-4. After ownership is confirmed, update the Todo item to waiting, recording the condition, deadline, and log path. Set up the owning session's event delivery using the [client adapter](docs/clients.md). End the turn while the watcher monitors the object.
-5. On resume, validate the durable log and event ID, query current state once, and decide the next action. Update Todo from that verified result: complete the item when its acceptance condition is met, or record the failure, timeout, or remaining work. For goal-owned waits, the root records the DAG transition before updating Todo.
+1. **Choose the wait.** Define the read-only query, exact ready and terminal values, and finite timeout (default one hour). For longer waits, assess task stability and detection of failure or stalled progress using the [wait limits](docs/wait.md#wait-limits). Consider [wait-loop](wait-loop/SKILL.md) when periodic health and progress checks are needed.
+2. **Prepare.** Reuse or create the task's native Todo item; a goal node or loop iteration keeps its caller's item. Choose unique lock and log files for this object and session. Prepare a `wait resume` message template with the log path, `{event_id}`, `{event}`, and `{status}`.
+3. **Start.** Submit through `scripts/waitctl.py start -- ...` with `--client` and the current `--session`. It starts the service on demand. Confirm ownership through `show WATCH_ID` and the live watcher lock; submission alone only confirms registration.
+4. **Suspend.** Mark Todo waiting with the condition, deadline, and log path. Set up the owning session's event delivery using the [client adapter](docs/clients.md), then end the turn.
+5. **Resume.** Validate the durable log and event ID, query current state once, and decide the next action. Update Todo from the verified outcome, completing it only when its acceptance condition is met. For goal-owned waits, the root records the DAG transition first.
 
 ## Boundaries
 

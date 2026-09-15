@@ -1,6 +1,6 @@
 ---
 name: wait-loop
-description: 在 CodeWiz、Cursor、Claude Code、GitHub Copilot 和 Codex 中，通过父级 wait Skill 安排有界定时等待，实现 Loop 模式。用户直接调用 wait-loop，或已明确调用的 wait-goal 由根 Agent 主动选择它处理必要的长等待时使用；不得从普通重复或长时间任务中自动推断。
+description: 在 CodeWiz、Cursor、Claude Code、GitHub Copilot 和 Codex 中，通过父级 wait Skill 安排有界定时等待，实现 Loop 模式。用户直接调用 wait-loop，或根 Agent 在 wait、wait-goal 的长等待中主动选择定期健康检查时使用。
 ---
 
 # Wait Loop
