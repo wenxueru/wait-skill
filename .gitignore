@@ -5,3 +5,4 @@ __pycache__/
 .pytest_cache/
 commit.tmp
 .vscode/
+history.cmt

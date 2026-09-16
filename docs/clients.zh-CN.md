@@ -2,7 +2,7 @@
 
 [English](clients.md)
 
-依赖图和 watcher 与客户端无关。通过 `waitctl.py start --` 提交的 watcher 参数使用 `--client CLIENT --session ID` 选择最后的投递方式：
+各客户端共用同一套等待和依赖图逻辑，区别在于如何把结果送回 Agent。提交 `waitctl.py start --` 时，用 `--client CLIENT --session ID` 选择客户端和会话：
 
 | 客户端 | 恢复命令 | Skill 调用 |
 | --- | --- | --- |
@@ -16,25 +16,25 @@
 
 Codex 会把消息加入队列并快速返回，因此投递失败默认最多重试 12 次，单次超时 60 秒。CodeWiz、Cursor 和 Copilot 会恢复 CLI 会话并等待该轮次返回，默认只尝试一次、单次超时一小时，因为超时结果不明确——目标轮次可能已经运行。只有客户端能证明失败尝试没有启动轮次时，才覆盖 `--max-notification-attempts`。
 
-恢复命令默认沿用客户端自身的权限策略。恢复后的轮次若需要非交互模式默认不授予的权限，应在用户授权范围内使用 `--resume-arg=值` 逐项显式传入；否则应要求用户手动恢复。
+恢复命令沿用客户端的权限策略。非交互运行需要额外权限时，只能在用户已有授权范围内通过 `--resume-arg=值` 传入；权限不足则留待手动恢复。
 
-CLI 恢复命令运行在独立进程中，不能证明已有交互界面收到消息；成功结果记为 `notification: completed`，Codex 队列接收记为 `queued`。 对这两类已成功投递的 goal 通知，服务继续持有 lock，直到 Root 执行 `wake`，最长为 `--wake-ack-timeout`（默认 60 秒）。
+CLI 恢复命令在独立进程中执行，不代表已打开的界面会收到消息。CLI 成功返回记为 `notification: completed`，Codex 队列接收记为 `queued`。这两类 goal 通知投递后，服务继续持有 lock 等根 Agent 执行 `wake`，最长等待 `--wake-ack-timeout`（默认 60 秒）。
 
-所有客户端恢复后，都由 Root 读取消息引用的日志、对照持久状态校验事件，再执行 [wait](wait.zh-CN.md)、[goal](wait-goal.zh-CN.md) 或 [loop](wait-loop.zh-CN.md) 的恢复协议。投递状态本身不代表任务完成。
+恢复后，根 Agent 读取消息中的日志，对照保存的状态校验事件，再按 [wait](wait.zh-CN.md)、[goal](wait-goal.zh-CN.md) 或 [loop](wait-loop.zh-CN.md) 继续。通知送达不等于任务完成。
 
 ## 会话绑定
 
-提交 watcher、初始化 goal 和 loop 时，使用所属对话准确的 `--client` 和 `--session`。goal watcher 还需使用[目标握手](wait.zh-CN.md#与-wait-goal-集成)返回的 watch ID，以及 `--goal-state`、`--goal-node` 和 `--startup-file` 绑定；loop 使用计时器保存的 watch ID。恢复模板绑定持久状态和日志，示例见 [wait](wait.zh-CN.md) 和 [loop](wait-loop.zh-CN.md)。
+提交 watcher、初始化 goal 和 loop 时，使用所属对话准确的 `--client` 和 `--session`。goal watcher 还需使用[目标握手](wait.zh-CN.md#与-wait-goal-集成)返回的 watch ID，以及 `--goal-state`、`--goal-node` 和 `--startup-file` 绑定；loop 使用计时器保存的 watch ID。恢复指令由服务根据这些绑定自动生成，不由 Agent 编写。示例见 [wait](wait.zh-CN.md) 和 [loop](wait-loop.zh-CN.md)。
 
 ## 要求
 
 - CLI 投递要求客户端已安装、认证并位于 watcher 的 `PATH` 中；Claude 原生投递要求所属交互会话提供后台 Bash 工具。
 - 保存的会话可以恢复，并能访问目标状态、watcher 日志和工作区。
-- 不要在会话 ID、消息模板、查询 argv 或持久化文件中传递凭据。
+- 不要在会话 ID、程序 argv 或持久化文件中传递凭据。
 
 ## CodeWiz
 
-使用 `--client codewiz --session ID` 提交，绑定所属 CodeWiz 会话 ID。事件就绪时，服务执行 `codewiz run --session ID MESSAGE`，无需挂接 `follow`。恢复的 CLI 轮次接收消息模板中的 `/wait` 恢复指令。
+使用 `--client codewiz --session ID` 提交，绑定所属 CodeWiz 会话 ID。事件就绪时，服务执行 `codewiz run --session ID MESSAGE`，无需挂接 `follow`。恢复的 CLI 轮次接收到的 `MESSAGE` 就是自动生成的 `/wait` 恢复指令。
 
 确保服务环境中的 `codewiz` 已完成认证。投递超时后，先检查保存的会话和 watcher 日志再重试：恢复轮次可能已经执行过操作。此适配器未实现向已打开界面单独投递通知。
 
@@ -42,17 +42,19 @@ CLI 恢复命令运行在独立进程中，不能证明已有交互界面收到�
 
 使用 `--client cursor --session ID` 提交，绑定所属 Cursor CLI 会话 ID。服务执行 `cursor-agent --print --resume=ID MESSAGE`，在该无头轮次中执行 `/wait` 恢复指令，无需挂接 `follow`。
 
-已获授权的任务若需在 headless 模式应用修改，仅在环境受到适当限制时使用 `--resume-arg=--force`，因为它会绕过交互确认；否则需要权限时手动恢复。CLI 进程成功返回不代表消息已进入打开的 Cursor 编辑器对话。
+无头运行需要修改文件时，`--resume-arg=--force` 会绕过交互确认，只能用于已获授权且受限的环境；否则留待手动恢复。这里恢复的是 CLI 会话，不是 Cursor 编辑器中已打开的对话。
 
 ## Claude Code
 
 使用 `--client claude`。`claude --print --resume` 运行无头轮次，不会向已有对话投递通知，适配器不再调用它。
 
 1. 正常提交 watcher，保留 `watch_id`。goal 先完成启动与激活握手；loop 在 `complete` 后使用状态中保存的 `watch_id`。
-2. 在**所属根 Agent 的交互会话**中，以 Bash 的 `run_in_background: true` 执行 `python /绝对路径/scripts/waitctl.py follow WATCH_ID --timeout SECONDS`。设置覆盖 watcher 剩余超时的有限上限，保留原生任务 ID，然后结束轮次。shell `&`、tmux 或另一个无头 Claude 进程不能代替原生后台工具。
+2. 在**所属根 Agent 的交互会话**中，以 Bash 的 `run_in_background: true` 执行 `python /绝对路径/src/waitctl.py follow WATCH_ID --timeout SECONDS`。设置覆盖 watcher 剩余超时的有限上限，保留原生任务 ID，然后结束轮次。shell `&`、tmux 或另一个无头 Claude 进程不能代替原生后台工具。
 3. 该命令阻塞等待服务事件，不轮询。结果持久化后，输出事件、日志路径与恢复消息并退出，由 Claude 的原生任务完成通知送回所属对话。读取输出和日志、校验事件，再执行 wait／goal／loop 的恢复协议。
 
-`notification: native_pending` 只表示事件可由原生任务读取，不代表 Claude 已消费。goal 的 `wake`、loop 的 `begin` 仍由根 Agent 持久确认。原生任务超时、连接失败或被取消不代表外部对象成功：先检查同一个已保存的 watch，再决定恢复。关闭 Claude 会话会结束原生任务；重新打开后对原 watch 重新挂接 `follow`，不要另建 watcher。仍保留的已完成记录会立即返回。没有原生后台任务能力时，无法自动唤醒交互会话。
+`notification: native_pending` 表示事件已可读取，不代表 Claude 已处理。根 Agent 仍需执行 goal 的 `wake` 或 loop 的 `begin`。后台任务超时、连接失败或被取消时，先检查原 watch，不能视为外部任务成功。
+
+关闭 Claude 会话会结束后台任务。重新打开后，对原 watch 再运行 `follow`；已完成且仍保留的记录会立即返回，无需另建 watcher。没有原生后台任务能力时，无法自动唤醒交互会话。
 
 此路径不需要 MCP 配置或 Channels。
 
@@ -66,15 +68,15 @@ goal 等待期间，服务保留所有权直到 Root 执行 `wake`，上限由 `
 
 ## Codex
 
-使用 `--client codex --session ID --remote ENDPOINT` 提交，绑定所属 Root 的线程 ID 和队列端点。服务执行 `codex queue --remote ENDPOINT --thread ID --message MESSAGE`。消息模板使用 `$wait resume ...`，无需原生后台 `follow` 任务。
+使用 `--client codex --session ID --remote ENDPOINT` 提交，绑定所属 Root 的线程 ID 和队列端点。服务执行 `codex queue --remote ENDPOINT --thread ID --message MESSAGE`，其中 `MESSAGE` 是自动生成的 `$wait resume ...` 指令，无需原生后台 `follow` 任务。
 
 已安装的 `codex` 命令必须支持 `queue`，并能访问该端点。`notification: queued` 只确认队列接收，不代表 Root 已执行消息；goal 的 `wake` 和 loop 的 `begin` 仍在恢复的 Root 中执行。队列投递失败时，先检查记录的投递结果和端点连通性，再决定恢复操作。
 
 ## 进度工具
 
-规划时，各 Agent 按运行时 schema 使用可用的原生 Todo 或计划工具。共享列表由所属根 Agent 更新；子 Agent 有独立列表时使用，否则汇报进度。保留其他任务条目。
+规划时，使用当前环境提供的 Todo 或计划工具。共享列表由根 Agent 更新；子 Agent 使用自己的独立列表，没有则向根 Agent 汇报。保留其他任务的条目。
 
-执行协议规定同步时机：持久状态转换、watcher 结果核实和最终验收之后。goal 条目用节点 ID 标识，独立等待用日志路径标识；恢复时复用相同标识。工具不可用或失败时依据持久状态继续，在后续可用的执行轮次同步。
+保存状态、核实 watcher 结果和完成验收后，再更新进度。goal 用节点 ID 对应条目，独立等待用日志路径；恢复时更新原条目。工具不可用时，按保存的状态继续，之后再同步。
 
 | 执行状态 | 原生进度条目 |
 | --- | --- |

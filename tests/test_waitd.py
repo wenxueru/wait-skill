@@ -13,32 +13,152 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 
-SCRIPTS = Path(__file__).parents[1] / "scripts"
-sys.path.insert(0, str(SCRIPTS))
+SRC = Path(__file__).parents[1] / "src"
+sys.path.insert(0, str(SRC))
 import waitd  # noqa: E402
 import waitctl  # noqa: E402
-import state_runner  # noqa: E402
 
 
 class WaitDaemonTest(unittest.IsolatedAsyncioTestCase):
+    async def test_goal_program_activation_and_wake(self) -> None:
+        state = self.root / "goal.json"
+
+        async def goal(operation: str, *arguments: str) -> dict:
+            response = await self.daemon.dispatch({
+                "operation": "goal", "cwd": str(self.root),
+                "argv": [operation, "--state", str(state), *arguments],
+            })
+            self.assertEqual(response["code"], 0, response)
+            return response["output"]
+
+        await goal("init", "--objective", "Verify deployment", "--client", "claude", "--session", "native-test")
+        await goal("add", "--id", "deploy", "--title", "Deploy", "--kind", "external")
+        await goal("start", "--id", "deploy")
+        log, lock, startup = (self.root / name for name in ("watch.json", "watch.lock", "started.json"))
+        prepared = await goal("wait", "--id", "deploy", "--label", "deployment",
+                              "--log-file", str(log), "--lock-file", str(lock), "--startup-file", str(startup))
+        watch_id = prepared["watch_id"]
+        submitted = self.daemon.submit([
+            "--label", "deployment", "--client", "claude", "--session", "native-test",
+            "--event-id", watch_id, "--goal-state", str(state), "--goal-node", "deploy",
+            "--log-file", str(log), "--lock-file", str(lock), "--startup-file", str(startup),
+            "--activation-interval", ".01", "--notification-timeout", "5",
+            "--", sys.executable, "-c", "print('Deployment failed'); raise SystemExit(2)",
+        ], str(self.root))
+        task = self.daemon.tasks[submitted["watch_id"]]
+        deadline = time.monotonic() + 2
+        while not startup.exists():
+            self.assertLess(time.monotonic(), deadline)
+            await asyncio.sleep(.01)
+        self.assertFalse(log.exists())  # Program has not started before activation.
+        await goal("activate-wait", "--id", "deploy", "--watch-id", watch_id)
+        response = await asyncio.wait_for(self.daemon.follow(watch_id), 2)
+        self.assertEqual(response["result"]["event"], "exited")
+        self.assertEqual(response["result"]["exit_code"], 2)
+        self.assertEqual(
+            response["resume_message"],
+            f"$wait-goal resume {state}; node=deploy; event_id={watch_id}; log_file={log}",
+        )
+        self.assertEqual(json.loads(state.read_text())["nodes"]["deploy"]["status"], "waiting")
+        with lock.open("a") as handle:
+            with self.assertRaises(BlockingIOError):
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        await goal("wake", "--id", "deploy", "--event-id", watch_id, "--event", "exited")
+        await asyncio.wait_for(task, 2)
+        self.assertEqual(json.loads(state.read_text())["nodes"]["deploy"]["status"], "running")
+
+    async def test_program_result_is_not_a_business_status(self) -> None:
+        argv = ["--label", "raw", "--", sys.executable, "-c",
+                "import sys; print('{\"status\":\"NotReady\"}'); print('details', file=sys.stderr); sys.exit(42)"]
+        submitted = self.daemon.submit(argv, str(self.root))
+        await self.daemon.tasks[submitted["watch_id"]]
+        record = self.daemon.watchers[submitted["watch_id"]]
+        self.assertEqual(record["state"], "completed")  # Program ended; not business success.
+        self.assertEqual(record["result"]["event"], "exited")
+        self.assertEqual(record["result"]["exit_code"], 42)
+        self.assertEqual(record["result"]["stdout"], '{"status":"NotReady"}\n')
+        self.assertEqual(record["result"]["stderr"], 'details\n')
+
+    async def test_start_failure_is_available_to_native_callback(self) -> None:
+        submitted = self.daemon.submit([
+            "--label", "missing", "--client", "claude", "--session", "test",
+            "--", str(self.root / "missing-program"),
+        ], str(self.root))
+        task = self.daemon.tasks[submitted["watch_id"]]
+        response = await self.daemon.follow(submitted["watch_id"])
+        await task
+        self.assertEqual(response["result"]["event"], "start_failed")
+        self.assertIn(submitted["log_file"], response["resume_message"])
+
+    async def test_restart_does_not_repeat_an_unconfirmed_program(self) -> None:
+        argv = self.watcher_argv("Ready")
+        with patch.object(self.daemon, "_schedule"):
+            submitted = self.daemon.submit(argv, str(self.root))
+        record = self.daemon.watchers[submitted["watch_id"]]
+        record["phase"] = "running"
+        self.daemon.save()
+        restored = waitd.WaitDaemon(self.root / "registry.json")
+        with patch.object(waitd, "run_program", side_effect=AssertionError("must not replay")):
+            await restored.restore()
+            await restored.tasks[submitted["watch_id"]]
+        self.assertEqual(restored.watchers[submitted["watch_id"]]["result"]["event"], "interrupted")
+
+    def test_service_rejects_query_flags(self) -> None:
+        with self.assertRaises(SystemExit):
+            self.daemon.submit(["--label", "x", "--ready", "Ready", "--", "true"], str(self.root))
+
+    async def test_minimal_wait_generates_paths_and_resume_message(self) -> None:
+        argv = ["--label", "minimal", "--client", "claude",
+                "--session", "native-test", "--", sys.executable, "-c", "print('Ready')"]
+        submitted = self.daemon.submit(argv, str(self.root))
+        task = self.daemon.tasks[submitted["watch_id"]]
+        response = await asyncio.wait_for(self.daemon.follow(submitted["watch_id"]), 2)
+        await task
+        self.assertEqual(response["result"]["event"], "exited")
+        self.assertIn(f"$wait resume {submitted['log_file']};", response["resume_message"])
+        self.assertTrue(Path(submitted["log_file"]).is_file())
+        self.assertTrue(Path(submitted["lock_file"]).is_file())
+        record = self.daemon.watchers[submitted["watch_id"]]
+        args, command = waitd.wait_runtime.parse_job_args(record["argv"])
+        self.assertEqual(command, argv[argv.index("--") + 1:])
+        self.assertEqual(args.event_id, submitted["watch_id"])
+
+    async def test_automatic_lock_rejects_duplicate_without_overwriting_log(self) -> None:
+        argv = ["--label", "minimal", "--timeout", "10",
+                "--", sys.executable, "-c", "import time; time.sleep(30)"]
+        first = self.daemon.submit(argv, str(self.root))
+        second = self.daemon.submit(argv, str(self.root))
+        self.assertEqual(first["lock_file"], second["lock_file"])
+        self.assertNotEqual(first["log_file"], second["log_file"])
+        await asyncio.wait_for(self.daemon.tasks[second["watch_id"]], 2)
+        self.assertEqual(self.daemon.watchers[second["watch_id"]]["code"], 75)
+        self.daemon.cancel(first["watch_id"])
+        await self.daemon.tasks[first["watch_id"]]
+
+    async def test_automatic_defaults_preserve_explicit_paths(self) -> None:
+        argv = self.watcher_argv("Ready")
+        submitted = self.daemon.submit(argv, str(self.root))
+        self.assertEqual(submitted["log_file"], str(self.root / "watch.json"))
+        args, _ = waitd.wait_runtime.parse_job_args(self.daemon.watchers[submitted["watch_id"]]["argv"])
+        self.assertEqual(str(args.lock_file), submitted["lock_file"])
+        await self.daemon.tasks[submitted["watch_id"]]
+
     async def test_native_goal_wait_retains_lock_until_ack_or_delivery_deadline(self) -> None:
         for acknowledge in (False, True):
             with self.subTest(acknowledge=acknowledge):
                 argv = self.watcher_argv("Ready")
-                argv[:0] = ["--client", "claude", "--session", "native-test",
-                            "--message-template",
-                            f"/wait resume {self.root / 'watch.json'}; event_id={{event_id}}; event={{event}}; status={{status}}"]
-                args, command = waitd.wait_for.parse_wait_args(argv)
+                argv[:0] = ["--client", "claude", "--session", "native-test"]
+                args, command = waitd.wait_runtime.parse_job_args(argv)
                 args.goal_state = self.root / "goal.json"
                 args.wake_ack_timeout = .001
                 args.notification_timeout = .15
                 args.activation_interval = .005
                 available_at = time.time()
-                result = {"event": "ready", "notification": "native_pending", "available_at": available_at}
+                result = {"event": "exited", "notification": "native_pending", "available_at": available_at}
                 record = {"watch_id": "native", "argv": argv, "state": "active",
                           "phase": "notifying", "code": 0, "result": result}
                 self.daemon.watchers["native"] = record
-                with patch.object(waitd.wait_for, "goal_wait_is_current", return_value=True) as current:
+                with patch.object(waitd.wait_runtime, "goal_wait_is_current", return_value=True) as current:
                     task = asyncio.create_task(self.daemon._watch(args, command, record, asyncio.Event()))
                     await asyncio.sleep(.03)
                     self.assertFalse(task.done())
@@ -48,12 +168,12 @@ class WaitDaemonTest(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(record["wake_ack_deadline_at"], available_at + .15)
                     if acknowledge:
                         response = await self.daemon.follow("native")
-                        self.assertEqual(response["result"]["event"], "ready")
+                        self.assertEqual(response["result"]["event"], "exited")
                         current.return_value = False
                     _, code = await asyncio.wait_for(task, 1)
-                self.assertEqual(code, 0 if acknowledge else waitd.wait_for.EXIT_NOTIFY_FAILED)
+                self.assertEqual(code, 0 if acknowledge else waitd.wait_runtime.EXIT_NOTIFY_FAILED)
                 self.assertEqual(result["notification"], "native_pending" if acknowledge else "unconfirmed")
-                self.assertEqual(json.loads(args.log_file.read_text())["event"], "ready")
+                self.assertEqual(json.loads(args.log_file.read_text())["event"], "exited")
 
     async def test_follow_disconnect_cancels_pending_request(self) -> None:
         started = asyncio.Event()
@@ -80,14 +200,13 @@ class WaitDaemonTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_native_follow_receives_event_without_spawning_resume(self) -> None:
         argv = self.watcher_argv("Ready")
-        argv[0:0] = ["--client", "claude", "--session", "native-test", "--message-template",
-                     f"/wait resume {self.root / 'watch.json'}; event_id={{event_id}}; event={{event}}; status={{status}}"]
-        with patch.object(waitd.wait_for, "notification_command", side_effect=AssertionError("must not resume")):
+        argv[0:0] = ["--client", "claude", "--session", "native-test"]
+        with patch.object(waitd.wait_runtime, "notification_command", side_effect=AssertionError("must not resume")):
             submitted = self.daemon.submit(argv, str(self.root))
             task = self.daemon.tasks[submitted["watch_id"]]
             response = await self.daemon.dispatch({"operation": "follow", "watch_id": submitted["watch_id"], "timeout": 2})
             await task
-        self.assertEqual(response["result"]["event"], "ready")
+        self.assertEqual(response["result"]["event"], "exited")
         self.assertEqual(response["result"]["notification"], "native_pending")
         self.assertIn(submitted["watch_id"], response["resume_message"])
         self.assertEqual(json.loads((self.root / "watch.json").read_text())["notification"], "native_pending")
@@ -118,18 +237,12 @@ class WaitDaemonTest(unittest.IsolatedAsyncioTestCase):
         self.root = Path(self.directory.name)
         self.daemon = waitd.WaitDaemon(self.root / "registry.json")
 
-    def watcher_argv(self, status: str, *, interval: float = 0.01) -> list[str]:
+    def watcher_argv(self, status: str) -> list[str]:
         return [
             "--label",
             "demo",
-            "--ready",
-            "Ready",
-            "--interval",
-            str(interval),
             "--timeout",
             "2",
-            "--query-timeout",
-            "1",
             "--lock-file",
             str(self.root / "watch.lock"),
             "--log-file",
@@ -137,11 +250,11 @@ class WaitDaemonTest(unittest.IsolatedAsyncioTestCase):
             "--",
             sys.executable,
             "-c",
-            f"print({status!r})",
+            f"import time; time.sleep({30 if status == 'Waiting' else 0}); print({status!r})",
         ]
 
-    async def test_cancelled_query_is_reaped_before_lock_release(self) -> None:
-        pid_file = self.root / "query.pid"
+    async def test_cancelled_program_is_reaped_before_lock_release(self) -> None:
+        pid_file = self.root / "program.pid"
         argv = self.watcher_argv("Waiting")
         argv[-1] = f"import os,time; from pathlib import Path; Path({str(pid_file)!r}).write_text(str(os.getpid())); time.sleep(30)"
         submitted = self.daemon.submit(argv, str(self.root))
@@ -159,14 +272,16 @@ class WaitDaemonTest(unittest.IsolatedAsyncioTestCase):
         with (self.root / "watch.lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
-    async def test_async_query_limits_output_and_time(self) -> None:
-        with self.assertRaises(ValueError):
-            await waitd.query_status([sys.executable, "-c", "print('x'*100000)"], 2, None, str(self.root))
-        with self.assertRaises(asyncio.TimeoutError):
-            await waitd.query_status([sys.executable, "-c", "import time; time.sleep(30)"], .05, None, str(self.root))
+    async def test_program_output_is_bounded_and_timeout_is_reported(self) -> None:
+        result = await waitd.run_program([sys.executable, "-c", "print('x'*100000)"], 2, str(self.root))
+        self.assertTrue(result["output_truncated"])
+        self.assertEqual(len(result["stdout"]), waitd.MAX_PROGRAM_OUTPUT_BYTES)
+        result = await waitd.run_program([sys.executable, "-c", "import time; time.sleep(30)"], .05, str(self.root))
+        self.assertEqual(result["event"], "timeout")
+        self.assertIsNone(result["exit_code"])
 
     async def test_activation_timeout_writes_log(self) -> None:
-        args, command = waitd.wait_for.parse_wait_args(self.watcher_argv("Ready"))
+        args, command = waitd.wait_runtime.parse_job_args(self.watcher_argv("Ready"))
         args.goal_state = self.root / "goal.json"
         args.goal_node = "deploy"
         args.startup_file = self.root / "started.json"
@@ -174,39 +289,48 @@ class WaitDaemonTest(unittest.IsolatedAsyncioTestCase):
         record = {"watch_id": "activation", "phase": "activating", "state": "active",
                   "deadline_at": time.time()+1, "submitted_at": time.time(),
                   "activation_deadline_at": time.time()-1}
-        with patch.object(waitd.wait_for, "goal_wait_phase", return_value="prepared"):
+        with patch.object(waitd.wait_runtime, "goal_wait_phase", return_value="prepared"):
             result, code = await self.daemon._watch(args, command, record, asyncio.Event())
         self.assertEqual(code, 76)
         self.assertEqual(result["event"], "activation_timeout")
         self.assertEqual(json.loads(args.log_file.read_text()), result)
 
     async def test_delivery_launch_failure_is_persisted(self) -> None:
-        args, _ = waitd.wait_for.parse_wait_args(self.watcher_argv("Ready"))
+        args, _ = waitd.wait_runtime.parse_job_args(self.watcher_argv("Ready"))
         args.thread = "session"
-        args.message_template = "{event_id} {event} {status}"
-        result = {"event_id": "delivery", "event": "ready", "status": "Ready"}
+        result = {"event_id": "delivery", "event": "exited", "status": "Ready"}
         record = {"watch_id": "delivery", "cwd": str(self.root), "state": "active"}
         with patch.object(asyncio, "create_subprocess_exec", side_effect=FileNotFoundError):
             code = await self.daemon._deliver(args, result, record, asyncio.Event())
         self.assertEqual(code, 70)
         self.assertEqual(json.loads(args.log_file.read_text())["notification"], "failed")
 
-    def test_relative_template_paths_are_normalized_for_all_modes(self) -> None:
+    def test_resume_instruction_matches_mode(self) -> None:
         for mode in ("wait", "wait-loop", "wait-goal"):
             with self.subTest(mode=mode):
                 target = "log.json" if mode == "wait" else "state.json"
-                argv = ["--label", "x", "--ready", "Ready", "--log-file", "log.json",
+                argv = ["--label", "x", "--log-file", "log.json",
                         "--lock-file", "lock", "--session", "session", "--event-id", "event"]
-                template = f"${mode} resume {target}; event_id={{event_id}}; event={{event}}; status={{status}}"
                 if mode != "wait":
                     argv += ["--loop-state" if mode == "wait-loop" else "--goal-state", target]
-                    template += "; watcher_log=log.json"
                 if mode == "wait-goal":
                     argv += ["--goal-node", "n", "--startup-file", "started.json"]
-                    template += "; node=n"
-                argv += ["--message-template", template, "--", "true"]
-                args, _ = waitd.wait_for.parse_wait_args(waitd.absolute_wait_argv(argv, self.root))
-                self.assertIn(str(self.root / target), args.message_template)
+                argv += ["--", "true"]
+                args, _ = waitd.wait_runtime.parse_job_args(waitd.absolute_wait_argv(argv, self.root))
+                message = waitd.wait_runtime.resume_instruction(args)
+                if mode == "wait":
+                    self.assertEqual(message, f"$wait resume {args.log_file}; event_id={args.event_id}")
+                elif mode == "wait-loop":
+                    self.assertEqual(
+                        message,
+                        f"$wait-loop resume {args.loop_state}; event_id={args.event_id}; log_file={args.log_file}",
+                    )
+                else:
+                    self.assertEqual(
+                        message,
+                        f"$wait-goal resume {args.goal_state}; node={args.goal_node}; "
+                        f"event_id={args.event_id}; log_file={args.log_file}",
+                    )
 
     async def test_loop_restart_repairs_missing_timer_registration(self) -> None:
         path = self.root / "loop.json"
@@ -247,7 +371,13 @@ class WaitDaemonTest(unittest.IsolatedAsyncioTestCase):
                 "complete", "--state", str(path), "--summary", "done"]})
             watch_id = response["output"]["watch_id"]
             await asyncio.wait_for(self.daemon.tasks[watch_id], 2)
-            self.assertEqual(self.daemon.watchers[watch_id]["result"]["event"], "ready")
+            self.assertEqual(self.daemon.watchers[watch_id]["result"]["event"], "exited")
+            self.assertEqual(self.daemon.watchers[watch_id]["result"]["stdout"], "Ready\n")
+            args, _ = waitd.wait_runtime.parse_job_args(self.daemon.watchers[watch_id]["argv"])
+            self.assertEqual(
+                waitd.wait_runtime.resume_instruction(args),
+                f"$wait-loop resume {path.resolve()}; event_id={args.event_id}; log_file={args.log_file}",
+            )
             deliver.assert_awaited_once()
 
     async def test_submit_runs_watcher_and_persists_result(self) -> None:
@@ -257,13 +387,13 @@ class WaitDaemonTest(unittest.IsolatedAsyncioTestCase):
 
         record = self.daemon.watchers[watch_id]
         self.assertEqual(record["state"], "completed")
-        self.assertEqual(record["result"]["event"], "ready")
+        self.assertEqual(record["result"]["event"], "exited")
         self.assertEqual(json.loads((self.root / "watch.json").read_text())["event_id"], watch_id)
         await asyncio.sleep(0)
         self.assertNotIn(watch_id, self.daemon.tasks)
 
-    async def test_cancel_interrupts_interval_and_releases_lock(self) -> None:
-        submitted = self.daemon.submit(self.watcher_argv("Waiting", interval=60), str(self.root))
+    async def test_cancel_interrupts_program_and_releases_lock(self) -> None:
+        submitted = self.daemon.submit(self.watcher_argv("Waiting"), str(self.root))
         watch_id = str(submitted["watch_id"])
         await asyncio.sleep(0.1)
 
@@ -371,7 +501,7 @@ class WaitDaemonTest(unittest.IsolatedAsyncioTestCase):
             log_file=log_file,
         )
         result = {
-            "event": "ready",
+            "event": "exited",
             "event_id": "watch-1",
             "notification": "attempting",
             "notification_attempts": 1,
@@ -392,7 +522,7 @@ class WaitDaemonTest(unittest.IsolatedAsyncioTestCase):
             asyncio.Event(),
         )
 
-        self.assertEqual(code, waitd.wait_for.EXIT_NOTIFY_FAILED)
+        self.assertEqual(code, waitd.wait_runtime.EXIT_NOTIFY_FAILED)
         self.assertEqual(resumed["notification"], "unconfirmed")
         self.assertEqual(record["phase"], "finalizing")
 
@@ -427,7 +557,7 @@ class WaitDaemonTest(unittest.IsolatedAsyncioTestCase):
             activation_interval=60,
         )
         result = {
-            "event": "ready",
+            "event": "exited",
             "event_id": "watch-1",
             "notification": "queued",
             "notification_attempts": 1,
@@ -472,17 +602,17 @@ class WaitDaemonTest(unittest.IsolatedAsyncioTestCase):
             waitd.WaitDaemon(registry)
 
     async def test_state_command_timeout_includes_lock_wait(self) -> None:
-        runner = state_runner.StateCommandRunner()
+        runner = waitd.StateCommandRunner()
         await runner.locks["goal"].acquire()
-        original_timeout = state_runner.STATE_COMMAND_TIMEOUT
-        state_runner.STATE_COMMAND_TIMEOUT = 0.01
+        original_timeout = waitd.STATE_COMMAND_TIMEOUT
+        waitd.STATE_COMMAND_TIMEOUT = 0.01
         try:
             result = await asyncio.wait_for(
                 runner.run("goal", ["check"], self.root),
                 timeout=0.1,
             )
         finally:
-            state_runner.STATE_COMMAND_TIMEOUT = original_timeout
+            waitd.STATE_COMMAND_TIMEOUT = original_timeout
             runner.locks["goal"].release()
 
         self.assertEqual(result["code"], 124)
@@ -548,7 +678,7 @@ class WaitServiceTest(unittest.TestCase):
             process = subprocess.Popen(
                 [
                     sys.executable,
-                    str(SCRIPTS / "waitd.py"),
+                    str(SRC / "waitd.py"),
                     "serve",
                     "--socket",
                     str(socket_path),
@@ -599,12 +729,12 @@ class WaitServiceTest(unittest.TestCase):
                 self.assertEqual(response["output"]["task"], "inspect queue")
                 submitted = waitctl.request({
                     "operation": "submit", "cwd": str(root),
-                    "argv": ["--label", "socket-test", "--ready", "Ready", "--timeout", "2",
+                    "argv": ["--label", "socket-test", "--timeout", "2",
                              "--", sys.executable, "-c", "import time; time.sleep(.1); print('Ready')"],
                 }, socket_path)
                 followed = waitctl.request({"operation": "follow", "watch_id": submitted["watch_id"], "timeout": 2}, socket_path)
                 self.assertTrue(followed["ok"])
-                self.assertEqual(followed["result"]["event"], "ready")
+                self.assertEqual(followed["result"]["event"], "exited")
                 self.assertTrue(waitctl.stop_daemon(socket_path)["ok"])
                 process.communicate(timeout=2)
                 self.assertEqual(process.returncode, 0)

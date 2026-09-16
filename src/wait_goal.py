@@ -11,20 +11,21 @@ import json
 import math
 import os
 import re
-import tempfile
 import time
 import uuid
 from collections.abc import Iterator, Mapping, Sequence
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TypedDict, cast
+
+import wait_runtime
 
 NODE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 NODE_KINDS = {"agent", "local", "external"}
 NODE_STATUSES = {"pending", "dispatching", "running", "waiting", "completed", "failed", "cancelled"}
 GOAL_STATUSES = {"open", "paused", "completed", "cancelled"}
-WAIT_EVENTS = {"ready", "terminal", "timeout", "query_failed"}
+WAIT_EVENTS = {"exited", "start_failed", "interrupted", "ready", "terminal", "timeout", "query_failed"}
 WAIT_PHASES = {"prepared", "active"}
 CLIENTS = {"claude", "codewiz", "codex", "copilot", "cursor"}
 DEFAULT_STATE_ROOT = Path("/tmp/.wait-goal")
@@ -134,7 +135,7 @@ class GoalState(GoalStateFields, total=False):
     completed_at: str
 
 
-class GoalError(ValueError):
+class GoalError(wait_runtime.StateError):
     """Raised when a graph operation would create invalid state."""
 
 
@@ -1108,23 +1109,7 @@ class GoalStore:
             self.write(graph.state)
 
     def write(self, state: GoalState) -> None:
-        self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        payload = json.dumps(state, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-        descriptor, temporary = tempfile.mkstemp(prefix=f".{self.path.name}.", dir=self.path.parent)
-        try:
-            with os.fdopen(descriptor, "w", encoding="utf-8") as output:
-                output.write(payload)
-                output.flush()
-                os.fsync(output.fileno())
-            os.replace(temporary, self.path)
-            directory = os.open(self.path.parent, os.O_RDONLY)
-            try:
-                os.fsync(directory)
-            finally:
-                os.close(directory)
-        finally:
-            with suppress(FileNotFoundError):
-                os.unlink(temporary)
+        wait_runtime.atomic_write_json(self.path, state)
 
     @contextmanager
     def edit(self) -> Iterator[GoalGraph]:
@@ -1139,10 +1124,7 @@ class GoalStore:
 
     @contextmanager
     def _locked(self) -> Iterator[None]:
-        lock_path = self.path.with_name(self.path.name + ".lock")
-        lock_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        with lock_path.open("a", encoding="utf-8") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
+        with wait_runtime.file_lock(self.path):
             yield
 
 

@@ -4,6 +4,7 @@ import copy
 import importlib.util
 import json
 import os
+import sys
 import tempfile
 import time
 import unittest
@@ -15,7 +16,8 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
-SCRIPT = Path(__file__).parents[1] / "scripts" / "wait_goal.py"
+sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
+SCRIPT = Path(__file__).parents[1] / "src" / "wait_goal.py"
 SPEC = importlib.util.spec_from_file_location("wait_goal", SCRIPT)
 assert SPEC and SPEC.loader
 wait_goal = importlib.util.module_from_spec(SPEC)

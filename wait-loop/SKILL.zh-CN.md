@@ -7,7 +7,7 @@ description: 在 CodeWiz、Cursor、Claude Code、GitHub Copilot 和 Codex 中�
 
 按固定间隔重复执行任务，不假设用户在场；不要主动提问或调用交互式提问工具。
 
-通过 `../scripts/waitctl.py loop -- ...` 管理持久化循环状态；服务使用父级 `wait` 的实现注册计时器。服务把循环校验和持久化交给 `wait_loop.py`。开始前阅读[循环协议](../docs/wait-loop.zh-CN.md)、[`waitd` 指南](../docs/waitd.zh-CN.md)、[watcher 协议](../docs/wait.zh-CN.md)和[客户端适配](../docs/clients.zh-CN.md)。
+通过 `../src/waitctl.py loop -- ...` 管理循环，服务用 `wait` 安排下一轮。开始前阅读[循环协议](../docs/wait-loop.zh-CN.md)和[当前客户端说明](../docs/clients.zh-CN.md)；计时细节见 [wait](../docs/wait.zh-CN.md)，服务命令见 [waitd](../docs/waitd.zh-CN.md)。
 
 ## 调用方式
 
@@ -20,14 +20,14 @@ description: 在 CodeWiz、Cursor、Claude Code、GitHub Copilot 和 Codex 中�
 
 ## 协议
 
-1. 使用任务、间隔、客户端、会话和有限的总 `--duration` 运行 `waitctl.py loop -- init`，保留返回的 `state_file`。默认 24 小时只是安全上限；能确定合理期限时应明确设置。用户指定有限轮数时再传 `--max-iterations`。
-2. 立即执行一次已保存的任务，任务与已有授权范围内的可逆选择采用合理默认值。每轮都由根会话执行，不创建脱离控制的子 Agent 循环。
+1. 运行 `waitctl.py loop -- init`，传入任务、间隔、客户端、会话和有限的总 `--duration`；保留返回的 `state_file`。每次计时会自动用 `$wait-loop resume {state_file}; event_id={event_id}; log_file={log_file}` 唤醒，无需额外准备。默认总时长为 24 小时；任务不需要那么久时，设置更短的期限。用户指定有限轮数时再传 `--max-iterations`。
+2. 立即执行一次已保存的任务，任务与已有授权范围内的可逆选择采用合理默认值。每轮都由根会话执行，不创建脱离控制的子 Agent 循环。调用 wait 时沿用本轮任务的 Todo 条目。
 3. 处理本轮结果：
    - 成功：运行 `complete --summary`。返回 `completed` 时汇报结果并停止；否则保留 `watch_id` 和 `next_run_at`。
    - 失败、中断或缺少关键输入、授权：保持 `running`，报告阻塞原因与状态文件路径并结束轮次，不调用 `complete` 或静默重试。用户给出方向后从保存状态恢复。
-4. 服务在 `complete` 返回前注册计时器。使用保存的 watch ID，按[客户端适配](../docs/clients.zh-CN.md)接好事件投递通道。结束轮次，由客户端适配器把 loop 状态、watcher 日志和 event ID 送回会话。服务重启时会补齐状态提交后中断的计时器注册。
-5. 收到 `ready` 后校验 watcher 日志，并运行 `begin --event-id`。返回 duplicate 时不得重复执行；如果消息送达时已经超过 loop 截止时间，`begin` 会结束 loop，此时报告完成并停止；否则执行下一轮并回到步骤 3。
-6. 收到 `Expired` 后运行 `expire --event-id` 并停止。如果等待期间循环被取消、完成或替换，所有权校验会直接停止旧 watcher，不再额外唤醒模型。
+4. `complete` 返回前，服务会安排好下一次计时。用它的 watch ID 按[客户端说明](../docs/clients.zh-CN.md)接好唤醒，再结束轮次。重启后服务补齐遗漏的计时器注册；已经启动但中断的程序报告中断，不自动重跑。计时失败按[恢复协议](../docs/wait-loop.zh-CN.md#恢复与取消)检查。
+5. 校验计时日志：`event: exited`、`exit_code: 0` 且 stdout 为 `Ready` 时，运行 `begin --event-id`。返回 duplicate 时不得重复执行；如果消息送达时已经超过 loop 截止时间，`begin` 会结束 loop，此时报告完成并停止；否则执行下一轮并回到步骤 3。
+6. 计时程序的 stdout 为 `Expired` 时运行 `expire --event-id` 并停止。如果等待期间循环被取消、完成或替换，所有权校验会直接停止旧 watcher，不再额外唤醒模型。
 
 ## 边界
 
@@ -36,4 +36,4 @@ description: 在 CodeWiz、Cursor、Claude Code、GitHub Copilot 和 Codex 中�
 - 同一时间最多执行一轮。先持久化本轮完成，再创建下一 watcher。
 - 状态中已有活动 `watch_id` 时，不得启动第二个 watcher。
 
-运行 `python ../scripts/waitctl.py --help` 和 `python ../scripts/waitctl.py loop -- --help` 查看命令。
+运行 `python ../src/waitctl.py --help` 和 `python ../src/waitctl.py loop -- --help` 查看命令。

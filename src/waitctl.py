@@ -70,10 +70,7 @@ def stop_daemon(socket_path: Path = SOCKET_PATH) -> dict[str, object]:
 
 
 def service_matches(response: dict[str, object]) -> bool:
-    return (
-        response.get("protocol_version") == PROTOCOL_VERSION
-        and response.get("service_fingerprint") == SERVICE_FINGERPRINT
-    )
+    return response.get("protocol_version") == PROTOCOL_VERSION and response.get("service_fingerprint") == SERVICE_FINGERPRINT
 
 
 def start_daemon() -> dict[str, object]:
@@ -116,7 +113,12 @@ def parser() -> argparse.ArgumentParser:
     commands = result.add_subparsers(dest="command", required=True)
     daemon = commands.add_parser("daemon")
     daemon.add_argument("action", choices=("start", "status", "stop"))
-    start = commands.add_parser("start")
+    start = commands.add_parser(
+        "start",
+        help="Manage a waiting program and resume the session on completion",
+        description="Pass timeout and ownership options after --, then the waiting program after another --. "
+        "Standalone log/lock paths are automatic; the service generates the resume instruction.",
+    )
     start.add_argument("argv", nargs=argparse.REMAINDER)
     commands.add_parser("list")
     show = commands.add_parser("show")
@@ -141,7 +143,8 @@ def main(argv: list[str] | None = None) -> int:
                 raise ValueError("--timeout must be positive and finite")
             response = request(
                 {"operation": "follow", "watch_id": args.watch_id, "timeout": args.timeout},
-                args.socket, timeout=args.timeout + 5,
+                args.socket,
+                timeout=args.timeout + 5,
             )
         elif args.command == "daemon":
             if args.action == "start":

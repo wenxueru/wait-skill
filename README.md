@@ -8,7 +8,7 @@ Event-driven waiting for CodeWiz, Cursor, Claude Code, GitHub Copilot, and Codex
 
 - `$wait` passively monitors one external state without spending model turns polling.
 - `$wait-loop` runs one task repeatedly on a bounded timer.
-- `$wait-goal` maintains a durable DAG with centralized agent scheduling, external waits, and final verification.
+- `$wait-goal` breaks an objective into dependent tasks; the root assigns work and verifies the final result.
 
 `wait` is the primary skill; the derived `wait-loop` and `wait-goal` skills reuse its watcher.
 
@@ -36,34 +36,27 @@ The repository root registers `wait`; `wait-loop/` and `wait-goal/` register the
 
 ## `$wait`: passively monitor external state
 
-Describe the object and its ready and terminal conditions:
+Describe what to wait for and when to stop:
 
 ```text
 $wait Wait for deployment api to become Ready; stop if it becomes Failed.
 ```
 
-`$wait` delegates queries to one local `waitd` service. The client does not need to hold a model turn while nothing changes; the service resumes the existing session only when ready, terminal, timed out, or repeatedly unreachable. One service cooperatively manages all watcher schedules, replacing one tmux session per wait.
+The agent prepares a waiting program. One local `waitd` service runs the program, saves its output and exit code, and resumes the session on exit, timeout, or interruption through the [client adapter](docs/clients.md), using a fixed instruction it generates itself. The agent decides what the result means.
 
-Submit a watcher through the service:
+After preparing `/tmp/wait_deploy.py` as in the [running example](docs/wait.md), submit it. Log and lock paths are generated automatically:
 
 ```bash
-python scripts/waitctl.py start -- \
+python src/waitctl.py start -- \
   --label "deployment api" \
-  --ready Ready \
-  --terminal Failed \
-  --interval 60 \
-  --timeout 3600 \
   --client codex \
   --session "$AGENT_SESSION_ID" \
-  --lock-file /tmp/wait-deployment-api.lock \
-  --log-file /tmp/wait-deployment-api.json \
-  --message-template '$wait resume /tmp/wait-deployment-api.json; event_id={event_id}; event={event}; status={status}. Re-check external state before acting.' \
-  -- deployctl status api --output status
+  -- env PYTHONPATH="$PWD/src" python /tmp/wait_deploy.py
 ```
 
-Everything after `--` is executed directly without an implicit shell. JSON objects and arrays require `--json-path` to select a scalar status. Every wait has a finite overall limit: `--timeout` defaults to one hour. The default interval is five minutes and the consecutive-query-failure limit defaults to 12 and cannot be disabled. For longer waits, assess task stability and trigger reliability; consider `wait-loop` for periodic health and progress checks.
+The program after the inner `--` runs without an implicit shell. It owns polling, output parsing, and stopping conditions; the service imposes a finite `--timeout`, defaulting to one hour. For longer waits, assess task stability and trigger reliability; consider `wait-loop` for periodic health and progress checks.
 
-See [docs/waitd.md](docs/waitd.md) for service management and [docs/wait.md](docs/wait.md) for watcher semantics and security boundaries. `wait_for.py` remains available as a standalone fallback.
+See [docs/waitd.md](docs/waitd.md) for service management and [docs/wait.md](docs/wait.md) for watcher semantics and security boundaries. `wait_for.py` provides `poll(query, evaluate)` for custom waiting scripts.
 
 ## `$wait-loop`: Loop mode
 
@@ -71,7 +64,7 @@ See [docs/waitd.md](docs/waitd.md) for service management and [docs/wait.md](doc
 $wait-loop Every 10 minutes: inspect the queue and report actionable changes.
 ```
 
-The first iteration runs immediately. A successful iteration schedules one bounded `$wait` timer for the next run. Durable event IDs prevent duplicate wake-ups from repeating an iteration, while total duration and optional iteration limits prevent leaked loops. Loop state commands use `waitctl.py loop -- ...`, sharing the same local service as watchers and goal commands. See [docs/wait-loop.md](docs/wait-loop.md) for the execution protocol and complete example.
+The first iteration runs immediately; each successful iteration schedules the next. Saved event IDs prevent duplicate runs. Set a total duration and, if needed, an iteration limit. Manage the loop with `waitctl.py loop -- ...`; see the [protocol and example](docs/wait-loop.md).
 
 ## `$wait-goal`: Goal mode
 
@@ -79,32 +72,17 @@ The first iteration runs immediately. A successful iteration schedules one bound
 $wait-goal Ship the API and finish only after tests and the health check pass.
 ```
 
-`$wait-goal` persists an acyclic dependency graph and append-only event history, schedules a write-safe ready frontier, keeps child agents independent and reporting to the root, delegates external nodes to the parent `$wait` skill, and verifies the original objective before finishing. The root can route DAG commands through `waitctl.py goal -- ...`; the service serializes and persists those commands but never decides graph changes. By default, each goal gets a unique state file under `/tmp/.wait-goal/<project-name>-<path-hash>/`; `--state` overrides it.
+The root saves a task dependency graph, dispatches independent work in parallel, and checks each result. Children report only to the root. External waits use `$wait`; before ending a turn, the root confirms a wake-up path or reports a genuine blocker. Once the tasks are done, it checks the original objective before finishing.
+
+Manage the graph with `waitctl.py goal -- ...`. The service saves and validates changes; the root makes scheduling decisions. State is saved under `/tmp/.wait-goal/<project-name>-<path-hash>/` unless `--state` specifies another location.
 
 See [docs/wait-goal.md](docs/wait-goal.md) for the state model, dependency rules, resume flow, and CLI.
 
-For an external node, first create a wait cycle:
-
-```bash
-# state_file returned by init
-GOAL_STATE=/tmp/.wait-goal/PROJECT/GOAL.json
-
-python scripts/waitctl.py goal -- wait \
-  --state "$GOAL_STATE" \
-  --id deploy \
-  --label "deployment api" \
-  --log-file /tmp/wait-deployment-api.json \
-  --lock-file /tmp/wait-deployment-api.lock \
-  --startup-file /tmp/wait-deployment-api.started.json
-```
-
-The command returns `watch_id` and normalized absolute coordination paths. Pass those values to the watcher with the node ID. Confirm the startup receipt and run `activate-wait`; `$wait` then monitors the external state and queues a `$wait-goal resume` event. See the linked guide for the complete command.
-
 ## Security model
 
-- Query commands should be read-only.
+- Waiting programs should be read-only.
 - Put credentials in environment variables or configuration files, not argv.
-- Raw query stdout and stderr are never forwarded or printed.
+- Program stdout and stderr are saved, up to 64 KiB each. Keep secrets out of output; the resume instruction references the log rather than automatically embedding it.
 - `$wait` persists an event ID and delivery state before notification. Bounded retries reuse that ID, so duplicate wake-ups can be deduplicated safely.
 - A wake-up message does not grant permission to restart or mutate the watched system. The receiving agent must verify current state and existing authority.
 - The `$wait-goal` graph must remain acyclic and only the root agent may mutate it.

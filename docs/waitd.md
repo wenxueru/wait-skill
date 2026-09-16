@@ -2,81 +2,75 @@
 
 [简体中文](waitd.zh-CN.md)
 
-`waitd` replaces one-tmux-session-per-watcher with one local service. It keeps a durable registry, runs watcher schedules cooperatively, and exposes a Unix-socket control plane for watcher, goal, and loop commands.
+`waitd` runs waiting programs in one local service and accepts wait, goal, and loop commands from `waitctl` over a Unix socket.
 
 ```text
-root agent ── waitctl ── Unix socket ── waitd
-                                      ├─ watcher schedules
-                                      ├─ delivery and wake handoff
-                                      └─ bounded goal and loop commands
+Agent ── waitctl ── waitd
+                    ├─ program execution, timeout, cancellation
+                    ├─ result persistence and resume delivery
+                    └─ serialized goal / loop state commands
 ```
 
-The root agent still decides graph structure, dispatch, recovery, acceptance, and completion. `waitd` validates and persists requested transitions but never invents nodes, dispatches agents, mutates an external system, or marks work complete on its own. Child agents report only to the root and must not invoke goal mutations.
+The agent supplies program logic, decides how to recover, and accepts results. The service manages execution, generates the resume instruction, and records decisions; it does not interpret business output or schedule child agents.
 
 ## Start and inspect
 
-`waitctl start`, `waitctl goal`, and `waitctl loop` start the service on demand. It can also be managed explicitly:
+`waitctl start`, `waitctl goal`, and `waitctl loop` start the service on demand.
 
 ```bash
-python scripts/waitctl.py daemon start
-python scripts/waitctl.py daemon status
-python scripts/waitctl.py list
-python scripts/waitctl.py show WATCH_ID
-python scripts/waitctl.py cancel WATCH_ID
-python scripts/waitctl.py daemon stop
+python src/waitctl.py daemon start
+python src/waitctl.py daemon status
+python src/waitctl.py list
+python src/waitctl.py show WATCH_ID
+python src/waitctl.py cancel WATCH_ID
+python src/waitctl.py daemon stop
 ```
 
-The service uses `/tmp/wait-skill-<uid>/waitd.sock` and a mode-`0600` registry inside a mode-`0700` directory. Active watchers are restored from their last durable phase with their original activation, overall, and wake-ack deadlines. A selected event is never queried again after restart; a notification interrupted with an unknown outcome is reported as `unconfirmed` instead of being replayed. The registry retains active watchers, timer records awaiting loop acknowledgement, and the 256 most recently finished other records. It also records loop state paths before state commands run; restart repairs missing timer registration.
+The service uses `/tmp/wait-skill-<uid>/waitd.sock`, with a mode-`0600` registry inside a mode-`0700` directory. It retains active watches, timers awaiting loop acknowledgement, and the 256 most recently finished other records.
 
-`ping` includes a protocol version and source fingerprint. `waitctl` stops an incompatible or stale daemon, waits for its single-instance lock to be released, and then starts the current implementation. An explicit `daemon stop` uses the same handoff, so an immediate subsequent start cannot lose a race with the exiting process.
+`ping` reports the protocol version and source fingerprint. When the service is outdated, `waitctl` stops it and waits for its lock before starting the new version. `daemon stop` also waits for lock release.
 
-## Submit a watcher
+## Submit a waiting program
 
-Pass the same bounded watcher arguments after `--`:
+Prepare the program as in the [wait example](wait.md):
 
 ```bash
-python scripts/waitctl.py start -- \
+python src/waitctl.py start -- \
   --label "deployment api" \
-  --ready Ready \
-  --terminal Failed \
-  --interval 60 \
-  --timeout 3600 \
-  --lock-file /tmp/wait-deployment-api.lock \
-  --log-file /tmp/wait-deployment-api.json \
-  -- deployctl status api --output status
+  --client codex --session "$AGENT_SESSION_ID" \
+  -- env PYTHONPATH="$PWD/src" python /tmp/wait_deploy.py
 ```
 
-Coordination paths are resolved against the submitting working directory. Query arguments after the inner `--` are preserved exactly and executed without a shell. The service runs query commands as asynchronous subprocesses and reaps their process groups before releasing watcher ownership on shutdown.
+Standalone log and lock paths are automatic; explicit paths override them. Paths are resolved against the submitting directory. Program arguments after the inner `--` are preserved and executed without a shell.
 
-`wait_for.py` remains available as a standalone compatibility and recovery path.
+The service captures stdout, stderr, and the exit code. It reports `exited`, `timeout`, `start_failed`, or `interrupted`, without parsing output. Each stream is limited to 64 KiB; excess output is drained and discarded. Cancellation and timeout stop the program's process group. Every wait has a finite timeout, defaulting to one hour.
 
-## Manage goal and loop state through the service
+On resume, the service always sends a fixed instruction built from the submitted paths — `$wait resume {log_file}; event_id={event_id}`, or the goal/loop variant when `--goal-state` or `--loop-state` was passed. It never derives this text from program output; the agent still decides how to recover after reading the log. See [wait](wait.md) for the result contract and [clients](clients.md) for delivery.
 
-The root can route any existing `wait_goal.py` command through the service:
+## Goal and loop commands
 
 ```bash
-python scripts/waitctl.py goal -- init \
-  --objective "Ship after CI passes" \
+python src/waitctl.py goal -- init \
+  --objective "Ship after CI passes" --session "$AGENT_SESSION_ID"
+python src/waitctl.py goal -- check --state "$GOAL_STATE"
+python src/waitctl.py goal -- ready --state "$GOAL_STATE"
+
+python src/waitctl.py loop -- init \
+  --task "Inspect the queue" --interval 600 --duration 3600 \
   --session "$AGENT_SESSION_ID"
-
-python scripts/waitctl.py goal -- check --state "$GOAL_STATE"
-python scripts/waitctl.py goal -- ready --state "$GOAL_STATE"
-
-python scripts/waitctl.py loop -- init \
-  --task "Inspect the queue" \
-  --interval 600 \
-  --duration 3600 \
-  --session "$AGENT_SESSION_ID"
-
-python scripts/waitctl.py loop -- show --state "$LOOP_STATE"
+python src/waitctl.py loop -- show --state "$LOOP_STATE"
 ```
 
-Goal and loop commands are serialized within their own command family and retain the state engines' validation, file locking, event history, and atomic writes. A command is terminated after 30 seconds so one stuck mutation cannot block its family indefinitely. The response contains the command exit `code`, parsed `output`, and any `error` text. `wait_goal.py` and `wait_loop.py` remain separate engines and compatibility entry points; durable state files, not service memory, remain the source of truth.
+Each command family is serialized and uses its state engine's validation, locking, event history, and atomic writes. Commands have a 30-second limit. Responses contain exit `code`, parsed `output`, and `error` text. Durable files remain the source of truth; `wait_goal.py` and `wait_loop.py` can also manage state directly.
 
-## Failure boundaries
+After each completed iteration, the service registers a blocking timer program and, on completion, resumes with `$wait-loop resume {state_file}; event_id={event_id}; log_file={log_file}`, generated from the loop's own state path. The root reads the timer result and decides whether to begin another iteration.
 
-- Every watcher retains its query timeout, overall timeout, failure limit, delivery limit, and finite wake acknowledgement timeout.
-- Cancelling a watcher interrupts its scheduled sleep immediately. A query already running is allowed only its bounded query timeout to exit.
-- If the service dies, per-watcher locks are released. `wait-goal check` then reports affected waiting nodes as `orphaned_wait`.
-- Registry recovery resumes only read-only watcher commands. It does not replay goal mutations or external side effects.
-- Credentials must stay out of watcher argv, message templates, registry state, logs, and goal state.
+## Restart and recovery
+
+- A queued program can start after restart. If execution started but no result was saved, report `interrupted` instead of replaying it.
+- Saved results continue delivery with the same event ID and deadlines. An interrupted delivery with an unknown outcome becomes `unconfirmed`; inspect the destination before retrying.
+- The registry records loop paths before state commands run, allowing missing timer registration to be repaired without repeating an iteration. A timer whose execution was interrupted follows the same no-replay rule.
+- If the service dies, watcher locks are released. Goal checks report affected waiting nodes as `orphaned_wait`; the root must inspect and recover them.
+- Keep credentials out of argv, output, and persisted files.
+
+When upgrading from status-matching submissions, inspect existing waits, cancel obsolete ones, and resubmit a waiting program. For status queries, write a script using `wait_for.poll(query, evaluate)`; the old `wait_for.py --ready/--terminal` CLI is removed.

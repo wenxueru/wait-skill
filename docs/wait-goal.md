@@ -2,7 +2,7 @@
 
 English | [简体中文](wait-goal.zh-CN.md)
 
-`wait-goal` is an event-driven implementation of Goal mode. It uses the parent `wait` skill when a goal node must monitor an external state. When nothing is actionable, the model turn ends and an agent or watcher event resumes the goal.
+`wait-goal` turns an objective into a saved task dependency graph. The root assigns work and verifies results; external waits use `wait`. Before ending a turn, the root confirms a wake-up path or reports a genuine blocker.
 
 ## State model
 
@@ -42,7 +42,7 @@ flowchart LR
     waiting -->|wake any event| resumed["running<br/>after wake"]
 ```
 
-The diagram keeps the normal path and external-wait flow together. Error and control transitions are listed separately to avoid crossing edges:
+The diagram shows normal execution. Failures and control operations are listed below:
 
 | Operation | Transition | Effect |
 | --- | --- | --- |
@@ -73,8 +73,6 @@ flowchart TD
     addWork --> schedule
     verify -->|Objective satisfied| finish[finish]
 ```
-
-The root remains the sole scheduler. Children and watchers return results or events to the root and never communicate with each other or mutate the dependency graph.
 
 ## Execution protocol
 
@@ -108,7 +106,7 @@ Mutation commands run under the state-file lock: load, validate, mutate, append 
 After persisting the example graph, create `[test] Run tests`, `[deploy] Wait for deployment readiness`, and `Verify objective` in the native Todo tool, if available. Keep the verification item unfinished until `verify` and `finish` both succeed.
 
 ```bash
-python scripts/waitctl.py goal -- init \
+python src/waitctl.py goal -- init \
   --objective "Ship the API and finish after the health check passes" \
   --client codex \
   --session "$AGENT_SESSION_ID"
@@ -116,7 +114,7 @@ python scripts/waitctl.py goal -- init \
 # Set this to the state_file returned by init.
 GOAL_STATE=/tmp/.wait-goal/PROJECT/GOAL.json
 
-python scripts/waitctl.py goal -- add \
+python src/waitctl.py goal -- add \
   --state "$GOAL_STATE" \
   --id test \
   --title "Run tests" \
@@ -125,7 +123,7 @@ python scripts/waitctl.py goal -- add \
   --acceptance "The test suite passes" \
   --expects-artifact test-report
 
-python scripts/waitctl.py goal -- add \
+python src/waitctl.py goal -- add \
   --state "$GOAL_STATE" \
   --id deploy \
   --title "Wait for deployment readiness" \
@@ -139,14 +137,14 @@ python scripts/waitctl.py goal -- add \
 Retain the returned `state_file` as `GOAL_STATE` for every later command. `--input NAME=DEPENDENCY_ID` declares which direct dependency supplies an input. Dependencies must be added before the nodes that depend on them. Declare each node's workspace access with `--read-only` or one or more `--write-path` options. An omitted write scope is treated as unknown and serialized against other work. Path conflict checks are conservatively case-insensitive. List currently actionable, mutually write-safe nodes with:
 
 ```bash
-python scripts/waitctl.py goal -- ready --state "$GOAL_STATE"
+python src/waitctl.py goal -- ready --state "$GOAL_STATE"
 ```
 
-Inspect deterministic graph and scheduling diagnostics with `check`. Inspect the append-only operation history with `events`:
+Use `check` to find graph and scheduling problems, and `events` to inspect operation history:
 
 ```bash
-python scripts/waitctl.py goal -- check --state "$GOAL_STATE"
-python scripts/waitctl.py goal -- events --state "$GOAL_STATE"
+python src/waitctl.py goal -- check --state "$GOAL_STATE"
+python src/waitctl.py goal -- events --state "$GOAL_STATE"
 ```
 
 ## Execute and evolve the DAG
@@ -154,13 +152,13 @@ python scripts/waitctl.py goal -- events --state "$GOAL_STATE"
 Mark a node as running before executing it:
 
 ```bash
-python scripts/waitctl.py goal -- start --state "$GOAL_STATE" --id test
+python src/waitctl.py goal -- start --state "$GOAL_STATE" --id test
 ```
 
 For an `agent` node, reserve the node before calling the runtime:
 
 ```bash
-python scripts/waitctl.py goal -- prepare-agent \
+python src/waitctl.py goal -- prepare-agent \
   --state "$GOAL_STATE" \
   --id review
 ```
@@ -168,7 +166,7 @@ python scripts/waitctl.py goal -- prepare-agent \
 Include `DISPATCH_TOKEN_FROM_PREPARE` in the child task or deterministic task name. After dispatch returns, attach the runtime ID:
 
 ```bash
-python scripts/waitctl.py goal -- start \
+python src/waitctl.py goal -- start \
   --state "$GOAL_STATE" \
   --id review \
   --dispatch-token DISPATCH_TOKEN_FROM_PREPARE \
@@ -180,7 +178,7 @@ If recovery finds a `dispatching` node, first search the runtime for that token 
 Record the result after its acceptance criteria pass:
 
 ```bash
-python scripts/waitctl.py goal -- complete \
+python src/waitctl.py goal -- complete \
   --state "$GOAL_STATE" \
   --id test \
   --summary "All tests passed" \
@@ -189,12 +187,10 @@ python scripts/waitctl.py goal -- complete \
 
 Declare required artifacts when adding a node with repeated `--expects-artifact` options. `complete` rejects the node until every declared artifact is supplied with `--artifact`.
 
-Add newly discovered work to the DAG with `add` instead of retaining it only in conversation context.
-
-To insert newly discovered work before an existing pending node, add it with `--before`:
+Save newly discovered work with `add`. To place it before an existing pending node, use `--before`:
 
 ```bash
-python scripts/waitctl.py goal -- add \
+python src/waitctl.py goal -- add \
   --state "$GOAL_STATE" \
   --id security-review \
   --title "Review release security" \
@@ -204,18 +200,18 @@ python scripts/waitctl.py goal -- add \
 
 ## Wait without model polling
 
-When agents are still running, the root agent uses the runtime's blocking wait and resumes only when an agent completes or needs attention.
+For running agents, use the runtime's blocking wait and confirm that completion or attention events return to the root. Do not end a turn merely because a child is still running.
 
 When only external state remains, choose a bound using the [wait limits](wait.md#wait-limits). If a long wait needs periodic health and progress assessment, the root can use `wait-loop` for hourly read-only checks. Bind the monitor with `loop init --goal-state FILE --goal-node ID`; its saved task describes the checks and how to report results to the root. Goal responses list linked loops, and the service cancels the monitor when the goal or node ends.
 
-For a condition-based wait, use the goal watcher protocol:
+Prepare the waiting program, then use the goal watcher protocol:
 
 1. Run `wait` to prepare metadata while the node remains `running`; retain its unique `watch_id` and returned absolute paths. State, log, lock, and startup paths must be distinct.
-2. Submit the watcher through `waitctl.py start -- ...` with those paths, the watch ID, and `--goal-node`. It acquires the watcher lock, writes the startup receipt, and waits without querying.
-3. Confirm the startup receipt, then run `activate-wait`. The node becomes `waiting`, and the watcher begins querying. Mark the corresponding Todo waiting with its condition and deadline.
+2. Submit the watcher through `waitctl.py start -- ...` with those paths, the watch ID, and `--goal-node`. It acquires the watcher lock, writes the startup receipt, and waits without starting the program.
+3. Confirm the startup receipt, then run `activate-wait`. The node becomes `waiting`, and the waiting program starts. Mark the corresponding Todo waiting with its condition and deadline.
 4. Set up event delivery for the owning session through the [client adapter](clients.md). End the current model turn and stop querying that external state.
-5. Let the watcher send `$wait-goal resume <state-file>` in Codex or `/wait-goal resume <state-file>` in another client when an event occurs.
-6. On resume, read the log, run `wake`, and query the external state once more. Every event returns the node to `running`; only the root's verified `complete`, `fail`, or next `wait` decision changes its outcome. IDs from older wait cycles are rejected and exact duplicates are no-ops. Update Todo after the root records its decision.
+5. On completion, the service resumes with `$wait-goal resume {goal_state}; node={goal_node}; event_id={event_id}; log_file={log_file}`, generated from the paths already bound at submission — nothing further to prepare.
+6. On resume, read the output and exit code, run `wake` with the logged event (`exited`, `timeout`, `start_failed`, or `interrupted`), and recheck current external state. Every event returns the node to `running`; only the root's verified `complete`, `fail`, or next `wait` decision changes its outcome. IDs from older wait cycles are rejected and exact duplicates are no-ops. Update Todo after the root records its decision.
 
 See [wait.md](wait.md) for the watcher protocol and [clients.md](clients.md) for resume adapters.
 
@@ -226,41 +222,41 @@ On resume, refresh this goal's Todo from persisted state. After a successful con
 Show the full state:
 
 ```bash
-python scripts/waitctl.py goal -- show --state "$GOAL_STATE"
+python src/waitctl.py goal -- show --state "$GOAL_STATE"
 ```
 
 Pause or resume scheduling:
 
 ```bash
-python scripts/waitctl.py goal -- pause --state "$GOAL_STATE"
-python scripts/waitctl.py goal -- resume --state "$GOAL_STATE"
+python src/waitctl.py goal -- pause --state "$GOAL_STATE"
+python src/waitctl.py goal -- resume --state "$GOAL_STATE"
 ```
 
 Cancellation marks every nonterminal node as `cancelled`:
 
 ```bash
-python scripts/waitctl.py goal -- cancel --state "$GOAL_STATE"
+python src/waitctl.py goal -- cancel --state "$GOAL_STATE"
 ```
 
-Pausing or cancelling scheduling does not forcibly terminate running agents or submitted external jobs. A goal-owned watcher observes a cancelled or replaced wait before its next query or notification retry and exits itself.
+Pausing or cancelling scheduling does not forcibly terminate running agents or submitted external jobs. A goal-owned watcher observes a cancelled or replaced wait during ownership checks or before a notification retry and exits itself.
 
 If a watcher fails before activation, exits without delivering an event, or must be replaced, invalidate that exact wait without failing the node:
 
 ```bash
-python scripts/waitctl.py goal -- abort-wait \
+python src/waitctl.py goal -- abort-wait \
   --state "$GOAL_STATE" \
   --id deploy \
   --watch-id CURRENT_WATCH_ID
 ```
 
-The node returns to `running` and can prepare a new wait. The watch ID guard prevents a stale recovery command from cancelling a newer watcher. A still-running old watcher observes the invalidated ID and exits before its next query or notification retry.
+The node returns to `running` and can prepare a new wait. The watch ID guard prevents a stale recovery command from cancelling a newer watcher. A still-running old watcher observes the invalidated ID and exits during ownership checks or before a notification retry.
 
 `check` verifies that every `waiting` node still has a watcher holding its recorded lock. A missing owner is an `orphaned_wait` error, and `show` exposes `orphaned_wait` as the current activity. Recover the existing node with `abort-wait`; do not create a second node for the same external object.
 
 After deciding that a failed node may be attempted again, archive the failed attempt and reset it to `pending`:
 
 ```bash
-python scripts/waitctl.py goal -- retry --state "$GOAL_STATE" --id deploy
+python src/waitctl.py goal -- retry --state "$GOAL_STATE" --id deploy
 ```
 
 `retry` changes scheduler state only. It does not authorize or perform an external retry, deployment, restart, or other side effect.
@@ -272,7 +268,7 @@ When continuing the same logical external operation, retry the failed original n
 After every node is complete, verify the result against the original request. If the request is not yet satisfied, add the missing work as nodes and continue. Otherwise persist the verification evidence before finishing:
 
 ```bash
-python scripts/waitctl.py goal -- verify \
+python src/waitctl.py goal -- verify \
   --state "$GOAL_STATE" \
   --summary "The original request is satisfied" \
   --check "all tests passed" \
@@ -282,7 +278,7 @@ python scripts/waitctl.py goal -- verify \
 Then finish the goal:
 
 ```bash
-python scripts/waitctl.py goal -- finish \
+python src/waitctl.py goal -- finish \
   --state "$GOAL_STATE" \
   --summary "Release completed; tests and health checks passed"
 ```

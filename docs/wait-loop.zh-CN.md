@@ -2,7 +2,7 @@
 
 [English](wait-loop.md) | 简体中文
 
-根会话每次只执行一轮；两轮之间仅由父级 `wait` watcher 负责计时，因此时间未到时不消耗模型轮次。
+根 Agent 做完一轮任务，再由 `wait` 计时等待下一轮。同一时间只运行一轮，两轮之间模型不用轮询。
 
 ## 生命周期
 
@@ -10,7 +10,7 @@
 flowchart LR
     start((调用)) --> running[执行一轮]
     running -->|complete 且仍需继续| waiting[wait 接管计时]
-    waiting -->|ready 事件 + begin| running
+    waiting -->|计时返回 Ready + begin| running
     running -->|达到轮数或时限| completed((完成))
     waiting -->|总时限到达| completed
     running -->|cancel| cancelled((取消))
@@ -26,7 +26,7 @@ flowchart LR
 每十分钟检查一次队列，最多四轮，并且总时长不超过一小时：
 
 ```bash
-python scripts/waitctl.py loop -- init \
+python src/waitctl.py loop -- init \
   --task "检查队列并报告需要处理的变化" \
   --interval 600 \
   --duration 3600 \
@@ -38,7 +38,7 @@ python scripts/waitctl.py loop -- init \
 LOOP_STATE=/tmp/.wait-loop/PROJECT/LOOP.json
 
 # 完成第一轮任务后：
-python scripts/waitctl.py loop -- complete \
+python src/waitctl.py loop -- complete \
   --state "$LOOP_STATE" \
   --summary "已检查队列，没有需要处理的变化"
 
@@ -50,18 +50,18 @@ WATCH_ID=WATCH_ID_FROM_COMPLETE
 
 每次注册计时器后，使用保存的 watch ID，按[客户端适配](clients.zh-CN.md)接好事件投递通道，再结束轮次。
 
-watcher 报告 `ready` 后，先校验日志并消费事件，再执行任务：
+每次计时结束，服务用 `$wait-loop resume {state_file}; event_id={event_id}; log_file={log_file}` 唤醒，这条消息由 loop 自己的状态路径生成，初始化时无需额外准备。日志报告 `event: exited`、`exit_code: 0`，且 stdout 为 `Ready` 时，先记录本次唤醒，再执行任务：
 
 ```bash
-python scripts/waitctl.py loop -- begin \
+python src/waitctl.py loop -- begin \
   --state "$LOOP_STATE" \
   --event-id "$WATCH_ID"
 ```
 
-如果 `begin` 返回 `duplicate: true`，不得再次执行本轮；如果返回状态为 `completed`，说明 ready 事件送达时已经超过 loop 截止时间，应直接停止，不再执行下一轮；否则执行一次已保存任务，再调用 `complete`。watcher 报告 `Expired` 时运行：
+`begin` 返回 `duplicate: true` 时跳过重复事件；返回 `completed` 时说明已过截止时间，直接停止。其他情况执行一轮任务，再调用 `complete`。计时程序的 stdout 为 `Expired` 时运行：
 
 ```bash
-python scripts/waitctl.py loop -- expire \
+python src/waitctl.py loop -- expire \
   --state "$LOOP_STATE" \
   --event-id "$WATCH_ID"
 ```
@@ -70,19 +70,19 @@ python scripts/waitctl.py loop -- expire \
 
 不传 `--state` 时，`init` 会创建 `/tmp/.wait-loop/<项目名>-<路径哈希>/loop-<ID>.json` 并返回规范化路径。最近的 Git 根目录用于识别项目；macOS 返回值可能使用 `/private/tmp`。
 
-所有 loop 状态命令都通过 `waitctl` 和本地 `waitd` 服务执行。`wait_loop.py` 仍是隔离的状态引擎和兼容入口；服务重启前后均以其持久状态文件为准。状态包含任务、客户端、会话、间隔、总截止时间、可选轮数上限、当前阶段、活动 watch ID、已完成轮次摘要和事件历史。循环有两层限制：
+用 `waitctl loop` 通过 `waitd` 管理循环；`wait_loop.py` 也可独立处理状态。状态文件在服务重启后仍有效，记录任务、客户端与会话、时间安排、阶段、watch ID、执行摘要和操作历史。循环何时停止由两项设置控制：
 
 - `--duration` 限制整个循环，默认 24 小时。
 - `--max-iterations` 可选，用于限制成功完成的轮数。
 
-服务在 `complete` 后注册计时器，截止时间为 loop 截止时间加 60 秒。执行状态命令前先记录 loop 路径，因此重启后可以补齐遗漏的计时器，而无需重复本轮任务。计时器日志保存在 loop 状态文件旁，以 watch ID 命名。
+服务在 `complete` 后注册计时器，截止时间为 `next_run_at` 加 60 秒。计时程序为 `wait_loop.py due --wait`，它会阻塞到保存的计时到期或循环过期。执行状态命令前先记录 loop 路径，因此重启后可以补齐遗漏的计时器，而无需重复本轮任务。计时器日志保存在 loop 状态文件旁，以 watch ID 命名。
 
 ## 恢复与取消
 
 - `show --state FILE`：读取当前状态。
-- `cancel --state FILE`：阻止后续迭代；所有权校验会在活动计时器的下一次查询或通知重试前将其停止。
+- `cancel --state FILE`：阻止后续迭代；所有权校验会在执行期间或通知重试前停止活动计时器。
 - 本轮失败、中断或缺少关键输入、授权时，保持 `running`，不调用 `complete` 或静默重试。报告阻塞原因与状态文件路径，然后结束轮次。此时不会安排下一计时器；用户之后给出方向时恢复未完成的迭代。
-- 运行 `waitctl loop -- show --state FILE` 核对计时器注册。服务会用已保存的 watch ID 补齐缺失的注册记录。已记录的投递失败需要先查看 `waitctl show WATCH_ID` 及日志，再手动恢复。
+- 运行 `waitctl loop -- show --state FILE` 核对计时器注册。服务会用已保存的 watch ID 补齐缺失的注册记录。已经启动但中断的程序不自动重跑。遇到 `timeout`、`start_failed`、`interrupted` 或投递失败时，先查看 `waitctl show WATCH_ID` 及日志，再恢复。可运行一次 `due --state FILE --watch-id ID` 复查计时；只有 `Ready` 才执行 `begin`，`Expired` 则执行 `expire`。
 - Goal 监控在 `init` 时传入 `--goal-state FILE --goal-node ID`。服务在 goal 响应中列出关联，并在目标离开 open 状态或节点结束时取消监控。计时器所有权检查和 `begin` 也会检查该关联。
 
 定时事件不会扩大重复任务执行外部修改的权限。每一轮都必须重新确认当前状态和已有授权。

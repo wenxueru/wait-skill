@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import sys
 import tempfile
 import unittest
 from argparse import Namespace
@@ -12,7 +13,8 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
-SCRIPT = Path(__file__).parents[1] / "scripts" / "wait_loop.py"
+sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
+SCRIPT = Path(__file__).parents[1] / "src" / "wait_loop.py"
 SPEC = importlib.util.spec_from_file_location("wait_loop", SCRIPT)
 assert SPEC and SPEC.loader
 wait_loop = importlib.util.module_from_spec(SPEC)

@@ -6,12 +6,11 @@ from __future__ import annotations
 import argparse
 import asyncio
 import fcntl
+import hashlib
 import json
 import math
 import os
-import re
 import signal
-import subprocess
 import sys
 import time
 import uuid
@@ -19,9 +18,8 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any, TextIO
 
-import wait_for
 import wait_loop
-from state_runner import StateCommandRunner
+import wait_runtime
 from wait_protocol import (
     PROTOCOL_VERSION,
     REGISTRY_PATH,
@@ -31,21 +29,59 @@ from wait_protocol import (
 )
 
 MAX_FINISHED_WATCHES = 256
+MAX_PROGRAM_OUTPUT_BYTES = 64 * 1024
 PATH_OPTIONS = {"--goal-state", "--loop-state", "--startup-file", "--log-file", "--lock-file"}
+STATE_SCRIPTS = {name: Path(__file__).with_name(f"wait_{name}.py") for name in STATE_COMMANDS}
+STATE_COMMAND_TIMEOUT = 30.0
 
 
-def atomic_write_json(path: Path, value: object) -> None:
-    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    payload = json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-    wait_for.atomic_write_text(path, payload)
-    path.chmod(0o600)
+class StateCommandRunner:
+    """Run goal and loop state engines with independent serialization."""
+
+    def __init__(self) -> None:
+        self.locks = {name: asyncio.Lock() for name in STATE_SCRIPTS}
+
+    async def run(self, name: str, argv: list[str], cwd: Path) -> dict[str, object]:
+        async def execute() -> tuple[bytes, bytes, int]:
+            async with self.locks[name]:
+                process = await asyncio.create_subprocess_exec(
+                    sys.executable,
+                    os.fspath(STATE_SCRIPTS[name]),
+                    *argv,
+                    cwd=cwd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                communication = asyncio.create_task(process.communicate())
+                try:
+                    stdout, stderr = await asyncio.shield(communication)
+                except asyncio.CancelledError:
+                    with suppress(ProcessLookupError):
+                        process.kill()
+                    await communication
+                    raise
+                assert process.returncode is not None
+                return stdout, stderr, process.returncode
+
+        try:
+            stdout, stderr, returncode = await asyncio.wait_for(execute(), STATE_COMMAND_TIMEOUT)
+        except asyncio.TimeoutError:
+            return {
+                "code": 124,
+                "output": "",
+                "error": f"{name} command exceeded {STATE_COMMAND_TIMEOUT:g} seconds",
+            }
+        output = stdout.decode("utf-8", errors="replace").strip()
+        error = stderr.decode("utf-8", errors="replace").strip()
+        try:
+            parsed: object = json.loads(output)
+        except json.JSONDecodeError:
+            parsed = output
+        return {"code": returncode, "output": parsed, "error": error}
 
 
 def absolute_wait_argv(argv: list[str], cwd: Path) -> list[str]:
     """Resolve watcher coordination paths against the submitting process."""
-
-    def resolve_binding(match: re.Match[str]) -> str:
-        return match[1] + os.fspath(cwd / match[2])
 
     result: list[str] = []
     index = 0
@@ -55,18 +91,7 @@ def absolute_wait_argv(argv: list[str], cwd: Path) -> list[str]:
             result.extend(argv[index:])
             break
         option, separator, value = item.partition("=")
-        if option == "--message-template" and (separator or index + 1 < len(argv)):
-            template = value if separator else argv[index + 1]
-
-            template = re.sub(
-                r"([$/](?:wait|wait-goal|wait-loop)\s+resume\s+|(?<![\w.-])watcher_log=)(.+?)(?=\s*;|$)",
-                resolve_binding,
-                template,
-            )
-            result.extend(("--message-template", template))
-            if not separator:
-                index += 1
-        elif option in PATH_OPTIONS and separator:
+        if option in PATH_OPTIONS and separator:
             result.append(f"{option}={cwd / value}")
         elif item in PATH_OPTIONS and index + 1 < len(argv):
             result.extend((item, os.fspath(cwd / argv[index + 1])))
@@ -120,34 +145,46 @@ async def wait_for_cancel(cancel_event: asyncio.Event, timeout: float) -> bool:
     return True
 
 
-async def query_status(command: list[str], timeout: float, json_path: str | None, cwd: str) -> str:
-    """Own the query process until output, timeout, or cancellation is resolved."""
-    process = await asyncio.create_subprocess_exec(
-        *command,
-        cwd=cwd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.DEVNULL,
-        start_new_session=True,
-    )
-
-    async def read() -> str:
-        output = bytearray()
-        assert process.stdout is not None
-        while chunk := await process.stdout.read(8192):
-            output.extend(chunk)
-            if len(output) > wait_for.MAX_QUERY_OUTPUT_BYTES:
-                raise ValueError("query output exceeds size limit")
-        if await process.wait():
-            raise RuntimeError("query command failed")
-        return wait_for.extract_status(output.decode("utf-8"), json_path)
-
+async def run_program(command: list[str], timeout: float, cwd: str) -> dict[str, object]:
+    """Run once; preserve bounded output without interpreting it."""
+    result: dict[str, object] = {"event": "exited", "exit_code": None}
+    output = {"stdout": bytearray(), "stderr": bytearray()}
+    truncated = {"stdout": False, "stderr": False}
     try:
-        return await asyncio.wait_for(read(), timeout)
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            cwd=cwd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,
+        )
+    except OSError as exc:
+        return {**result, "event": "start_failed", "error": str(exc), "stdout": "", "stderr": ""}
+
+    async def drain(name: str, stream: asyncio.StreamReader) -> None:
+        while chunk := await stream.read(8192):
+            remaining = MAX_PROGRAM_OUTPUT_BYTES - len(output[name])
+            output[name].extend(chunk[:remaining])
+            truncated[name] |= len(chunk) > remaining
+
+    assert process.stdout is not None and process.stderr is not None
+    readers = [
+        asyncio.create_task(drain("stdout", process.stdout)),
+        asyncio.create_task(drain("stderr", process.stderr)),
+    ]
+    try:
+        await asyncio.wait_for(process.wait(), timeout)
+        result["exit_code"] = process.returncode
+    except asyncio.TimeoutError:
+        result["event"] = "timeout"
     finally:
-        # Descendants may outlive their parent, including after stdout closes.
         with suppress(ProcessLookupError):
             os.killpg(process.pid, signal.SIGKILL)
         await process.wait()
+        await asyncio.gather(*readers)
+    result.update({name: data.decode("utf-8", errors="replace") for name, data in output.items()})
+    result["output_truncated"] = any(truncated.values())
+    return result
 
 
 class WaitDaemon:
@@ -195,7 +232,7 @@ class WaitDaemon:
         )
         for watch_id in finished[MAX_FINISHED_WATCHES:]:
             del self.watchers[watch_id]
-        atomic_write_json(self.registry_path, {"watchers": self.watchers, "loops": self.loops})
+        wait_runtime.atomic_write_json(self.registry_path, {"watchers": self.watchers, "loops": self.loops})
 
     def _update_record(self, record: dict[str, Any], **changes: object) -> None:
         record.update(changes, updated_at=time.time())
@@ -211,7 +248,7 @@ class WaitDaemon:
         **changes: object,
     ) -> None:
         self._update_record(record, result=result, **changes)
-        wait_for.persist_result(args.log_file, result)
+        wait_runtime.persist_result(args.log_file, result)
 
     async def restore(self) -> None:
         for watch_id, record in self.watchers.items():
@@ -244,53 +281,11 @@ class WaitDaemon:
             watch_id = str(state["watch_id"])
             if watch_id in self.watchers:
                 continue
-            self._submit_loop_timer(state, store.path, filename, cwd)
+            try:
+                self.submit(wait_loop.timer_argv(state, store.path), cwd)
+            except (OSError, ValueError, SystemExit) as exc:
+                monitors.append({"state_file": filename, "error": str(exc)})
         return monitors
-
-    def _submit_loop_timer(self, state: wait_loop.LoopState, path: Path, filename: str, cwd: str) -> None:
-        watch_id = str(state["watch_id"])
-        log = path.with_name(f"{path.stem}-{watch_id}.watch.json")
-        invocation = "$wait-loop" if state["client"] == "codex" else "/wait-loop"
-        message = (
-            f"{invocation} resume {filename}; watcher_log={log}; event_id={{event_id}}; event={{event}}; status={{status}}"
-        )
-        self.submit(
-            [
-                "--label",
-                "loop timer",
-                "--ready",
-                "Ready",
-                "--terminal",
-                "Expired",
-                "--interval",
-                str(min(60.0, state["interval_seconds"])),
-                "--timeout",
-                str(max(1.0, state["deadline_at"] - time.time() + 60)),
-                "--client",
-                str(state["client"]),
-                "--session",
-                str(state["session"]),
-                "--event-id",
-                watch_id,
-                "--loop-state",
-                filename,
-                "--log-file",
-                str(log),
-                "--lock-file",
-                str(log.with_suffix(".lock")),
-                "--message-template",
-                message,
-                "--",
-                sys.executable,
-                str(Path(wait_loop.__file__).resolve()),
-                "due",
-                "--state",
-                filename,
-                "--watch-id",
-                watch_id,
-            ],
-            cwd,
-        )
 
     def _schedule(self, watch_id: str) -> None:
         self.cancel_events[watch_id] = asyncio.Event()
@@ -306,7 +301,21 @@ class WaitDaemon:
     def submit(self, argv: list[str], cwd: str) -> dict[str, object]:
         directory = working_directory(cwd)
         resolved_argv = absolute_wait_argv(argv, directory)
-        args, _ = wait_for.parse_wait_args(resolved_argv)
+        options = wait_runtime.job_parser().parse_args(resolved_argv)
+        if not options.goal_state and not options.loop_state:
+            identity = json.dumps(
+                [str(directory.resolve()), options.client, options.thread, options.remote, options.label, options.command],
+                ensure_ascii=False,
+            )
+            lock_key = hashlib.sha256(identity.encode()).hexdigest()
+            defaults = []
+            if not options.lock_file:
+                defaults += ["--lock-file", str(self.registry_path.parent / "watches" / f"{lock_key}.lock")]
+            if not options.log_file:
+                log_file = self.registry_path.parent / "watches" / f"{uuid.uuid4().hex}.json"
+                defaults += ["--log-file", str(log_file)]
+            resolved_argv = defaults + resolved_argv
+        args, _ = wait_runtime.parse_job_args(resolved_argv)
         watch_id = args.event_id or uuid.uuid4().hex
         if watch_id in self.watchers:
             raise ValueError(f"watch ID already exists: {watch_id}")
@@ -319,7 +328,7 @@ class WaitDaemon:
             "argv": resolved_argv,
             "cwd": os.path.realpath(cwd),
             "state": "active",
-            "phase": "activating" if args.goal_state else "querying",
+            "phase": "activating" if args.goal_state else "queued",
             "submitted_at": now,
             "deadline_at": deadline_at,
             "updated_at": now,
@@ -331,7 +340,12 @@ class WaitDaemon:
             )
         self.save()
         self._schedule(watch_id)
-        return {"watch_id": watch_id, "state": "active"}
+        return {
+            "watch_id": watch_id,
+            "state": "active",
+            "log_file": str(args.log_file) if args.log_file else None,
+            "lock_file": str(args.lock_file) if args.lock_file else None,
+        }
 
     def cancel(self, watch_id: str) -> dict[str, object]:
         record = self.watchers.get(watch_id)
@@ -412,12 +426,8 @@ class WaitDaemon:
                 break
             await changed.wait()
 
-        args, _ = wait_for.parse_wait_args(record["argv"])
-        resume_message = None
-        if result and args.message_template:
-            fields: dict[str, object] = dict.fromkeys(wait_for.MESSAGE_FIELDS)
-            fields.update(result, label=args.label, event_id=watch_id)
-            resume_message = args.message_template.format(**fields)
+        args, _ = wait_runtime.parse_job_args(record["argv"])
+        resume_message = wait_runtime.resume_instruction(args) if result and args.thread else None
         return {
             "watch_id": watch_id,
             "state": record["state"],
@@ -429,7 +439,7 @@ class WaitDaemon:
     async def _run_watch(self, watch_id: str) -> None:
         record = self.watchers[watch_id]
         try:
-            args, command = wait_for.parse_wait_args(record["argv"])
+            args, command = wait_runtime.parse_job_args(record["argv"])
             result, code = await self._watch(args, command, record, self.cancel_events[watch_id])
         except asyncio.CancelledError:
             return
@@ -439,7 +449,7 @@ class WaitDaemon:
             return
         self._update_record(
             record,
-            state="completed" if code in {wait_for.EXIT_READY, wait_for.EXIT_TERMINAL} else "failed",
+            state="completed" if code == 0 else "failed",
             code=code,
             result=result,
         )
@@ -459,9 +469,9 @@ class WaitDaemon:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
                 lock.close()
-                return {"event": "already_watching", "status": None}, wait_for.EXIT_ALREADY_WATCHING
+                return {"event": "already_watching", "status": None}, wait_runtime.EXIT_ALREADY_WATCHING
         try:
-            phase = str(record.get("phase") or ("activating" if args.goal_state else "querying"))
+            phase = str(record.get("phase") or ("activating" if args.goal_state else "queued"))
             if phase == "activating":
                 activation_deadline_at = float(
                     record.get(
@@ -484,25 +494,35 @@ class WaitDaemon:
                         "label": args.label,
                         "event_id": args.event_id,
                     }
-                    self._persist_result(args, record, result, phase="finalizing", code=wait_for.EXIT_ACTIVATION_CANCELLED)
-                    return result, wait_for.EXIT_ACTIVATION_CANCELLED
-                phase = "querying"
+                    self._persist_result(args, record, result, phase="finalizing", code=wait_runtime.EXIT_ACTIVATION_CANCELLED)
+                    return result, wait_runtime.EXIT_ACTIVATION_CANCELLED
+                phase = "queued"
                 self._update_record(record, phase=phase)
 
-            if phase == "querying":
-                result, code = await self._query_loop(
-                    args,
-                    command,
-                    float(record["deadline_at"]),
-                    float(record["submitted_at"]),
-                    record["cwd"],
-                    cancel_event,
-                )
-                if cancel_event.is_set() or not wait_for.watch_is_current(args):
+            if phase in {"queued", "running", "querying"}:
+                if phase == "queued":
+                    self._update_record(record, phase="running")
+                    result = await self._execute_program(args, command, record, cancel_event)
+                else:
+                    # An arbitrary program may already have acted before the service stopped.
+                    result = {
+                        "event": "interrupted",
+                        "exit_code": None,
+                        "stdout": "",
+                        "stderr": "",
+                        "error": "service restarted before completion was saved; not replayed",
+                    }
+                if result["event"] == "exited":
+                    code = 0
+                elif result["event"] == "timeout":
+                    code = wait_runtime.EXIT_TIMEOUT
+                else:
+                    code = 1
+                if cancel_event.is_set() or not wait_runtime.watch_is_current(args):
                     result["event"] = "cancelled"
-                    code = wait_for.EXIT_ACTIVATION_CANCELLED
-                result.update(label=args.label, event_id=args.event_id)
-                if args.thread and code != wait_for.EXIT_ACTIVATION_CANCELLED:
+                    code = wait_runtime.EXIT_ACTIVATION_CANCELLED
+                result.update(label=args.label, event_id=args.event_id, log_file=str(args.log_file))
+                if args.thread and code != wait_runtime.EXIT_ACTIVATION_CANCELLED:
                     result.update(notification="pending", notification_attempts=0)
                     phase = "notifying"
                 else:
@@ -517,7 +537,7 @@ class WaitDaemon:
 
             if phase == "notifying" and result.get("notification") == "attempting":
                 result["notification"] = "unconfirmed"
-                code = wait_for.EXIT_NOTIFY_FAILED
+                code = wait_runtime.EXIT_NOTIFY_FAILED
                 phase = "finalizing"
                 self._persist_result(args, record, result, phase=phase, code=code)
 
@@ -532,7 +552,7 @@ class WaitDaemon:
                     phase = "awaiting_ack"
                     if result.get("notification") == "native_pending":
                         # Native task availability is not delivery confirmation.
-                        _, timeout = wait_for.notification_limits(args)
+                        _, timeout = wait_runtime.notification_limits(args)
                         deadline = float(result["available_at"]) + timeout
                     else:
                         deadline = float(result.get("delivered_at", time.time())) + args.wake_ack_timeout
@@ -547,13 +567,13 @@ class WaitDaemon:
                     cancel_event,
                     float(record["wake_ack_deadline_at"]),
                 )
-                if result.get("notification") == "native_pending" and wait_for.goal_wait_is_current(args):
+                if result.get("notification") == "native_pending" and wait_runtime.goal_wait_is_current(args):
                     if cancel_event.is_set():
-                        result["notification"], code = "cancelled", wait_for.EXIT_ACTIVATION_CANCELLED
+                        result["notification"], code = "cancelled", wait_runtime.EXIT_ACTIVATION_CANCELLED
                     else:
-                        result["notification"], code = "unconfirmed", wait_for.EXIT_NOTIFY_FAILED
+                        result["notification"], code = "unconfirmed", wait_runtime.EXIT_NOTIFY_FAILED
                 self._persist_result(args, record, result, phase="finalizing", code=code)
-            wait_for.persist_result(args.log_file, result)
+            wait_runtime.persist_result(args.log_file, result)
             return result, code
         except (OSError, RuntimeError, TypeError, ValueError, KeyError) as exc:
             result = {
@@ -565,7 +585,7 @@ class WaitDaemon:
             }
             # A write error must not hide the original failure in the registry.
             with suppress(OSError):
-                wait_for.persist_result(args.log_file, result)
+                wait_runtime.persist_result(args.log_file, result)
             return result, 1
         finally:
             if lock is not None:
@@ -577,7 +597,7 @@ class WaitDaemon:
         cancel_event: asyncio.Event,
         deadline_at: float,
     ) -> str:
-        wait_for.persist_result(
+        wait_runtime.persist_result(
             args.startup_file,
             {
                 "label": args.label,
@@ -594,7 +614,7 @@ class WaitDaemon:
         while True:
             if cancel_event.is_set():
                 return "cancelled"
-            phase = wait_for.goal_wait_phase(args)
+            phase = wait_runtime.goal_wait_phase(args)
             if phase == "active":
                 return "active"
             if phase == "invalid":
@@ -605,67 +625,27 @@ class WaitDaemon:
             if await wait_for_cancel(cancel_event, min(args.activation_interval, remaining)):
                 return "cancelled"
 
-    async def _query_loop(
+    async def _execute_program(
         self,
         args: argparse.Namespace,
         command: list[str],
-        deadline_at: float,
-        submitted_at: float,
-        cwd: str,
+        record: dict[str, Any],
         cancel_event: asyncio.Event,
-    ) -> tuple[dict[str, object], int]:
-        status: str | None = None
-        failures = consecutive_failures = 0
-        error: str | None = None
-        while True:
-            if cancel_event.is_set() or not wait_for.watch_is_current(args):
-                event, code = "cancelled", wait_for.EXIT_ACTIVATION_CANCELLED
-                break
-            remaining = deadline_at - time.time()
-            if remaining <= 0:
-                event, code = "timeout", wait_for.EXIT_TIMEOUT
-                break
-            try:
-                candidate = await query_status(
-                    command,
-                    min(args.query_timeout, remaining),
-                    args.json_path,
-                    cwd,
-                )
-            except wait_for.QueryConfigurationError as exc:
-                failures += 1
-                error = str(exc)
-                event, code = "query_failed", wait_for.EXIT_QUERY_FAILED
-                break
-            except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired, asyncio.TimeoutError):
-                failures += 1
-                consecutive_failures += 1
-                if consecutive_failures >= args.max_consecutive_failures:
-                    event, code = "query_failed", wait_for.EXIT_QUERY_FAILED
-                    break
-            else:
-                if time.time() >= deadline_at:
-                    event, code = "timeout", wait_for.EXIT_TIMEOUT
-                    break
-                status = candidate
-                consecutive_failures = 0
-                if status in args.ready:
-                    event, code = "ready", wait_for.EXIT_READY
-                    break
-                if status in args.terminal:
-                    event, code = "terminal", wait_for.EXIT_TERMINAL
-                    break
-            delay = min(args.interval, max(0.0, deadline_at - time.time()))
-            await wait_for_cancel(cancel_event, delay)
-        result: dict[str, object] = {
-            "event": event,
-            "status": status,
-            "query_failures": failures,
-            "elapsed_seconds": round(time.time() - submitted_at, 3),
-        }
-        if error:
-            result["error"] = error
-        return result, code
+    ) -> dict[str, object]:
+        remaining = float(record["deadline_at"]) - time.time()
+        if remaining <= 0:
+            return {"event": "timeout", "exit_code": None, "stdout": "", "stderr": ""}
+        task = asyncio.create_task(run_program(command, remaining, record["cwd"]))
+        try:
+            while not task.done():
+                if cancel_event.is_set() or not wait_runtime.watch_is_current(args):
+                    return {"event": "cancelled", "exit_code": None, "stdout": "", "stderr": ""}
+                await asyncio.wait({task}, timeout=0.25)
+            return task.result()
+        finally:
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
 
     async def _deliver(
         self,
@@ -678,16 +658,16 @@ class WaitDaemon:
             result.update(notification="native_pending", notification_attempts=0, available_at=time.time())
             self._persist_result(args, record, result)
             return None
-        max_attempts, timeout = wait_for.notification_limits(args)
+        max_attempts, timeout = wait_runtime.notification_limits(args)
         previous_attempts = int(result.get("notification_attempts", 0))
         for attempt in range(previous_attempts + 1, max_attempts + 1):
-            if cancel_event.is_set() or not wait_for.watch_is_current(args):
+            if cancel_event.is_set() or not wait_runtime.watch_is_current(args):
                 result["notification"] = "cancelled"
-                return wait_for.EXIT_ACTIVATION_CANCELLED
+                return wait_runtime.EXIT_ACTIVATION_CANCELLED
             result.update(notification="attempting", notification_attempts=attempt)
             self._persist_result(args, record, result)
-            message = args.message_template.format(**result)
-            command = wait_for.notification_command(
+            message = wait_runtime.resume_instruction(args)
+            command = wait_runtime.notification_command(
                 args.client,
                 args.thread,
                 message,
@@ -705,7 +685,7 @@ class WaitDaemon:
             except OSError:
                 result["notification"] = "failed"
                 self._persist_result(args, record, result)
-                return wait_for.EXIT_NOTIFY_FAILED
+                return wait_runtime.EXIT_NOTIFY_FAILED
             try:
                 returncode = await asyncio.wait_for(process.wait(), timeout=timeout)
             except (asyncio.CancelledError, asyncio.TimeoutError) as exc:
@@ -722,7 +702,7 @@ class WaitDaemon:
                 failed = "unconfirmed"
             else:
                 if returncode == 0:
-                    result.update(notification=wait_for.notification_success(args.client), delivered_at=time.time())
+                    result.update(notification=wait_runtime.notification_success(args.client), delivered_at=time.time())
                     self._persist_result(args, record, result)
                     return None
                 failed = "failed"
@@ -730,10 +710,10 @@ class WaitDaemon:
             result["notification"] = failed if exhausted else f"{failed}_retrying"
             self._persist_result(args, record, result)
             if exhausted:
-                return wait_for.EXIT_NOTIFY_FAILED
+                return wait_runtime.EXIT_NOTIFY_FAILED
             delay = min(args.notification_retry_interval * 2 ** min(attempt - 1, 10), 300.0)
             await wait_for_cancel(cancel_event, delay)
-        return wait_for.EXIT_NOTIFY_FAILED
+        return wait_runtime.EXIT_NOTIFY_FAILED
 
     async def _await_goal_wake(
         self,
@@ -741,7 +721,7 @@ class WaitDaemon:
         cancel_event: asyncio.Event,
         deadline_at: float,
     ) -> None:
-        while wait_for.goal_wait_is_current(args):
+        while wait_runtime.goal_wait_is_current(args):
             if cancel_event.is_set():
                 return
             remaining = deadline_at - time.time()

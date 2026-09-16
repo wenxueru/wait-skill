@@ -11,7 +11,7 @@ SOCKET_PATH = RUNTIME_DIR / "waitd.sock"
 REGISTRY_PATH = RUNTIME_DIR / "registry.json"
 PROTOCOL_VERSION = 1
 STATE_COMMANDS = ("goal", "loop")
-SERVICE_SOURCES = ("wait_protocol.py", "waitd.py", "wait_for.py", "wait_loop.py", "state_runner.py")
+SERVICE_SOURCES = ("wait_protocol.py", "waitd.py", "wait_runtime.py", "wait_loop.py")
 
 
 def source_fingerprint() -> str:

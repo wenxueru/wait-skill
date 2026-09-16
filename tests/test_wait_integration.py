@@ -1,188 +1,49 @@
 from __future__ import annotations
 
-import importlib.util
+import asyncio
 import json
-import subprocess
+import sys
 import tempfile
-import time
 import unittest
-from concurrent.futures import ThreadPoolExecutor
-from contextlib import redirect_stdout
-from io import StringIO
 from pathlib import Path
-from types import ModuleType
-from unittest.mock import patch
 
-ROOT = Path(__file__).parents[1]
-
-
-def load_script(name: str, path: Path) -> ModuleType:
-    spec = importlib.util.spec_from_file_location(name, path)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+SRC = Path(__file__).parents[1] / "src"
+sys.path.insert(0, str(SRC))
+import waitd  # noqa: E402
 
 
-wait_for = load_script("wait_for_integration", ROOT / "scripts" / "wait_for.py")
-wait_goal = load_script("wait_goal_integration", ROOT / "scripts" / "wait_goal.py")
-
-
-class WaitIntegrationTest(unittest.TestCase):
-    def test_watcher_event_resumes_external_goal_node(self) -> None:
+class PollServiceTest(unittest.IsolatedAsyncioTestCase):
+    async def test_custom_poll_program_returns_through_native_callback(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            state_path = root / "goal.json"
-            log_path = root / "watcher.json"
-            lock_path = root / "watcher.lock"
-            startup_path = root / "watcher.started.json"
-
-            def goal_cli(*arguments: str) -> dict[str, object]:
-                output = StringIO()
-                with redirect_stdout(output):
-                    self.assertEqual(wait_goal.main(list(arguments)), 0)
-                return json.loads(output.getvalue())
-
-            goal_cli(
-                "init",
-                "--state",
-                str(state_path),
-                "--objective",
-                "deploy safely",
-                "--thread",
-                "thread-1",
+            program = root / "custom_wait.py"
+            program.write_text(
+                "import sys, json\n"
+                f"sys.path.insert(0, {str(SRC)!r})\n"
+                "from wait_for import poll\n"
+                "values = iter([{'healthy': 0}, {'healthy': 8}])\n"
+                "def query(): return next(values)\n"
+                "def evaluate(data):\n"
+                "    return {'workers': data['healthy']} if data['healthy'] >= 8 else None\n"
+                "print(json.dumps(poll(query, evaluate, interval=.01)))\n",
+                encoding="utf-8",
             )
-            goal_cli(
-                "add",
-                "--state",
-                str(state_path),
-                "--id",
-                "deploy",
-                "--title",
-                "Deploy",
-                "--kind",
-                "external",
-            )
-            goal_cli("start", "--state", str(state_path), "--id", "deploy")
-            waiting = goal_cli(
-                "wait",
-                "--state",
-                str(state_path),
-                "--id",
-                "deploy",
-                "--label",
-                "deployment",
-                "--log-file",
-                str(log_path),
-                "--lock-file",
-                str(lock_path),
-                "--startup-file",
-                str(startup_path),
-            )
-            watch_id = str(waiting["watch_id"])
-            self.assertEqual(waiting["status"], "running")
-            self.assertEqual(waiting["wait"], "prepared")
-            template = (
-                f"$wait-goal resume {state_path}; node=deploy; watcher_log={log_path}; "
-                "event_id={event_id}; event={event}; status={status}"
-            )
-            queued_messages: list[str] = []
-            query_calls = 0
-
-            def query(_command: list[str], _timeout: float, _json_path: str | None) -> str:
-                nonlocal query_calls
-                query_calls += 1
-                return "Ready"
-
-            def run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
-                self.assertEqual(command[:2], ["codex", "queue"])
-                message = command[-1]
-                queued_messages.append(message)
-                event = json.loads(log_path.read_text(encoding="utf-8"))
-                goal_cli(
-                    "wake",
-                    "--state",
-                    str(state_path),
-                    "--id",
-                    "deploy",
-                    "--event-id",
-                    str(event["event_id"]),
-                    "--event",
-                    str(event["event"]),
-                    "--external-status",
-                    str(event["status"]),
-                )
-                return subprocess.CompletedProcess(command, 0, "queued\n", "")
-
-            watcher_arguments = [
-                "--label",
-                "deployment",
-                "--ready",
-                "Ready",
-                "--thread",
-                "thread-1",
-                "--lock-file",
-                str(lock_path),
-                "--log-file",
-                str(log_path),
-                "--event-id",
-                watch_id,
-                "--goal-state",
-                str(state_path),
-                "--goal-node",
-                "deploy",
-                "--startup-file",
-                str(startup_path),
-                "--activation-interval",
-                "0.001",
-                "--message-template",
-                template,
-                "--",
-                "query-tool",
-            ]
-
-            def run_watcher() -> int:
-                with redirect_stdout(StringIO()):
-                    return wait_for.main(watcher_arguments)
-
-            with (
-                patch.object(wait_for, "query_status", side_effect=query),
-                patch.object(wait_for.subprocess, "run", side_effect=run),
-            ):
-                with ThreadPoolExecutor(max_workers=1) as executor:
-                    future = executor.submit(run_watcher)
-                    deadline = time.monotonic() + 2
-                    while not startup_path.exists() and time.monotonic() < deadline:
-                        time.sleep(0.001)
-                    self.assertTrue(startup_path.exists())
-                    self.assertEqual(
-                        wait_goal.GoalStore(state_path).load().get_node("deploy")["status"],
-                        "running",
-                    )
-                    self.assertEqual(queued_messages, [])
-                    self.assertEqual(query_calls, 0)
-                    goal_cli(
-                        "activate-wait",
-                        "--state",
-                        str(state_path),
-                        "--id",
-                        "deploy",
-                        "--watch-id",
-                        watch_id,
-                    )
-                    code = future.result(timeout=2)
-            self.assertEqual(code, wait_for.EXIT_READY)
-
-            event = json.loads(log_path.read_text(encoding="utf-8"))
-            self.assertEqual(event["event_id"], watch_id)
-            self.assertEqual(event["notification"], "queued")
-            self.assertEqual(len(queued_messages), 1)
-            self.assertEqual(query_calls, 1)
-            self.assertIn(f"event_id={watch_id}", queued_messages[0])
-            self.assertEqual(
-                wait_goal.GoalStore(state_path).load().get_node("deploy")["status"],
-                "running",
-            )
+            daemon = waitd.WaitDaemon(root / "registry.json")
+            submitted = daemon.submit([
+                "--label", "custom", "--client", "claude", "--session", "test",
+                "--", sys.executable, str(program),
+            ], str(root))
+            task = daemon.tasks[submitted["watch_id"]]
+            try:
+                response = await asyncio.wait_for(daemon.follow(submitted["watch_id"]), 3)
+                await task
+                self.assertEqual(response["result"]["event"], "exited")
+                self.assertEqual(response["result"]["exit_code"], 0)
+                self.assertEqual(json.loads(response["result"]["stdout"]), {"workers": 8})
+                self.assertIn(submitted["log_file"], response["resume_message"])
+            finally:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
 
 
 if __name__ == "__main__":

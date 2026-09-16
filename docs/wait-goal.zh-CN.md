@@ -2,7 +2,7 @@
 
 [English](wait-goal.md) | 简体中文
 
-`wait-goal` 是 Goal 模式的一种事件驱动实现。goal 节点需要监视外部状态时调用父级 `wait` Skill。没有可执行工作时结束模型轮次，等待 Agent 或 watcher 事件恢复目标。
+`wait-goal` 把目标拆成任务依赖图并保存下来。根 Agent 安排工作、验收结果，外部等待交给 `wait`。结束轮次前，要确认谁会唤醒自己，或者说明确实无法继续的原因。
 
 ## 状态模型
 
@@ -42,7 +42,7 @@ flowchart LR
     waiting -->|任意事件 wake| resumed["running<br/>已唤醒"]
 ```
 
-图只展示正常执行和外部等待流程；异常与控制转换单独列出，避免交叉线：
+图中展示正常执行过程；失败和控制操作见下表：
 
 | 操作 | 转换 | 说明 |
 | --- | --- | --- |
@@ -74,8 +74,6 @@ flowchart TD
     verify -->|目标满足| finish[finish]
 ```
 
-根 Agent 始终是唯一调度中心。子 Agent 和 watcher 只向根 Agent 返回事件或结果，彼此不直接通信，也不修改依赖图。
-
 ## 执行协议
 
 根 Agent 独占调度和图修改权限。子 Agent 彼此隔离，只向根 Agent 返回节点摘要、验收证据、产物、变更文件和新发现工作；不得相互通信、等待、改图或创建 Agent。
@@ -84,9 +82,9 @@ flowchart TD
 
 每次启动或恢复都执行相同循环：
 
-1. **恢复计划。** `show` 加载并验证状态，`check` 输出调度诊断，`ready` 返回本轮可执行节点。按[客户端进度工具规则](clients.zh-CN.md#进度工具)，使用节点 ID 从该状态重建当前任务的 Todo，并包含最终目标验收。
-2. **执行和派发。** `local`、`external` 节点先 `start` 再执行。对于 `agent` 节点，先执行 `prepare-agent`，把稳定的 dispatch token 写入子任务，派发后再使用 `start --dispatch-token ... --agent-id ...` 关联运行时 ID。`start` 成功后更新 Todo。子任务说明中包含内部步骤跟踪和向根 Agent 汇报；共享列表由根 Agent 维护。
-3. **验收和调整。** 根 Agent 验收结果后执行 `complete` 或 `fail`；新工作使用 `add --reason` 入图。命令成功后同步受影响的 Todo；子清单完成不能直接完成 DAG 节点。
+1. 恢复计划。 `show` 加载并验证状态，`check` 输出调度诊断，`ready` 返回本轮可执行节点。按[客户端进度工具规则](clients.zh-CN.md#进度工具)，使用节点 ID 从该状态重建当前任务的 Todo，并包含最终目标验收。
+2. 执行和派发。 `local`、`external` 节点先 `start` 再执行。对于 `agent` 节点，先执行 `prepare-agent`，把稳定的 dispatch token 写入子任务，派发后再使用 `start --dispatch-token ... --agent-id ...` 关联运行时 ID。`start` 成功后更新 Todo。子任务说明中包含内部步骤跟踪和向根 Agent 汇报；共享列表由根 Agent 维护。
+3. 验收和调整。 根 Agent 验收结果后执行 `complete` 或 `fail`；新工作使用 `add --reason` 入图。命令成功后同步受影响的 Todo；子清单完成不能直接完成 DAG 节点。
 4. 缺少关键输入或授权时，保留未完成状态，在 Todo 记录阻塞原因，继续独立且已获授权的工作。若缺少的决定阻止了后续推进，报告原因和状态文件路径并结束轮次，待用户给出方向后恢复。执行中没有 ready 节点而需要等待时，根据活动状态决定下一步：
 
 | 活动状态 | 动作 |
@@ -108,7 +106,7 @@ flowchart TD
 持久化下例的图后，有原生 Todo 工具时建立 `[test] 运行测试`、`[deploy] 等待部署就绪` 和“最终目标验收”。验收条目在 `verify` 与 `finish` 都成功后完成。
 
 ```bash
-python scripts/waitctl.py goal -- init \
+python src/waitctl.py goal -- init \
   --objective "发布 API，并在健康检查通过后结束" \
   --client codex \
   --session "$AGENT_SESSION_ID"
@@ -116,7 +114,7 @@ python scripts/waitctl.py goal -- init \
 # 设置为 init 返回的 state_file。
 GOAL_STATE=/tmp/.wait-goal/PROJECT/GOAL.json
 
-python scripts/waitctl.py goal -- add \
+python src/waitctl.py goal -- add \
   --state "$GOAL_STATE" \
   --id test \
   --title "运行测试" \
@@ -125,7 +123,7 @@ python scripts/waitctl.py goal -- add \
   --acceptance "测试套件通过" \
   --expects-artifact test-report
 
-python scripts/waitctl.py goal -- add \
+python src/waitctl.py goal -- add \
   --state "$GOAL_STATE" \
   --id deploy \
   --title "等待部署就绪" \
@@ -139,14 +137,14 @@ python scripts/waitctl.py goal -- add \
 将返回的 `state_file` 保存为 `GOAL_STATE`，供所有后续命令使用。`--input 名称=依赖节点ID` 声明输入由哪个直接依赖提供。依赖必须先于依赖它的节点加入。每个节点应使用 `--read-only` 或一个以上 `--write-path` 明确工作区访问范围；未声明的写入范围按未知处理，会与其他任务串行，路径冲突采用保守的大小写不敏感比较。运行以下命令获取当前可执行且写入互不冲突的节点：
 
 ```bash
-python scripts/waitctl.py goal -- ready --state "$GOAL_STATE"
+python src/waitctl.py goal -- ready --state "$GOAL_STATE"
 ```
 
-使用 `check` 查看确定性的依赖图和调度诊断，使用 `events` 查看只追加的操作历史：
+用 `check` 检查依赖和调度问题，用 `events` 查看操作历史：
 
 ```bash
-python scripts/waitctl.py goal -- check --state "$GOAL_STATE"
-python scripts/waitctl.py goal -- events --state "$GOAL_STATE"
+python src/waitctl.py goal -- check --state "$GOAL_STATE"
+python src/waitctl.py goal -- events --state "$GOAL_STATE"
 ```
 
 ## 执行与演化 DAG
@@ -154,13 +152,13 @@ python scripts/waitctl.py goal -- events --state "$GOAL_STATE"
 执行节点前先标记为运行：
 
 ```bash
-python scripts/waitctl.py goal -- start --state "$GOAL_STATE" --id test
+python src/waitctl.py goal -- start --state "$GOAL_STATE" --id test
 ```
 
 对于 `agent` 节点，调用运行时前先预留节点：
 
 ```bash
-python scripts/waitctl.py goal -- prepare-agent \
+python src/waitctl.py goal -- prepare-agent \
   --state "$GOAL_STATE" \
   --id review
 ```
@@ -168,7 +166,7 @@ python scripts/waitctl.py goal -- prepare-agent \
 把 `DISPATCH_TOKEN_FROM_PREPARE` 写入子任务或确定性的任务名。派发返回后关联运行时 ID：
 
 ```bash
-python scripts/waitctl.py goal -- start \
+python src/waitctl.py goal -- start \
   --state "$GOAL_STATE" \
   --id review \
   --dispatch-token DISPATCH_TOKEN_FROM_PREPARE \
@@ -180,7 +178,7 @@ python scripts/waitctl.py goal -- start \
 验收条件通过后记录结果：
 
 ```bash
-python scripts/waitctl.py goal -- complete \
+python src/waitctl.py goal -- complete \
   --state "$GOAL_STATE" \
   --id test \
   --summary "全部测试通过" \
@@ -189,12 +187,10 @@ python scripts/waitctl.py goal -- complete \
 
 添加节点时可重复使用 `--expects-artifact` 声明必需产物。只有通过 `--artifact` 提供全部必需产物后，`complete` 才会成功。
 
-执行过程中发现的新工作应使用 `add` 写入 DAG，而不是只保留在对话上下文中。
-
-如果新工作必须在某个现有 `pending` 节点之前完成，可以使用 `--before` 插入：
+发现新工作就用 `add` 保存；如果必须先于某个现有 `pending` 节点完成，用 `--before` 插入：
 
 ```bash
-python scripts/waitctl.py goal -- add \
+python src/waitctl.py goal -- add \
   --state "$GOAL_STATE" \
   --id security-review \
   --title "执行发布安全检查" \
@@ -204,18 +200,18 @@ python scripts/waitctl.py goal -- add \
 
 ## 等待而不消耗模型轮询
 
-如果 Agent 仍在运行，根 Agent 使用运行时提供的阻塞等待，只在完成或需要关注时恢复。
+等待子 Agent 时，使用运行时的阻塞等待，并确认完成或异常事件能回到根会话。不能只因为子 Agent 还在运行就直接结束轮次。
 
 如果只剩外部状态，按[等待时限](wait.zh-CN.md#等待时限)选择上限。长等待需要定期评估健康与进展时，根 Agent 可使用 `wait-loop` 每小时执行只读检查。通过 `loop init --goal-state FILE --goal-node ID` 绑定监控；保存的任务说明检查内容及向根 Agent 汇报结果的方式。goal 响应会列出关联 loop，服务在目标或节点结束时取消监控。
 
-按状态条件等待时，使用 goal watcher 协议：
+准备好等待程序，再执行 goal watcher 协议：
 
 1. 运行 `wait` 准备元数据，节点暂时保持 `running`；保存唯一 `watch_id` 和命令返回的绝对路径。state、log、lock 和 startup 路径必须互不相同。
-2. 通过 `waitctl.py start -- ...` 提交 watcher，并传入这些路径、watch ID 和 `--goal-node`。它先取得 watcher lock、写入启动回执，然后在不查询外部系统的情况下等待激活。
-3. 确认启动回执后运行 `activate-wait`。节点进入 `waiting`，watcher 才开始查询；此时在对应 Todo 中标记等待条件和截止时间。
+2. 通过 `waitctl.py start -- ...` 提交 watcher，并传入这些路径、watch ID 和 `--goal-node`。它先取得 watcher lock、写入启动回执，然后等待激活，暂不启动程序。
+3. 确认启动回执后运行 `activate-wait`。节点进入 `waiting`，等待程序才启动；此时在对应 Todo 中标记等待条件和截止时间。
 4. 按[客户端适配](clients.zh-CN.md)接好所属会话的事件投递通道。结束当前模型轮次，不再查询该外部状态。
-5. watcher 出现事件时，在 Codex 中发送 `$wait-goal resume <state-file>`，在其他客户端中发送 `/wait-goal resume <state-file>`。
-6. 恢复后读取日志、执行 `wake`，再重新查询一次外部状态。所有事件都先让节点回到 `running`；根 Agent 验证后执行 `complete`、`fail` 或下一轮 `wait`，再将结果同步到 Todo。旧等待 ID 会被拒绝，同一事件重复到达时为空操作。
+5. 完成后服务用 `$wait-goal resume {goal_state}; node={goal_node}; event_id={event_id}; log_file={log_file}` 唤醒，字段全部来自提交时已绑定的路径，无需额外准备。
+6. 恢复后读取输出和退出码，按日志事件（`exited`、`timeout`、`start_failed` 或 `interrupted`）执行 `wake`，再复查外部状态。所有事件都先让节点回到 `running`；根 Agent 验证后执行 `complete`、`fail` 或下一轮 `wait`，再将结果同步到 Todo。旧等待 ID 会被拒绝，同一事件重复到达时为空操作。
 
 watcher 协议见 [wait.zh-CN.md](wait.zh-CN.md)，会话恢复适配见 [clients.zh-CN.md](clients.zh-CN.md)。
 
@@ -226,53 +222,53 @@ watcher 协议见 [wait.zh-CN.md](wait.zh-CN.md)，会话恢复适配见 [client
 查看完整状态：
 
 ```bash
-python scripts/waitctl.py goal -- show --state "$GOAL_STATE"
+python src/waitctl.py goal -- show --state "$GOAL_STATE"
 ```
 
 暂停或恢复调度：
 
 ```bash
-python scripts/waitctl.py goal -- pause --state "$GOAL_STATE"
-python scripts/waitctl.py goal -- resume --state "$GOAL_STATE"
+python src/waitctl.py goal -- pause --state "$GOAL_STATE"
+python src/waitctl.py goal -- resume --state "$GOAL_STATE"
 ```
 
 取消会把尚未结束的节点标记为 `cancelled`：
 
 ```bash
-python scripts/waitctl.py goal -- cancel --state "$GOAL_STATE"
+python src/waitctl.py goal -- cancel --state "$GOAL_STATE"
 ```
 
-暂停或取消调度不会强制终止正在运行的 Agent 或已经提交的外部作业。goal 自己启动的 watcher 会在下一次查询或通知重试前发现 wait 已取消或替换，并自行退出。
+暂停或取消调度不会强制终止正在运行的 Agent 或已经提交的外部作业。goal 自己启动的 watcher 会在所有权检查或通知重试前发现 wait 已取消或替换，并自行退出。
 
 如果 watcher 在激活前失败、没有投递事件便退出，或必须被替换，可以在不判定节点失败的情况下使本轮 wait 失效：
 
 ```bash
-python scripts/waitctl.py goal -- abort-wait \
+python src/waitctl.py goal -- abort-wait \
   --state "$GOAL_STATE" \
   --id deploy \
   --watch-id CURRENT_WATCH_ID
 ```
 
-节点会回到 `running`，随后可以准备新的 wait。watch ID 校验可以防止旧恢复命令误伤更新的 watcher；仍存活的旧 watcher 会在下一次查询或通知重试前发现 ID 已失效并退出。
+节点会回到 `running`，随后可以准备新的 wait。watch ID 校验可以防止旧恢复命令误伤更新的 watcher；仍存活的旧 watcher 会在所有权检查或通知重试前发现 ID 已失效并退出。
 
 `check` 会确认每个 `waiting` 节点仍有 watcher 持有已记录的 lock。所有权消失时会报告 `orphaned_wait` 错误，`show` 的 activity 也会变为 `orphaned_wait`。应对原节点执行 `abort-wait`；不得为同一个外部对象新建第二个节点。
 
 确认失败节点允许再次尝试后，可归档失败记录并将它恢复为 `pending`：
 
 ```bash
-python scripts/waitctl.py goal -- retry --state "$GOAL_STATE" --id deploy
+python src/waitctl.py goal -- retry --state "$GOAL_STATE" --id deploy
 ```
 
 `retry` 只修改调度状态，不会授权或执行外部重试、部署、重启等副作用。
 
-继续同一个外部逻辑任务时，应 retry 失败的原节点，使它原有的后继依赖保持连通。新增无关的替代节点不会解除被失败节点阻塞的依赖。
+继续同一个外部逻辑任务时，应 retry 失败的原节点，这样后续任务的依赖才不会断。另建替代节点不能解除原节点造成的阻塞。
 
 ## 完成目标
 
-所有节点都完成后，再对照原始需求运行 objective 级别的最终验证。如果需求仍未满足，应把缺失工作新增为节点并继续执行。验证通过后，先持久化验收证据：
+所有节点完成后，再检查用户原本要的结果是否达成。还缺工作就加节点继续做；确实完成后，先保存验收证据：
 
 ```bash
-python scripts/waitctl.py goal -- verify \
+python src/waitctl.py goal -- verify \
   --state "$GOAL_STATE" \
   --summary "原始需求已经满足" \
   --check "全部测试通过" \
@@ -282,7 +278,7 @@ python scripts/waitctl.py goal -- verify \
 然后结束目标：
 
 ```bash
-python scripts/waitctl.py goal -- finish \
+python src/waitctl.py goal -- finish \
   --state "$GOAL_STATE" \
   --summary "发布完成，测试与健康检查均通过"
 ```

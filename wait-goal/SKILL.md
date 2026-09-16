@@ -1,48 +1,49 @@
 ---
 name: wait-goal
-description: Implement an explicit user-invoked Goal mode as a durable, event-driven DAG across CodeWiz, Cursor, Claude Code, GitHub Copilot, and Codex. Use only when the user directly invokes wait-goal; never select it automatically from task length or complexity.
+description: Implement Goal mode with a durable task dependency graph across CodeWiz, Cursor, Claude Code, GitHub Copilot, and Codex. Use only when the user explicitly invokes wait-goal.
 ---
 
 # Wait Goal
 
-Run the objective as a persisted dependency graph without assuming the user is present. Do not proactively ask questions or invoke interactive question tools.
+You are the root agent. Break down the objective, assign work, and verify results until the user's goal is actually met.
 
-Manage durable graph state through `../scripts/waitctl.py goal -- ...` and submit external watchers through `../scripts/waitctl.py start -- ...`. The service delegates graph validation to `wait_goal.py` and watcher semantics to `wait_for.py`. Read [the goal protocol](../docs/wait-goal.md), [the supervisor guide](../docs/waitd.md), [the watcher protocol](../docs/wait.md), and [the client adapters](../docs/clients.md) before starting.
+The user may be away. Do not proactively ask questions or open interactive prompts. Make small decisions within existing authorization; preserve the work and explain the blocker when essential input or permission is missing.
+
+Manage tasks through `../src/waitctl.py goal -- ...`. Read the [goal protocol](../docs/wait-goal.md) before starting. When setting up an external wait, read the [wait protocol](../docs/wait.md) and [current client adapter](../docs/clients.md). Service operations are in [waitd](../docs/waitd.md).
 
 ## Invocation
 
-- `<invoke> <objective>` starts a goal.
-- `<invoke> resume <state-file>` resumes from a wake-up or user request.
-- `<invoke> status <state-file>` reports persisted state without advancing it.
-- `<invoke> pause|cancel <state-file>` applies the requested control operation.
+Use `$wait-goal` in Codex and usually `/wait-goal` elsewhere:
 
-Here, `<invoke>` is `$wait-goal` or `/wait-goal` according to the client.
+- `<invoke> <objective>`: start.
+- `<invoke> resume <state-file>`: continue.
+- `<invoke> status <state-file>`: inspect without advancing.
+- `<invoke> pause|cancel <state-file>`: apply the user's requested control.
 
-## Core behavior
+## Advance the work
 
-1. **Plan.** Use reasonable defaults for reversible choices within the task and existing authorization. Persist the objective with `init`, retain its returned `state_file`, and add the initial nodes. Each node has one bounded outcome, dependency-backed inputs, acceptance checks, expected artifacts, and a read-only or explicit write scope. Keep tightly coupled work together. With a native Todo or plan tool, display these nodes using their IDs and include final objective verification.
-2. **Load and schedule.** On start or resume, read `show`, run `check`, and rebuild the task's Todo from persisted state. Execute only the frontier returned by `ready`. Reflect successful state transitions in Todo; the persisted graph and acceptance evidence determine scheduling and completion.
-3. **Execute.** Start local and external nodes before acting. For an agent node, persist `prepare-agent`, include its dispatch token in the assignment, then attach the returned runtime ID with `start --dispatch-token ... --agent-id ...`. Mark dispatched work in progress. Ask children to use agent-local Todo for internal steps and return results, evidence, artifacts, discovered work, and unresolved decisions to the root. The root maintains shared Todo lists; children do not contact or wait on each other, mutate the graph, invoke goal commands, or create agents.
-4. **Accept and evolve.** Check results and expected artifacts before `complete`; record failures with `fail`. Update the corresponding Todo after the state command succeeds. Add discovered work with `add --reason`, reflect it in Todo, and schedule newly ready nodes. A completed child checklist means its result is ready for root acceptance.
-5. **Wait or recover.** Before suspending, handle returned results and local checks and use `check` and `ready` to find remaining independent work. If none is executable, follow the current activity:
-   - `dispatching`: reconcile the saved token with runtime agents before further dispatch.
-   - Running agents: use the runtime's blocking wait for completion or attention.
-   - External waiting: prepare `wait`, submit a bounded watcher using its returned absolute paths, confirm the startup receipt, then `activate-wait`. Mark the item's waiting condition and deadline in Todo, set up delivery for the saved session through the [client adapter](../docs/clients.md), then end the turn. On an event, read the log, record `wake`, re-check external state, and complete, fail, or establish another wait.
-   - Long external waits: assess the [wait limits](../docs/wait.md#wait-limits) and consider hourly health checks with a [goal-linked loop](../docs/wait-goal.md#wait-without-model-polling).
-   - `orphaned_wait` or interrupted preparation: `abort-wait` with the current watch ID, then establish a replacement on the same node. For failed work that should continue, `retry` the original node after deciding recovery is appropriate.
-   - Blocked dependencies or a required user decision: preserve unfinished state, record the cause in Todo, and continue unaffected authorized work. If nothing can proceed, report the blocker and state-file path, then end the turn. Preserve required decisions and authorization for user-directed recovery.
-6. **Control.** Apply pause, resume, retry, or cancellation to durable state first, then refresh affected Todo items. On recovery, use saved dispatch and watch IDs to reconcile outstanding work.
-7. **Verify and finish.** When every node is complete, check the original objective. Add missing work and continue, or persist evidence with `verify` and run `finish`. Complete the final-verification Todo item after both commands succeed.
+1. Save the objective with `init` and retain its `state_file`. Give each node clear inputs, dependencies, expected artifacts, allowed writes, and acceptance checks. Every dependency must exist, and the graph must stay acyclic.
+2. On every start or resume, read `show`, run `check`, and work on the nodes returned by `ready`. Track node IDs in native Todo when available, reusing the node's item when calling wait. Update Todo after state is saved; a finished checklist is not acceptance evidence.
+3. Prefer parallel execution for independent, separately verifiable tasks with non-overlapping writes. Keep short ordered chains, shared context, and overlapping edits with one agent.
+4. Run `start` for local/external nodes. Before dispatching a child, run `prepare-agent`, include its dispatch token in the assignment, and attach the instance with `start --dispatch-token ... --agent-id ...`. Children may use private Todo lists but report results, evidence, artifacts, and questions only to you. They do not contact or wait on each other, edit the graph, or create agents.
+5. Accept results as they arrive: `complete` verified work, `fail` failed work, and add missing work with `add --reason`. Then execute newly ready nodes. Only you edit the graph and shared Todo.
 
-## Invariants
+## When work must wait
 
-- Waiting is event-driven. Do not spend turns on unchanged status checks or periodic progress messages.
-- The graph may evolve, but it must remain acyclic and every dependency must exist.
-- State mutations append atomically to the goal's event history. Supply `--reason` when adding work discovered during execution.
-- Treat notifications as hints, not proof. Re-check current state before acting.
-- Keep query commands read-only. A wake-up never grants permission to retry, deploy, restart, or otherwise mutate an external system.
-- Do not fan out merely for the appearance of concurrency. Prefer parallel dispatch for nodes with clear dependencies, isolated context, independent acceptance, and non-overlapping writes; this shortens the critical path and can avoid repeated root-context work. Keep short ordered chains, tightly coupled work, and overlapping writes with one agent when their coordination cost outweighs parallelism.
-- Run `abort-agent` only after confirming that the prepared dispatch did not create a live child, or after terminating that child.
-- Store credentials outside argv, graph state, watcher logs, and notifications.
+Handle returned results first and look for independent work. **Keep going while tasks are executable, results await acceptance, or the objective still needs verification.**
 
-Run `python ../scripts/waitctl.py --help`, `python ../scripts/wait_goal.py --help`, and `python ../scripts/wait_for.py --help` for command details.
+- Waiting for children: use the runtime's blocking wait and confirm that completion or attention events reach this session. A live child alone does not establish a wake-up path.
+- Waiting for external state: follow `wait → start watcher → confirm receipt → activate-wait`, using the returned watch ID and absolute paths. Record the condition, deadline, and log; set up the client wake-up path before ending the turn. The default wait is one hour. Assess task and trigger reliability before extending it; consider a linked wait-loop for hourly health and progress checks when needed.
+- Genuinely blocked: preserve unfinished state and the cause, and continue other authorized work. When everything is blocked, report what is missing and where state is saved, then end the turn for later user recovery. Do not invent authorization or claim completion.
+
+Before ending a turn with an unfinished goal, confirm a wake-up source or state a concrete blocker, pause, or cancellation. Do not leave the goal without a way to continue.
+
+## Recover and finish
+
+Prepare the waiting program before submitting an external wait; the resume instruction is generated automatically from the goal-state and node bindings. On its event, read output and exit code, validate the event ID, run `wake` with the logged event, and re-query current state once with a read-only command. Decide whether to complete, fail, or wait again from that fresh result, not the notification alone. Notifications grant no additional authority to retry, restart, or deploy.
+
+Reuse the original node, dispatch token, and watch ID during recovery. Reconcile `dispatching` with existing children before acting; use `abort-agent` only after confirming none is live or terminating it. For `orphaned_wait` or interrupted preparation, run `abort-wait` with the current watch ID before rebuilding the wait. Use `retry` on the original failed node rather than creating a detached replacement. Save pause, resume, and cancellation before refreshing Todo.
+
+Once all nodes are complete, check the user's original objective again. Add any missing work. When it is met, save evidence with `verify`, run `finish`, complete the final acceptance Todo, and deliver the result.
+
+Keep credentials out of argv, state, logs, and notifications. Do not spend model turns polling or repeating unchanged progress while waiting.

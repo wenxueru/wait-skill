@@ -4,19 +4,20 @@
 from __future__ import annotations
 
 import argparse
-import fcntl
 import hashlib
 import json
 import math
 import os
 import re
-import tempfile
+import sys
 import time
 import uuid
 from collections import UserDict
 from collections.abc import Iterator, Mapping, Sequence
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager
 from pathlib import Path
+
+import wait_runtime
 
 CLIENTS = {"claude", "codewiz", "codex", "copilot", "cursor"}
 DEFAULT_DURATION = 86400.0
@@ -25,7 +26,7 @@ STATUSES = {"active", "completed", "cancelled"}
 PHASES = {"running", "waiting"}
 
 
-class LoopError(ValueError):
+class LoopError(wait_runtime.StateError):
     """Raised when a loop operation is invalid."""
 
 
@@ -251,23 +252,7 @@ class LoopStore:
 
     def write(self, state: LoopState) -> None:
         validate(state.data)
-        self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        descriptor, temporary = tempfile.mkstemp(prefix=f".{self.path.name}.", dir=self.path.parent)
-        try:
-            with os.fdopen(descriptor, "w", encoding="utf-8") as output:
-                json.dump(state.data, output, ensure_ascii=False, indent=2, sort_keys=True)
-                output.write("\n")
-                output.flush()
-                os.fsync(output.fileno())
-            os.replace(temporary, self.path)
-            directory = os.open(self.path.parent, os.O_RDONLY)
-            try:
-                os.fsync(directory)
-            finally:
-                os.close(directory)
-        finally:
-            with suppress(FileNotFoundError):
-                os.unlink(temporary)
+        wait_runtime.atomic_write_json(self.path, state.data)
 
     def create(self, state: LoopState) -> None:
         with self.locked():
@@ -284,10 +269,7 @@ class LoopStore:
 
     @contextmanager
     def locked(self) -> Iterator[None]:
-        lock_path = self.path.with_name(self.path.name + ".lock")
-        lock_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        with lock_path.open("a", encoding="utf-8") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
+        with wait_runtime.file_lock(self.path):
             yield
 
 
@@ -298,6 +280,7 @@ def print_json(value: object) -> None:
 
 
 def command_init(args: argparse.Namespace) -> None:
+    store = LoopStore(args.state or default_state_path())
     now = time.time()
     state = LoopState({
         "task": args.task,
@@ -323,7 +306,6 @@ def command_init(args: argparse.Namespace) -> None:
         state["goal"] = {"state": str(goal_state.resolve()), "node": goal_node}
         if not goal_is_open(state):
             raise LoopError("goal monitor requires an open goal and unfinished node")
-    store = LoopStore(args.state or default_state_path())
     store.create(state)
     print_json({"state_file": os.fspath(store.path), **state})
 
@@ -336,8 +318,46 @@ def command_complete(args: argparse.Namespace) -> None:
 
 
 def command_due(args: argparse.Namespace) -> None:
-    state = LoopStore(args.state).load()
-    print(state.due(args.watch_id))
+    while True:
+        state = LoopStore(args.state).load()
+        status = state.due(args.watch_id)
+        if not getattr(args, "wait", False) or status != "Waiting":
+            print(status)
+            return
+        time.sleep(min(0.25, max(0.0, state["next_run_at"] - time.time())))
+
+
+def timer_argv(state: LoopState, path: Path) -> list[str]:
+    """Submit the loop's timer program; waitd derives the resume text from --loop-state."""
+    watch_id = str(state["watch_id"])
+    log = path.with_name(f"{path.stem}-{watch_id}.watch.json")
+    return [
+        "--label",
+        "loop timer",
+        "--timeout",
+        str(max(1.0, state["next_run_at"] - time.time() + 60)),
+        "--client",
+        str(state["client"]),
+        "--session",
+        str(state["session"]),
+        "--event-id",
+        watch_id,
+        "--loop-state",
+        str(path),
+        "--log-file",
+        str(log),
+        "--lock-file",
+        str(log.with_suffix(".lock")),
+        "--",
+        sys.executable,
+        str(Path(__file__).resolve()),
+        "due",
+        "--wait",
+        "--state",
+        str(path),
+        "--watch-id",
+        watch_id,
+    ]
 
 
 def command_begin(args: argparse.Namespace) -> None:
@@ -402,6 +422,7 @@ def parser() -> argparse.ArgumentParser:
     due = commands.add_parser("due")
     add_state(due)
     due.add_argument("--watch-id", required=True)
+    due.add_argument("--wait", action="store_true", help="Wait until due instead of checking once")
     due.set_defaults(handler=command_due)
 
     begin = commands.add_parser("begin")
