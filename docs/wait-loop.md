@@ -19,6 +19,8 @@ flowchart LR
 
 The first iteration runs immediately. A successful `complete` either finishes the loop or creates exactly one `watch_id` for the next timer. `begin` consumes that ID before the next iteration, making duplicate wake-ups no-ops.
 
+The user may be away during any iteration. Avoid proactive questions and interactive question tools; use reasonable defaults for reversible choices within the saved task and authorization.
+
 ## Running example
 
 Run a queue check every ten minutes, at most four times and for no longer than one hour:
@@ -79,7 +81,7 @@ The service registers each timer after `complete`, with a deadline bounded by th
 
 - `show --state FILE` reads current state.
 - `cancel --state FILE` prevents future iterations. Ownership validation stops its active timer before the next query or notification retry.
-- If an iteration fails or is interrupted, leave it in `running`; do not call `complete`. Report the failure and ask whether to retry the task or cancel the loop.
+- If an iteration fails, is interrupted, or lacks essential input or authorization, leave it in `running`; do not call `complete` or silently retry. Report the blocker and state-file path, then end the turn. No next timer is scheduled; resume the unfinished iteration when the user later provides direction.
 - Run `waitctl loop -- show --state FILE` to reconcile timer registration. A missing registry entry is recreated with the saved watch ID. A recorded delivery failure requires inspection of `waitctl show WATCH_ID` and its log before manual resume.
 - For a Goal monitor, pass `--goal-state FILE --goal-node ID` to `init`. The service reports these links in goal responses and cancels the monitor when its goal is no longer open or its node finishes. Timer ownership and `begin` also check the link.
 

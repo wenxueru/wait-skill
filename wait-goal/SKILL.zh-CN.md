@@ -5,7 +5,7 @@ description: 在 CodeWiz、Cursor、Claude Code、GitHub Copilot 和 Codex 中�
 
 # Wait Goal
 
-将目标作为持久化依赖图运行。
+将目标作为持久化依赖图运行，不假设用户在场；不要主动提问或调用交互式提问工具。
 
 通过 `../scripts/waitctl.py goal -- ...` 管理持久图状态，并使用 `../scripts/waitctl.py start -- ...` 提交外部 watcher。服务把图校验交给 `wait_goal.py`，把 watcher 语义交给 `wait_for.py`。开始前阅读[目标协议](../docs/wait-goal.zh-CN.md)、[`waitd` 指南](../docs/waitd.zh-CN.md)、[watcher 协议](../docs/wait.zh-CN.md)和[客户端适配说明](../docs/clients.zh-CN.md)。
 
@@ -20,9 +20,9 @@ description: 在 CodeWiz、Cursor、Claude Code、GitHub Copilot 和 Codex 中�
 
 ## 核心行为
 
-1. **规划。** 使用 `init` 持久化目标，保留返回的 `state_file`，加入初始节点。每个节点有一个有界结果、依赖支持的输入、验收检查、预期产物，以及只读或明确的写入范围。紧密耦合的工作放在同一节点。有原生 Todo 或计划工具时，用节点 ID 展示这些任务，并加入最终目标验收条目。
+1. **规划。** 任务与已有授权范围内的可逆选择采用合理默认值。使用 `init` 持久化目标，保留返回的 `state_file`，加入初始节点。每个节点有一个有界结果、依赖支持的输入、验收检查、预期产物，以及只读或明确的写入范围。紧密耦合的工作放在同一节点。有原生 Todo 或计划工具时，用节点 ID 展示这些任务，并加入最终目标验收条目。
 2. **加载与调度。** 启动或恢复时读取 `show`、运行 `check`，从持久状态重建当前任务的 Todo。只执行 `ready` 返回的节点。状态转换成功后同步 Todo；调度和完成判定依据持久图与验收证据。
-3. **执行。** local 和 external 节点先 `start` 再执行。agent 节点先持久化 `prepare-agent`，把 dispatch token 写入子任务，再用 `start --dispatch-token ... --agent-id ...` 关联返回的运行时 ID。将已派发工作标为进行中。要求子 Agent 用独立 Todo 管理内部步骤，向根 Agent 返回结果、证据、产物和新发现的工作。共享 Todo 由根 Agent 维护；子 Agent 不相互联系或等待，不修改图、调用 goal 命令或创建 Agent。
+3. **执行。** local 和 external 节点先 `start` 再执行。agent 节点先持久化 `prepare-agent`，把 dispatch token 写入子任务，再用 `start --dispatch-token ... --agent-id ...` 关联返回的运行时 ID。将已派发工作标为进行中。要求子 Agent 用独立 Todo 管理内部步骤，向根 Agent 返回结果、证据、产物、新发现的工作和未解决的决定。共享 Todo 由根 Agent 维护；子 Agent 不相互联系或等待，不修改图、调用 goal 命令或创建 Agent。
 4. **验收与演化。** 检查结果和预期产物后运行 `complete`；失败使用 `fail` 记录。状态命令成功后更新对应 Todo。新发现的工作使用 `add --reason` 加入图和 Todo，再调度新就绪节点。子清单完成代表结果可提交根 Agent 验收。
 5. **等待与恢复。** 挂起前处理已返回结果与本地检查，用 `check` 和 `ready` 寻找剩余的独立工作。没有可执行工作时，根据当前活动处理：
    - `dispatching`：先用保存的 token 对照运行时 Agent，再进行后续派发。
@@ -30,7 +30,7 @@ description: 在 CodeWiz、Cursor、Claude Code、GitHub Copilot 和 Codex 中�
    - 外部等待：准备 `wait`，用返回的绝对路径提交有界 watcher，确认启动回执后 `activate-wait`。在 Todo 注明等待条件和截止时间，按[客户端适配](../docs/clients.zh-CN.md)接好已保存会话的投递通道，再结束轮次。收到事件后读取日志、记录 `wake`、复查外部状态，再完成、失败或建立下一次等待。
    - 长时间外部等待：按[等待时限](../docs/wait.zh-CN.md#等待时限)评估，考虑用[目标关联的 loop](../docs/wait-goal.zh-CN.md#等待而不消耗模型轮询)每小时检查健康状态。
    - `orphaned_wait` 或准备中断：用当前 watch ID 执行 `abort-wait`，再为同一节点建立替代 watcher。失败工作需要继续时，决定恢复后 `retry` 原节点。
-   - 依赖阻塞或需要用户决定：在 Todo 记录原因，报告所需决定。
+   - 依赖阻塞或需要用户决定：保留未完成状态，在 Todo 记录原因，继续不受影响且已获授权的工作。没有可推进工作时，报告阻塞原因与状态文件路径并结束轮次，保留所需决定与授权事项，待用户给出方向后恢复。
 6. **控制。** 暂停、恢复、重试和取消先作用于持久状态，再刷新受影响的 Todo。恢复时使用已保存的 dispatch 与 watch ID 核对未完成工作。
 7. **最终验收。** 所有节点完成后，对照原始目标检查结果。缺工作则加入并继续；否则用 `verify` 持久化证据，再运行 `finish`。两个命令成功后完成最终验收 Todo 条目。
 

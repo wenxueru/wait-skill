@@ -80,12 +80,14 @@ The root remains the sole scheduler. Children and watchers return results or eve
 
 The root alone schedules work and mutates the graph. Child agents are isolated: they return summaries, acceptance evidence, artifacts, changed files, and discovered work only to the root; they do not contact or wait on each other, edit the graph, or create agents.
 
+Run without assuming the user is present: avoid proactive questions and interactive question tools. Resolve reversible choices within the task and authorization using reasonable defaults; children report uncertainty to the root.
+
 Every start or resume follows the same loop:
 
 1. `show` loads and validates state, `check` reports scheduling issues, and `ready` returns the executable frontier. Rebuild the task's Todo from this state using node IDs; include final objective verification and follow the [client progress-tool rules](clients.md#progress-tools).
 2. Start `local` and `external` nodes before acting. For an `agent` node, run `prepare-agent` first, include its stable dispatch token in the child task, dispatch the child, then attach its runtime ID using `start --dispatch-token ... --agent-id ...`. Update Todo after a successful start. Include agent-local step tracking and root reporting in child assignments; a shared list is maintained by the root.
 3. The root verifies the result, then runs `complete` or `fail`. Add discovered work with `add --reason`. Synchronize affected Todo items after these commands succeed; child checklists alone do not complete DAG nodes.
-4. When no node is ready, use the derived activity:
+4. If essential input or authorization is missing, preserve unfinished state, record the blocker in Todo, and continue independent authorized work. If that missing decision prevents further progress, report the blocker and state-file path and end the turn for later user-directed recovery. For execution waits with no ready node, use the derived activity:
 
 | Activity | Action |
 | --- | --- |
