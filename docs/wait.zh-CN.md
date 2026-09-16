@@ -115,27 +115,25 @@ def query():
 
 ## 与 `$wait-goal` 集成
 
-根 Agent 先用 `goal wait` 准备节点，再提交等待程序。沿用返回的 watch ID 和所有绝对路径：
+根 Agent 用一条命令完成节点准备和 watcher 提交：
 
 ```bash
 python src/waitctl.py goal -- wait \
   --state "$GOAL_STATE" --id deploy --label "deployment api" \
-  --log-file /tmp/deploy.watch.json --lock-file /tmp/deploy.watch.lock \
-  --startup-file /tmp/deploy.started.json
-
-python src/waitctl.py start -- \
-  --label "deployment api" --client codex --session "$AGENT_SESSION_ID" \
-  --event-id "$WATCH_ID" --goal-state "$GOAL_STATE" --goal-node deploy \
-  --log-file /tmp/deploy.watch.json --lock-file /tmp/deploy.watch.lock \
-  --startup-file /tmp/deploy.started.json \
+  --timeout 3500 \
   -- env PYTHONPATH="$PWD/src" python /tmp/wait_deploy.py
+```
 
-# 确认启动回执后：
+带上等待程序时，`goal wait` 自己做完整个准备：准备节点、生成 watch ID 和协调路径、向服务提交 watcher、校验启动回执。返回结果里是 `watch_id`、`log_file` 和 `activation_deadline`——任何参数都不需要在命令之间复制。不带程序运行 `goal wait` 则只做准备，返回 `start_argv` 供手动提交，这是没有服务运行时的独立路径。
+
+用返回的 watch ID 激活：
+
+```bash
 python src/waitctl.py goal -- activate-wait \
   --state "$GOAL_STATE" --id deploy --watch-id "$WATCH_ID"
 ```
 
-`WATCH_ID` 使用 `goal wait` 返回的 `watch_id`。激活前节点保持 `running`，服务持锁并写启动回执，但不启动程序；激活后进入 `waiting`。完成后服务用 `$wait-goal resume {goal_state}; node={goal_node}; event_id={event_id}; log_file={log_file}` 唤醒，字段全部来自提交 `start` 时已传入的路径，无需额外准备。
+激活前节点保持 `running`，服务持锁并写启动回执，但不启动程序；激活后进入 `waiting`。完成后服务用 `$wait-goal resume {goal_state}; node={goal_node}; event_id={event_id}; log_file={log_file}` 唤醒，字段全部来自提交时绑定的路径，无需额外准备。
 
 收到结果先读日志，再用对应 event 执行 `wake`：
 

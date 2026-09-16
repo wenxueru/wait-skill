@@ -38,7 +38,9 @@ STATE_COMMAND_TIMEOUT = 30.0
 class StateCommandRunner:
     """Run goal and loop state engines with independent serialization."""
 
-    def __init__(self) -> None:
+    def __init__(self, socket_path: Path = SOCKET_PATH) -> None:
+        # State commands reach back through this socket, e.g. to submit a watcher.
+        self.socket_path = socket_path
         self.locks = {name: asyncio.Lock() for name in STATE_SCRIPTS}
 
     async def run(self, name: str, argv: list[str], cwd: Path) -> dict[str, object]:
@@ -49,6 +51,7 @@ class StateCommandRunner:
                     os.fspath(STATE_SCRIPTS[name]),
                     *argv,
                     cwd=cwd,
+                    env={**os.environ, "WAITD_SOCKET": str(self.socket_path)},
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                 )
@@ -190,13 +193,13 @@ async def run_program(command: list[str], timeout: float, cwd: str) -> dict[str,
 class WaitDaemon:
     """Persistent watcher scheduler and state-command gateway."""
 
-    def __init__(self, registry_path: Path = REGISTRY_PATH) -> None:
+    def __init__(self, registry_path: Path = REGISTRY_PATH, socket_path: Path = SOCKET_PATH) -> None:
         self.registry_path = registry_path
         self.loops: dict[str, str] = {}
         self.watchers: dict[str, dict[str, Any]] = self._load_registry()
         self.tasks: dict[str, asyncio.Task[None]] = {}
         self.cancel_events: dict[str, asyncio.Event] = {}
-        self.state_commands = StateCommandRunner()
+        self.state_commands = StateCommandRunner(socket_path)
         self.shutdown_event = asyncio.Event()
         self.changed = asyncio.Event()
 
@@ -771,7 +774,7 @@ async def handle_client(
 async def serve(socket_path: Path = SOCKET_PATH, registry_path: Path = REGISTRY_PATH) -> None:
     daemon_lock = acquire_daemon_lock(socket_path)
     try:
-        daemon = WaitDaemon(registry_path)
+        daemon = WaitDaemon(registry_path, socket_path)
         await daemon.restore()
         clients: set[asyncio.Task[None]] = set()
 

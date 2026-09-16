@@ -10,6 +10,8 @@ import sys
 import tempfile
 import time
 import unittest
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -671,39 +673,49 @@ class WaitDaemonTest(unittest.IsolatedAsyncioTestCase):
 
 
 class WaitServiceTest(unittest.TestCase):
+    @contextmanager
+    def spawn_waitd(self, root: Path) -> Iterator[tuple[Path, subprocess.Popen[str]]]:
+        socket_path = root / "waitd.sock"
+        process = subprocess.Popen(
+            [
+                sys.executable,
+                str(SRC / "waitd.py"),
+                "serve",
+                "--socket",
+                str(socket_path),
+                "--registry",
+                str(root / "registry.json"),
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            deadline = time.monotonic() + 2
+            while True:
+                try:
+                    waitctl.request({"operation": "ping"}, socket_path)
+                    break
+                except OSError:
+                    if process.poll() is not None:
+                        error = process.communicate()[1]
+                        if "Operation not permitted" in error:
+                            self.skipTest("sandbox does not permit Unix sockets")
+                        self.fail(f"waitd exited during startup: {error.strip()}")
+                    if time.monotonic() >= deadline:
+                        self.fail("waitd did not create its control socket")
+                    time.sleep(0.01)
+            yield socket_path, process
+        finally:
+            if process.poll() is None:
+                process.terminate()
+                process.communicate(timeout=2)
+
     def test_unix_socket_control_plane(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            socket_path = root / "waitd.sock"
-            process = subprocess.Popen(
-                [
-                    sys.executable,
-                    str(SRC / "waitd.py"),
-                    "serve",
-                    "--socket",
-                    str(socket_path),
-                    "--registry",
-                    str(root / "registry.json"),
-                ],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
-            try:
-                deadline = time.monotonic() + 2
-                while True:
-                    try:
-                        response = waitctl.request({"operation": "ping"}, socket_path)
-                        break
-                    except OSError:
-                        if process.poll() is not None:
-                            error = process.communicate()[1]
-                            if "Operation not permitted" in error:
-                                self.skipTest("sandbox does not permit Unix sockets")
-                            self.fail(f"waitd exited during startup: {error.strip()}")
-                        if time.monotonic() >= deadline:
-                            self.fail("waitd did not create its control socket")
-                        time.sleep(0.01)
+            with self.spawn_waitd(root) as (socket_path, process):
+                response = waitctl.request({"operation": "ping"}, socket_path)
                 self.assertEqual(response["status"], "ok")
                 self.assertEqual(response["protocol_version"], waitd.PROTOCOL_VERSION)
                 self.assertEqual(response["service_fingerprint"], waitd.SERVICE_FINGERPRINT)
@@ -738,10 +750,47 @@ class WaitServiceTest(unittest.TestCase):
                 self.assertTrue(waitctl.stop_daemon(socket_path)["ok"])
                 process.communicate(timeout=2)
                 self.assertEqual(process.returncode, 0)
-            finally:
-                if process.poll() is None:
-                    process.terminate()
-                    process.communicate(timeout=2)
+
+    def test_goal_wait_program_round_trip(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with self.spawn_waitd(root) as (socket_path, _process):
+                def goal(*argv: str) -> dict[str, object]:
+                    return waitctl.request(
+                        {"operation": "goal", "argv": list(argv), "cwd": str(root)},
+                        socket_path,
+                        timeout=35.0,
+                    )
+
+                state = root / "goal.json"
+                goal("init", "--state", str(state), "--objective", "verify",
+                     "--client", "claude", "--session", "e2e")
+                goal("add", "--state", str(state), "--id", "deploy", "--title", "Deploy", "--kind", "external")
+                goal("start", "--state", str(state), "--id", "deploy")
+                response = goal(
+                    "wait", "--state", str(state), "--id", "deploy", "--label", "deployment",
+                    "--timeout", "10", "--", sys.executable, "-c", "print('deploy done')",
+                )
+                self.assertEqual(response["code"], 0, response)
+                prepared = response["output"]
+                self.assertTrue(prepared["submitted"])
+                self.assertEqual(prepared["receipt"], "verified")
+                watch_id = str(prepared["watch_id"])
+
+                # The state command submitted the watcher back through the daemon socket.
+                listing = waitctl.request({"operation": "list"}, socket_path)
+                self.assertIn(watch_id, [w["watch_id"] for w in listing["watchers"]])
+
+                goal("activate-wait", "--state", str(state), "--id", "deploy", "--watch-id", watch_id)
+                followed = waitctl.request(
+                    {"operation": "follow", "watch_id": watch_id, "timeout": 5}, socket_path,
+                )
+                self.assertEqual(followed["result"]["event"], "exited")
+                self.assertEqual(followed["result"]["exit_code"], 0)
+
+                goal("wake", "--state", str(state), "--id", "deploy", "--event-id", watch_id, "--event", "exited")
+                shown = goal("show", "--state", str(state))
+                self.assertEqual(shown["output"]["nodes"]["deploy"]["status"], "running")
 
 
 if __name__ == "__main__":

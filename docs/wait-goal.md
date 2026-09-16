@@ -206,12 +206,11 @@ When only external state remains, choose a bound using the [wait limits](wait.md
 
 Prepare the waiting program, then use the goal watcher protocol:
 
-1. Run `wait` to prepare metadata while the node remains `running`; retain its unique `watch_id` and returned absolute paths. State, log, lock, and startup paths must be distinct.
-2. Submit the watcher through `waitctl.py start -- ...` with those paths, the watch ID, and `--goal-node`. It acquires the watcher lock, writes the startup receipt, and waits without starting the program.
-3. Confirm the startup receipt, then run `activate-wait`. The node becomes `waiting`, and the waiting program starts. Mark the corresponding Todo waiting with its condition and deadline.
-4. Set up event delivery for the owning session through the [client adapter](clients.md). End the current model turn and stop querying that external state.
-5. On completion, the service resumes with `$wait-goal resume {goal_state}; node={goal_node}; event_id={event_id}; log_file={log_file}`, generated from the paths already bound at submission — nothing further to prepare.
-6. On resume, read the output and exit code, run `wake` with the logged event (`exited`, `timeout`, `start_failed`, or `interrupted`), and recheck current external state. Every event returns the node to `running`; only the root's verified `complete`, `fail`, or next `wait` decision changes its outcome. IDs from older wait cycles are rejected and exact duplicates are no-ops. Update Todo after the root records its decision.
+1. Run `wait` with the program attached — `waitctl.py goal -- wait --state ... --id ... --label ... --timeout ... -- <waiting program>`. One command prepares the node while it remains `running`, generates the watch ID and coordination paths, submits the watcher to the service, and verifies the startup receipt. Retain the returned `watch_id` and `log_file`; nothing is copied between commands.
+2. Run `activate-wait` with the watch ID. The node becomes `waiting`, and the waiting program starts. Mark the corresponding Todo waiting with its condition and deadline.
+3. Set up event delivery for the owning session through the [client adapter](clients.md). End the current model turn and stop querying that external state.
+4. On completion, the service resumes with `$wait-goal resume {goal_state}; node={goal_node}; event_id={event_id}; log_file={log_file}`, generated from the paths bound at submission — nothing further to prepare.
+5. On resume, read the output and exit code, run `wake` with the logged event (`exited`, `timeout`, `start_failed`, or `interrupted`), and recheck current external state. Every event returns the node to `running`; only the root's verified `complete`, `fail`, or next `wait` decision changes its outcome. IDs from older wait cycles are rejected and exact duplicates are no-ops. Update Todo after the root records its decision.
 
 See [wait.md](wait.md) for the watcher protocol and [clients.md](clients.md) for resume adapters.
 

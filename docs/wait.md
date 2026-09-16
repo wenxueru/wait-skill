@@ -115,27 +115,25 @@ Cancellation stops the managed program without a business-completion notificatio
 
 ## Integrate with `$wait-goal`
 
-The root prepares the node with `goal wait`, then submits the waiting program using the returned watch ID and absolute paths:
+The root prepares the node and submits its watcher in one command:
 
 ```bash
 python src/waitctl.py goal -- wait \
   --state "$GOAL_STATE" --id deploy --label "deployment api" \
-  --log-file /tmp/deploy.watch.json --lock-file /tmp/deploy.watch.lock \
-  --startup-file /tmp/deploy.started.json
-
-python src/waitctl.py start -- \
-  --label "deployment api" --client codex --session "$AGENT_SESSION_ID" \
-  --event-id "$WATCH_ID" --goal-state "$GOAL_STATE" --goal-node deploy \
-  --log-file /tmp/deploy.watch.json --lock-file /tmp/deploy.watch.lock \
-  --startup-file /tmp/deploy.started.json \
+  --timeout 3500 \
   -- env PYTHONPATH="$PWD/src" python /tmp/wait_deploy.py
+```
 
-# After confirming the startup receipt:
+With the program attached, `goal wait` runs the whole setup itself: it prepares the node, generates the watch ID and coordination paths, submits the watcher to the service, and verifies the startup receipt. The response returns `watch_id`, `log_file`, and `activation_deadline` — nothing to copy between commands. Run `goal wait` without a program to only prepare; it returns a `start_argv` for submitting manually, which is the standalone path when no service is running.
+
+Activate with the returned watch ID:
+
+```bash
 python src/waitctl.py goal -- activate-wait \
   --state "$GOAL_STATE" --id deploy --watch-id "$WATCH_ID"
 ```
 
-Set `WATCH_ID` to the `watch_id` returned by `goal wait`. Before activation, the node remains `running`; the service holds the lock and writes a receipt but does not start the program. Activation moves the node to `waiting`. On completion the service resumes with `$wait-goal resume {goal_state}; node={goal_node}; event_id={event_id}; log_file={log_file}`, generated from the paths already passed to `start` — nothing further to prepare.
+Before activation, the node remains `running`; the service holds the lock and writes a receipt but does not start the program. Activation moves the node to `waiting`. On completion the service resumes with `$wait-goal resume {goal_state}; node={goal_node}; event_id={event_id}; log_file={log_file}`, generated from the paths bound at submission — nothing further to prepare.
 
 Read the result log, then run `wake` with its event:
 

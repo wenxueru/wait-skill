@@ -17,6 +17,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
+import wait_runtime  # noqa: E402
 SCRIPT = Path(__file__).parents[1] / "src" / "wait_goal.py"
 SPEC = importlib.util.spec_from_file_location("wait_goal", SCRIPT)
 assert SPEC and SPEC.loader
@@ -148,6 +149,9 @@ class WaitGoalTest(unittest.TestCase):
                     log_file=str(root / f"{node_id}.json"),
                     lock_file=str(root / f"{node_id}.lock"),
                     startup_file=str(startup_file),
+                    timeout=None,
+                    remote=None,
+                    program=None,
                 )
             )
         response = json.loads(output.getvalue())
@@ -155,6 +159,16 @@ class WaitGoalTest(unittest.TestCase):
         for field in ("log_file", "lock_file", "startup_file"):
             self.assertEqual(response[field], wait[field])
         self.assertEqual(response["state"], str(self.state))
+        args, command = wait_runtime.parse_job_args([*response["start_argv"], "--", "true"])
+        self.assertEqual(command, ["true"])
+        self.assertEqual(args.event_id, wait["watch_id"])
+        self.assertEqual(str(args.goal_state), response["state"])
+        self.assertEqual(args.goal_node, node_id)
+        self.assertEqual(str(args.log_file), wait["log_file"])
+        self.assertEqual(str(args.lock_file), wait["lock_file"])
+        self.assertEqual(str(args.startup_file), wait["startup_file"])
+        self.assertEqual(args.client, wait["client"])
+        self.assertEqual(args.thread, wait["thread"])
         return wait["watch_id"]
 
     def write_startup_receipt(self, node_id: str, watch_id: str) -> None:
@@ -420,6 +434,107 @@ class WaitGoalTest(unittest.TestCase):
             self.prepare_wait("deploy")
 
         self.assertIsNone(self.load()["nodes"]["deploy"]["wait"])
+
+    def wait_namespace(self, program: list[str] | None = None, **overrides: object) -> Namespace:
+        fields: dict[str, object] = {
+            "state": self.state,
+            "id": "deploy",
+            "label": "deployment",
+            "log_file": None,
+            "lock_file": None,
+            "startup_file": None,
+            "timeout": 120.0,
+            "remote": None,
+            "program": program,
+        }
+        fields.update(overrides)
+        return Namespace(**fields)
+
+    def test_wait_generates_distinct_paths_when_not_given(self) -> None:
+        self.add("deploy", kind="external")
+        self.start("deploy")
+        output = StringIO()
+        with redirect_stdout(output):
+            wait_goal.command_wait(self.wait_namespace())
+        response = json.loads(output.getvalue())
+        wait = self.load()["nodes"]["deploy"]["wait"]
+        for field in ("log_file", "lock_file", "startup_file"):
+            self.assertEqual(response[field], wait[field])
+        self.assertNotEqual(wait["log_file"], wait["lock_file"])
+        self.assertNotEqual(wait["log_file"], wait["startup_file"])
+        self.assertIn("start_argv", response)
+
+    def test_wait_program_submits_and_verifies_receipt(self) -> None:
+        self.add("deploy", kind="external")
+        self.start("deploy")
+        payloads: list[dict[str, object]] = []
+
+        def fake_request(payload: dict[str, object], socket_path: object = None, timeout: float = 5.0) -> dict[str, object]:
+            payloads.append(payload)
+            wait = self.load()["nodes"]["deploy"]["wait"]
+            Path(wait["startup_file"]).write_text(json.dumps({
+                "label": wait["label"],
+                "event_id": wait["watch_id"],
+                "event": "watcher_started",
+                "goal_node": "deploy",
+                "client": wait["client"],
+                "thread": wait["thread"],
+                "log_file": wait["log_file"],
+                "lock_file": wait["lock_file"],
+                "activation_deadline": time.time() + 60,
+            }), encoding="utf-8")
+            return {"ok": True, "watch_id": wait["watch_id"], "state": "active"}
+
+        output = StringIO()
+        with patch("waitctl.request", side_effect=fake_request), redirect_stdout(output):
+            wait_goal.command_wait(self.wait_namespace(program=["--", "true"]))
+        response = json.loads(output.getvalue())
+        self.assertTrue(response["submitted"])
+        self.assertEqual(response["receipt"], "verified")
+        self.assertGreater(response["activation_deadline"], time.time())
+
+        self.assertEqual(len(payloads), 1)
+        payload = payloads[0]
+        self.assertEqual(payload["operation"], "submit")
+        argv = payload["argv"]
+        assert isinstance(argv, list)
+        wait = self.load()["nodes"]["deploy"]["wait"]
+        for option, expected in (
+            ("--event-id", wait["watch_id"]),
+            ("--goal-state", response["state"]),
+            ("--goal-node", "deploy"),
+            ("--client", wait["client"]),
+            ("--session", wait["thread"]),
+            ("--label", "deployment"),
+            ("--timeout", "120.0"),
+        ):
+            self.assertEqual(argv[argv.index(option) + 1], expected)
+        for field in ("log_file", "lock_file", "startup_file"):
+            self.assertEqual(argv[argv.index("--" + field.replace("_", "-")) + 1], wait[field])
+        self.assertEqual(argv[argv.index("--") + 1:], ["true"])
+
+    def test_wait_program_rolls_back_when_submission_fails(self) -> None:
+        self.add("deploy", kind="external")
+        self.start("deploy")
+        with patch("waitctl.request", return_value={"ok": False, "error": "boom"}), \
+                self.assertRaisesRegex(wait_goal.GoalError, "boom.*rolled back"):
+            wait_goal.command_wait(self.wait_namespace(program=["true"]))
+        node = self.load()["nodes"]["deploy"]
+        self.assertEqual(node["status"], "running")
+        self.assertIsNone(node["wait"])
+
+    def test_wait_program_rolls_back_when_receipt_never_appears(self) -> None:
+        self.add("deploy", kind="external")
+        self.start("deploy")
+        with (
+            patch("waitctl.request", return_value={"ok": True, "watch_id": "w"}),
+            patch.object(wait_goal, "RECEIPT_WAIT_SECONDS", 0.05),
+            self.assertRaisesRegex(wait_goal.GoalError, "receipt did not appear"),
+        ):
+            wait_goal.command_wait(self.wait_namespace(program=["true"]))
+        node = self.load()["nodes"]["deploy"]
+        self.assertEqual(node["status"], "running")
+        self.assertIsNone(node["wait"])
 
     def test_failed_dependency_makes_goal_blocked(self) -> None:
         self.add("build", kind="external")

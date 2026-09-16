@@ -206,12 +206,11 @@ python src/waitctl.py goal -- add \
 
 准备好等待程序，再执行 goal watcher 协议：
 
-1. 运行 `wait` 准备元数据，节点暂时保持 `running`；保存唯一 `watch_id` 和命令返回的绝对路径。state、log、lock 和 startup 路径必须互不相同。
-2. 通过 `waitctl.py start -- ...` 提交 watcher，并传入这些路径、watch ID 和 `--goal-node`。它先取得 watcher lock、写入启动回执，然后等待激活，暂不启动程序。
-3. 确认启动回执后运行 `activate-wait`。节点进入 `waiting`，等待程序才启动；此时在对应 Todo 中标记等待条件和截止时间。
-4. 按[客户端适配](clients.zh-CN.md)接好所属会话的事件投递通道。结束当前模型轮次，不再查询该外部状态。
-5. 完成后服务用 `$wait-goal resume {goal_state}; node={goal_node}; event_id={event_id}; log_file={log_file}` 唤醒，字段全部来自提交时已绑定的路径，无需额外准备。
-6. 恢复后读取输出和退出码，按日志事件（`exited`、`timeout`、`start_failed` 或 `interrupted`）执行 `wake`，再复查外部状态。所有事件都先让节点回到 `running`；根 Agent 验证后执行 `complete`、`fail` 或下一轮 `wait`，再将结果同步到 Todo。旧等待 ID 会被拒绝，同一事件重复到达时为空操作。
+1. 带上等待程序运行 `wait`——`waitctl.py goal -- wait --state ... --id ... --label ... --timeout ... -- <等待程序>`。一条命令完成：准备节点（暂时保持 `running`）、生成 watch ID 和协调路径、向服务提交 watcher、校验启动回执。保留返回的 `watch_id` 和 `log_file`；任何参数都不在命令之间复制。
+2. 用 watch ID 运行 `activate-wait`。节点进入 `waiting`，等待程序才启动；此时在对应 Todo 中标记等待条件和截止时间。
+3. 按[客户端适配](clients.zh-CN.md)接好所属会话的事件投递通道。结束当前模型轮次，不再查询该外部状态。
+4. 完成后服务用 `$wait-goal resume {goal_state}; node={goal_node}; event_id={event_id}; log_file={log_file}` 唤醒，字段全部来自提交时已绑定的路径，无需额外准备。
+5. 恢复后读取输出和退出码，按日志事件（`exited`、`timeout`、`start_failed` 或 `interrupted`）执行 `wake`，再复查外部状态。所有事件都先让节点回到 `running`；根 Agent 验证后执行 `complete`、`fail` 或下一轮 `wait`，再将结果同步到 Todo。旧等待 ID 会被拒绝，同一事件重复到达时为空操作。
 
 watcher 协议见 [wait.zh-CN.md](wait.zh-CN.md)，会话恢复适配见 [clients.zh-CN.md](clients.zh-CN.md)。
 

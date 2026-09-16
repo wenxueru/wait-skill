@@ -20,7 +20,11 @@ from pathlib import Path
 from typing import TypedDict, cast
 
 import wait_runtime
+from wait_protocol import SOCKET_PATH
 
+# Constants
+
+RECEIPT_WAIT_SECONDS = 10.0
 NODE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 NODE_KINDS = {"agent", "local", "external"}
 NODE_STATUSES = {"pending", "dispatching", "running", "waiting", "completed", "failed", "cancelled"}
@@ -29,6 +33,8 @@ WAIT_EVENTS = {"exited", "start_failed", "interrupted", "ready", "terminal", "ti
 WAIT_PHASES = {"prepared", "active"}
 CLIENTS = {"claude", "codewiz", "codex", "copilot", "cursor"}
 DEFAULT_STATE_ROOT = Path("/tmp/.wait-goal")
+
+# Persisted-state schema (TypedDicts mirroring the JSON on disk) and errors
 
 
 class WaitMetadata(TypedDict):
@@ -137,6 +143,9 @@ class GoalState(GoalStateFields, total=False):
 
 class GoalError(wait_runtime.StateError):
     """Raised when a graph operation would create invalid state."""
+
+
+# Shared helpers used by both the graph and the CLI layer
 
 
 def utc_now() -> str:
@@ -248,6 +257,9 @@ def startup_receipt_deadline(
     if not matches or not valid_deadline:
         raise GoalError("watcher startup receipt does not match the prepared wait")
     return float(deadline)
+
+
+# Graph logic: in-memory operations on one goal's state, independent of storage
 
 
 class GoalGraph:
@@ -1084,6 +1096,9 @@ class GoalGraph:
         self.record_event("finish_goal")
 
 
+# Persistence: load, lock, and atomically rewrite one durable goal file
+
+
 class GoalStore:
     """Load and atomically update one durable goal file."""
 
@@ -1126,6 +1141,9 @@ class GoalStore:
     def _locked(self) -> Iterator[None]:
         with wait_runtime.file_lock(self.path):
             yield
+
+
+# CLI: one function per subcommand, then argument parsing and the entry point
 
 
 def print_json(value: object) -> None:
@@ -1203,32 +1221,138 @@ def command_abort_agent(args: argparse.Namespace) -> None:
     print_json({"id": args.id, "status": "pending", "dispatch_token": args.dispatch_token})
 
 
+def submit_prepared_wait(
+    args: argparse.Namespace,
+    wait: WaitMetadata,
+    state: str,
+    program: list[str],
+) -> float:
+    """Submit the prepared wait to waitd, then verify its startup receipt."""
+    import waitctl
+
+    def fail(reason: str) -> GoalError:
+        try:
+            with GoalStore(args.state).edit() as graph:
+                graph.abort_external_wait(args.id, wait["watch_id"])
+            outcome = "prepared wait rolled back"
+        except GoalError as exc:
+            outcome = f"rollback failed: {exc}"
+        return GoalError(f"{reason}; {outcome}")
+
+    timeout = args.timeout
+    remote = args.remote
+    submit_argv = [
+        "--label",
+        wait["label"],
+        "--client",
+        wait["client"],
+        "--session",
+        wait["thread"],
+        "--event-id",
+        wait["watch_id"],
+        "--goal-state",
+        state,
+        "--goal-node",
+        args.id,
+        "--log-file",
+        wait["log_file"],
+        "--lock-file",
+        wait["lock_file"],
+        "--startup-file",
+        wait["startup_file"],
+        "--timeout",
+        str(timeout),
+        *(["--remote", remote] if remote else []),
+        "--",
+        *program,
+    ]
+    socket_path = Path(os.environ.get("WAITD_SOCKET", SOCKET_PATH))
+    try:
+        response = waitctl.request(
+            {"operation": "submit", "argv": submit_argv, "cwd": os.getcwd()},
+            socket_path,
+        )
+    except OSError as exc:
+        raise fail(f"watcher submission failed: {exc} (socket {socket_path})") from exc
+    if not response.get("ok"):
+        raise fail(f"watcher submission failed: {response.get('error', 'unknown error')}")
+    receipt_path = Path(wait["startup_file"])
+    deadline = time.monotonic() + RECEIPT_WAIT_SECONDS
+    while not receipt_path.exists():
+        if time.monotonic() >= deadline:
+            raise fail("watcher startup receipt did not appear")
+        time.sleep(0.05)
+    try:
+        receipt: object = json.loads(receipt_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise fail(f"watcher startup receipt is unreadable: {exc}") from exc
+    try:
+        return startup_receipt_deadline(receipt, wait, args.id, wait["watch_id"])
+    except GoalError as exc:
+        raise fail(str(exc)) from exc
+
+
 def command_wait(args: argparse.Namespace) -> None:
+    state_path = Path(absolute_path(args.state))
+    base = state_path.parent / f"{state_path.stem}-{uuid.uuid4().hex[:8]}"
+    log_file = args.log_file or str(base.with_name(base.name + ".watch.json"))
+    lock_file = args.lock_file or str(base.with_name(base.name + ".watch.lock"))
+    startup_file = args.startup_file or str(base.with_name(base.name + ".started.json"))
     require_distinct_paths(
         state=args.state,
-        log_file=args.log_file,
-        lock_file=args.lock_file,
-        startup_file=args.startup_file,
+        log_file=log_file,
+        lock_file=lock_file,
+        startup_file=startup_file,
     )
     with GoalStore(args.state).edit() as graph:
         watch_id = graph.prepare_external_wait(
             args.id,
             args.label,
-            args.log_file,
-            args.lock_file,
-            args.startup_file,
+            log_file,
+            lock_file,
+            startup_file,
         )
         wait = cast(WaitMetadata, graph.get_node(args.id)["wait"])
-    print_json({
+    state = absolute_path(args.state)
+    program = list(args.program or [])
+    if program and program[0] == "--":
+        program = program[1:]
+    result: dict[str, object] = {
         "id": args.id,
         "status": "running",
         "wait": "prepared",
         "watch_id": watch_id,
-        "state": absolute_path(args.state),
+        "state": state,
         "log_file": wait["log_file"],
         "lock_file": wait["lock_file"],
         "startup_file": wait["startup_file"],
-    })
+    }
+    if program:
+        result["submitted"] = True
+        result["receipt"] = "verified"
+        result["activation_deadline"] = submit_prepared_wait(args, wait, state, program)
+    else:
+        result["start_argv"] = [
+            "--label",
+            wait["label"],
+            "--client",
+            wait["client"],
+            "--session",
+            wait["thread"],
+            "--event-id",
+            watch_id,
+            "--goal-state",
+            state,
+            "--goal-node",
+            args.id,
+            "--log-file",
+            wait["log_file"],
+            "--lock-file",
+            wait["lock_file"],
+            "--startup-file",
+            wait["startup_file"],
+        ]
+    print_json(result)
 
 
 def command_activate_wait(args: argparse.Namespace) -> None:
@@ -1387,9 +1511,17 @@ def parser() -> argparse.ArgumentParser:
     add_state_argument(wait)
     wait.add_argument("--id", required=True)
     wait.add_argument("--label", required=True)
-    wait.add_argument("--log-file", required=True)
-    wait.add_argument("--lock-file", required=True)
-    wait.add_argument("--startup-file", required=True)
+    wait.add_argument("--log-file", help="Override the generated watcher log path")
+    wait.add_argument("--lock-file", help="Override the generated watcher lock path")
+    wait.add_argument("--startup-file", help="Override the generated startup receipt path")
+    wait.add_argument("--timeout", type=wait_runtime.positive_number, default=wait_runtime.DEFAULT_WAIT_TIMEOUT)
+    wait.add_argument("--remote", help="Codex app-server endpoint passed through to the watcher")
+    wait.add_argument(
+        "program",
+        nargs=argparse.REMAINDER,
+        metavar="ARGV",
+        help="Waiting program after --; submit the watcher to waitd automatically",
+    )
     wait.set_defaults(handler=command_wait)
 
     activate_wait = commands.add_parser("activate-wait", help="Activate a prepared wait after watcher startup")
