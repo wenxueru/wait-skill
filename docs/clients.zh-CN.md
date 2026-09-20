@@ -2,23 +2,20 @@
 
 [English](clients.md)
 
-各客户端共用同一套等待和依赖图逻辑，区别在于如何把结果送回 Agent。提交 `waitctl.py start --` 时，用 `--client CLIENT --session ID` 选择客户端和会话：
+Codex 和 Claude Code 共用同一套等待和依赖图逻辑，区别在于如何把结果送回 Agent。提交 `waitctl.py start --` 时，用 `--client CLIENT --session ID` 选择客户端和会话：
 
 | 客户端 | 恢复命令 | Skill 调用 |
 | --- | --- | --- |
-| CodeWiz | `codewiz run --session ID MESSAGE` | `/wait`、`/wait-loop`、`/wait-goal` |
-| Cursor CLI | `cursor-agent --print --resume=ID MESSAGE` | `/wait`、`/wait-loop`、`/wait-goal` |
-| Claude Code | 原生后台 Bash 执行 `waitctl.py follow WATCH_ID --timeout SECONDS` | `/wait`、`/wait-loop`、`/wait-goal` |
-| GitHub Copilot CLI | `copilot --resume=ID --prompt MESSAGE` | `/wait`、`/wait-loop`、`/wait-goal` |
 | Codex | `codex queue --remote ENDPOINT --thread ID --message MESSAGE` | `$wait`、`$wait-loop`、`$wait-goal` |
+| Claude Code | 原生后台 Bash 执行 `waitctl.py follow WATCH_ID --timeout SECONDS` | `/wait`、`/wait-loop`、`/wait-goal` |
 
 传入持有该 wait 的准确会话 ID。`--thread` 保留为 `--session` 的兼容别名；`--remote` 只供 Codex 使用。
 
-Codex 会把消息加入队列并快速返回，因此投递失败默认最多重试 12 次，单次超时 60 秒。CodeWiz、Cursor 和 Copilot 会恢复 CLI 会话并等待该轮次返回，默认只尝试一次、单次超时一小时，因为超时结果不明确——目标轮次可能已经运行。只有客户端能证明失败尝试没有启动轮次时，才覆盖 `--max-notification-attempts`。
+Codex 会把消息加入队列并快速返回，因此投递失败默认最多重试 12 次，单次超时 60 秒。
 
 恢复命令沿用客户端的权限策略。非交互运行需要额外权限时，只能在用户已有授权范围内通过 `--resume-arg=值` 传入；权限不足则留待手动恢复。
 
-CLI 恢复命令在独立进程中执行，不代表已打开的界面会收到消息。CLI 成功返回记为 `notification: completed`，Codex 队列接收记为 `queued`。这两类 goal 通知投递后，服务继续持有 lock 等根 Agent 执行 `wake`，最长等待 `--wake-ack-timeout`（默认 60 秒）。
+Codex 队列接收记为 `notification: queued`，只表示消息已进入队列。goal 通知投递后，服务继续持有 lock 等根 Agent 执行 `wake`，最长等待 `--wake-ack-timeout`（默认 60 秒）。Claude Code 使用原生后台任务接收事件，具体确认期限见后文。
 
 恢复后，根 Agent 读取消息中的日志，对照保存的状态校验事件，再按 [wait](wait.zh-CN.md)、[goal](wait-goal.zh-CN.md) 或 [loop](wait-loop.zh-CN.md) 继续。通知送达不等于任务完成。
 
@@ -28,21 +25,15 @@ CLI 恢复命令在独立进程中执行，不代表已打开的界面会收到�
 
 ## 要求
 
-- CLI 投递要求客户端已安装、认证并位于 watcher 的 `PATH` 中；Claude 原生投递要求所属交互会话提供后台 Bash 工具。
+- Codex 投递要求 `codex` 已安装、认证并位于 watcher 的 `PATH` 中；Claude Code 原生投递要求所属交互会话提供后台 Bash 工具。
 - 保存的会话可以恢复，并能访问目标状态、watcher 日志和工作区。
 - 不要在会话 ID、程序 argv 或持久化文件中传递凭据。
 
-## CodeWiz
+## Codex
 
-使用 `--client codewiz --session ID` 提交，绑定所属 CodeWiz 会话 ID。事件就绪时，服务执行 `codewiz run --session ID MESSAGE`，无需挂接 `follow`。恢复的 CLI 轮次接收到的 `MESSAGE` 就是自动生成的 `/wait` 恢复指令。
+使用 `--client codex --session ID --remote ENDPOINT` 提交，绑定所属 Root 的线程 ID 和队列端点。服务执行 `codex queue --remote ENDPOINT --thread ID --message MESSAGE`，其中 `MESSAGE` 是自动生成的 `$wait resume ...` 指令，无需原生后台 `follow` 任务。
 
-确保服务环境中的 `codewiz` 已完成认证。投递超时后，先检查保存的会话和 watcher 日志再重试：恢复轮次可能已经执行过操作。此适配器未实现向已打开界面单独投递通知。
-
-## Cursor CLI
-
-使用 `--client cursor --session ID` 提交，绑定所属 Cursor CLI 会话 ID。服务执行 `cursor-agent --print --resume=ID MESSAGE`，在该无头轮次中执行 `/wait` 恢复指令，无需挂接 `follow`。
-
-无头运行需要修改文件时，`--resume-arg=--force` 会绕过交互确认，只能用于已获授权且受限的环境；否则留待手动恢复。这里恢复的是 CLI 会话，不是 Cursor 编辑器中已打开的对话。
+已安装的 `codex` 命令必须支持 `queue`，并能访问该端点。`notification: queued` 只确认队列接收，不代表 Root 已执行消息；goal 的 `wake` 和 loop 的 `begin` 仍在恢复的 Root 中执行。队列投递失败时，先检查记录的投递结果和端点连通性，再决定恢复操作。
 
 ## Claude Code
 
@@ -59,18 +50,6 @@ CLI 恢复命令在独立进程中执行，不代表已打开的界面会收到�
 此路径不需要 MCP 配置或 Channels。
 
 goal 等待期间，服务保留所有权直到 Root 执行 `wake`，上限由 `--notification-timeout` 指定（默认从事件可用起 3600 秒）。原生投递不使用投递成功后的 `--wake-ack-timeout`。未收到 Root 确认时，watcher 以 `notification: unconfirmed` 失败，日志保留外部事件。恢复时检查日志和 goal；若节点已孤立，按 goal 恢复协议处理原节点，不要创建替代节点。重新挂接 `follow` 不会延长截止时间。
-
-## GitHub Copilot CLI
-
-使用 `--client copilot --session ID` 提交，绑定所属 Copilot CLI 会话 ID。服务执行 `copilot --resume=ID --prompt MESSAGE`，把 `/wait` 恢复指令交给恢复的 CLI 轮次，无需挂接 `follow`。
-
-适配器不自动批准权限。通过 `--resume-arg` 配置恢复任务已获授权的权限；需要交互确认时手动恢复。超时结果不明确时，先检查保存的会话再重试。此路径面向 Copilot CLI，不是 IDE 聊天面板。
-
-## Codex
-
-使用 `--client codex --session ID --remote ENDPOINT` 提交，绑定所属 Root 的线程 ID 和队列端点。服务执行 `codex queue --remote ENDPOINT --thread ID --message MESSAGE`，其中 `MESSAGE` 是自动生成的 `$wait resume ...` 指令，无需原生后台 `follow` 任务。
-
-已安装的 `codex` 命令必须支持 `queue`，并能访问该端点。`notification: queued` 只确认队列接收，不代表 Root 已执行消息；goal 的 `wake` 和 loop 的 `begin` 仍在恢复的 Root 中执行。队列投递失败时，先检查记录的投递结果和端点连通性，再决定恢复操作。
 
 ## 进度工具
 
