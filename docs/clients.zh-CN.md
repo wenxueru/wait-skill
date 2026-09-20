@@ -21,7 +21,7 @@ Codex 队列接收记为 `notification: queued`，只表示消息已进入队列
 
 ## 会话绑定
 
-提交 watcher、初始化 goal 和 loop 时，使用所属对话准确的 `--client` 和 `--session`。goal watcher 还需使用[目标握手](wait.zh-CN.md#与-wait-goal-集成)返回的 watch ID，以及 `--goal-state`、`--goal-node` 和 `--startup-file` 绑定；loop 使用计时器保存的 watch ID。恢复指令由服务根据这些绑定自动生成，不由 Agent 编写。示例见 [wait](wait.zh-CN.md) 和 [loop](wait-loop.zh-CN.md)。
+提交 watcher、初始化 goal 和 loop 时，使用所属对话准确的 `--client` 和 `--session`，并由 Agent 通过 `--event-note` 写下简短的下一步。goal watcher 还需使用[目标握手](wait.zh-CN.md#与-wait-goal-集成)返回的 watch ID，以及 `--goal-state`、`--goal-node` 和 `--startup-file` 绑定；loop 使用计时器保存的 watch ID。恢复指令结构由服务生成，note 原样来自 Agent。
 
 ## 要求
 

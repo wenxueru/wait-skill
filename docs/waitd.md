@@ -37,6 +37,7 @@ Prepare the program as in the [wait example](wait.md):
 ```bash
 python src/waitctl.py start -- \
   --label "deployment api" \
+  --event-note "Recheck deployment; health-check success or report failure" \
   --client codex --session "$AGENT_SESSION_ID" \
   -- env PYTHONPATH="$PWD/src" python /tmp/wait_deploy.py
 ```
@@ -45,7 +46,7 @@ Standalone log and lock paths are automatic; explicit paths override them. Paths
 
 The service captures stdout, stderr, and the exit code. It reports `exited`, `timeout`, `start_failed`, or `interrupted`, without parsing output. Each stream is limited to 64 KiB; excess output is drained and discarded. Cancellation and timeout stop the program's process group. Every wait has a finite timeout, defaulting to one hour.
 
-On resume, the service always sends a fixed instruction built from the submitted paths — `$wait resume {log_file}; event_id={event_id}`, or the goal/loop variant when `--goal-state` or `--loop-state` was passed. It never derives this text from program output; the agent still decides how to recover after reading the log. See [wait](wait.md) for the result contract and [clients](clients.md) for delivery.
+On resume, the service sends `$wait resume {log_file}; event_id={event_id}; event_note="{event_note}"`, or the goal/loop variant. The service builds the command structure; the submitting agent supplies the short note through `--event-note`. Neither comes from program output. The agent still reads the log, rechecks state, and decides how to recover.
 
 ## Goal and loop commands
 
@@ -57,13 +58,14 @@ python src/waitctl.py goal -- ready --state "$GOAL_STATE"
 
 python src/waitctl.py loop -- init \
   --task "Inspect the queue" --interval 600 --duration 3600 \
+  --event-note "Read timer log; begin on Ready or stop on Expired" \
   --session "$AGENT_SESSION_ID"
 python src/waitctl.py loop -- show --state "$LOOP_STATE"
 ```
 
 Each command family is serialized and uses its state engine's validation, locking, event history, and atomic writes. Commands have a 30-second limit. Responses contain exit `code`, parsed `output`, and `error` text. Durable files remain the source of truth; `wait_goal.py` and `wait_loop.py` can also manage state directly.
 
-After each completed iteration, the service registers a blocking timer program and, on completion, resumes with `$wait-loop resume {state_file}; event_id={event_id}; log_file={log_file}`, generated from the loop's own state path. The root reads the timer result and decides whether to begin another iteration.
+After each completed iteration, the service registers a blocking timer program and resumes with `$wait-loop resume {state_file}; event_id={event_id}; log_file={log_file}; event_note="{event_note}"`. The loop supplies its state path and preserves the note authored at initialization.
 
 ## Restart and recovery
 

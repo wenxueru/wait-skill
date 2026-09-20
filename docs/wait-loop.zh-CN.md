@@ -28,6 +28,7 @@ flowchart LR
 ```bash
 python src/waitctl.py loop -- init \
   --task "检查队列并报告需要处理的变化" \
+  --event-note "读取计时日志，Ready 则开始下一轮，Expired 则结束" \
   --interval 600 \
   --duration 3600 \
   --max-iterations 4 \
@@ -50,7 +51,7 @@ WATCH_ID=WATCH_ID_FROM_COMPLETE
 
 每次注册计时器后，使用保存的 watch ID，按[客户端适配](clients.zh-CN.md)接好事件投递通道，再结束轮次。
 
-每次计时结束，服务用 `$wait-loop resume {state_file}; event_id={event_id}; log_file={log_file}` 唤醒，这条消息由 loop 自己的状态路径生成，初始化时无需额外准备。日志报告 `event: exited`、`exit_code: 0`，且 stdout 为 `Ready` 时，先记录本次唤醒，再执行任务：
+每次计时结束，服务用 `$wait-loop resume {state_file}; event_id={event_id}; log_file={log_file}; event_note="{event_note}"` 唤醒。状态路径由 loop 生成，简短的 note 由 Agent 初始化 loop 时写入。日志报告 `event: exited`、`exit_code: 0`，且 stdout 为 `Ready` 时，先记录本次唤醒，再执行任务：
 
 ```bash
 python src/waitctl.py loop -- begin \

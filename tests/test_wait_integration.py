@@ -30,7 +30,8 @@ class PollServiceTest(unittest.IsolatedAsyncioTestCase):
             )
             daemon = waitd.WaitDaemon(root / "registry.json")
             submitted = daemon.submit([
-                "--label", "custom", "--client", "claude", "--session", "test",
+                "--label", "custom", "--event-note", "Recheck the custom state",
+                "--client", "claude", "--session", "test",
                 "--", sys.executable, str(program),
             ], str(root))
             task = daemon.tasks[submitted["watch_id"]]

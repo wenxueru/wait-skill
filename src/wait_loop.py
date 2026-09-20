@@ -104,6 +104,11 @@ def validate(state: object) -> dict[str, object]:
         raise LoopError("goal must contain state and node strings")
     if not isinstance(state["task"], str) or not state["task"].strip():
         raise LoopError("task must be a non-empty string")
+    if "event_note" in state:
+        try:
+            wait_runtime.concise_event_note(state["event_note"])
+        except (argparse.ArgumentTypeError, AttributeError) as exc:
+            raise LoopError("event_note must be a concise single-line string") from exc
     if state["client"] not in CLIENTS:
         raise LoopError("invalid client")
     if not isinstance(state["session"], str) or not state["session"].strip():
@@ -284,6 +289,7 @@ def command_init(args: argparse.Namespace) -> None:
     now = time.time()
     state = LoopState({
         "task": args.task,
+        "event_note": args.event_note,
         "client": args.client,
         "session": args.session,
         "interval_seconds": args.interval,
@@ -328,10 +334,10 @@ def command_due(args: argparse.Namespace) -> None:
 
 
 def timer_argv(state: LoopState, path: Path) -> list[str]:
-    """Submit the loop's timer program; waitd derives the resume text from --loop-state."""
+    """Build the loop timer watcher arguments."""
     watch_id = str(state["watch_id"])
     log = path.with_name(f"{path.stem}-{watch_id}.watch.json")
-    return [
+    argv = [
         "--label",
         "loop timer",
         "--timeout",
@@ -348,6 +354,11 @@ def timer_argv(state: LoopState, path: Path) -> list[str]:
         str(log),
         "--lock-file",
         str(log.with_suffix(".lock")),
+    ]
+    if event_note := state.get("event_note"):
+        argv.extend(["--event-note", str(event_note)])
+    return [
+        *argv,
         "--",
         sys.executable,
         str(Path(__file__).resolve()),
@@ -405,6 +416,7 @@ def parser() -> argparse.ArgumentParser:
     init = commands.add_parser("init")
     add_state(init, required=False)
     init.add_argument("--task", required=True)
+    init.add_argument("--event-note", type=wait_runtime.concise_event_note, required=True)
     init.add_argument("--interval", type=positive_number, required=True)
     init.add_argument("--duration", type=positive_number, default=DEFAULT_DURATION)
     init.add_argument("--max-iterations", type=positive_int)

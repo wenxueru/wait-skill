@@ -55,11 +55,12 @@ Submit from the repository directory, pointing `PYTHONPATH` to this skill's `scr
 ```bash
 python src/waitctl.py start -- \
   --label "deployment api" \
+  --event-note "Recheck deployment; health-check success or report failure" \
   --client codex --session "$AGENT_SESSION_ID" \
   -- env PYTHONPATH="$PWD/src" python /tmp/wait_deploy.py
 ```
 
-Keep the returned `watch_id`, `log_file`, and `lock_file`. Paths and event IDs are automatic; on completion the service always resumes with `$wait resume {log_file}; event_id={event_id}`. Read `log_file` to learn what actually happened — the resume text is a pointer, not a report. Override `--log-file` or `--lock-file` only when needed.
+Keep the returned `watch_id`, `log_file`, and `lock_file`. Paths and event IDs are automatic; on completion the service resumes with `$wait resume {log_file}; event_id={event_id}; event_note="{event_note}"`. The submitting agent writes the short follow-up note; it never comes from program output. Read `log_file` and recheck current state to learn what actually happened. Override `--log-file` or `--lock-file` only when needed.
 
 ## Waiting-program contract
 
@@ -120,6 +121,7 @@ The root prepares the node and submits its watcher in one command:
 ```bash
 python src/waitctl.py goal -- wait \
   --state "$GOAL_STATE" --id deploy --label "deployment api" \
+  --event-note "Read log, wake node, then recheck deployment" \
   --timeout 3500 \
   -- env PYTHONPATH="$PWD/src" python /tmp/wait_deploy.py
 ```
@@ -133,7 +135,7 @@ python src/waitctl.py goal -- activate-wait \
   --state "$GOAL_STATE" --id deploy --watch-id "$WATCH_ID"
 ```
 
-Before activation, the node remains `running`; the service holds the lock and writes a receipt but does not start the program. Activation moves the node to `waiting`. On completion the service resumes with `$wait-goal resume {goal_state}; node={goal_node}; event_id={event_id}; log_file={log_file}`, generated from the paths bound at submission — nothing further to prepare.
+Before activation, the node remains `running`; the service holds the lock and writes a receipt but does not start the program. Activation moves the node to `waiting`. On completion the service resumes with `$wait-goal resume {goal_state}; node={goal_node}; event_id={event_id}; log_file={log_file}; event_note="{event_note}"`; paths come from the submission binding and the note comes from the root agent.
 
 Read the result log, then run `wake` with its event:
 

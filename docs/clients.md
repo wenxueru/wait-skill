@@ -24,7 +24,7 @@ On resume, the root reads the referenced log, validates the event against saved 
 
 ## Session binding
 
-Use the owning conversation's exact `--client` and `--session` for watcher submission, goal `init`, and loop `init`. A goal-owned watcher must also use the prepared watch ID and `--goal-state`, `--goal-node`, and `--startup-file` bindings from the [goal handshake](wait.md#integrate-with-wait-goal). For a loop, use the timer's saved watch ID. The service generates the resume instruction from these bindings; the agent does not author it. For details, see the [wait](wait.md) and [loop](wait-loop.md) examples.
+Use the owning conversation's exact `--client` and `--session`, and have the agent provide a short next step through `--event-note`. A goal-owned watcher must also use the prepared watch ID and `--goal-state`, `--goal-node`, and `--startup-file` bindings from the [goal handshake](wait.md#integrate-with-wait-goal). For a loop, use the timer's saved watch ID. The service generates the resume-command structure and preserves the agent-authored note.
 
 ## Requirements
 

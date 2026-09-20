@@ -49,6 +49,7 @@ After preparing `/tmp/wait_deploy.py` as in the [running example](docs/wait.md),
 ```bash
 python src/waitctl.py start -- \
   --label "deployment api" \
+  --event-note "Recheck deployment; health-check success or report failure" \
   --client codex \
   --session "$AGENT_SESSION_ID" \
   -- env PYTHONPATH="$PWD/src" python /tmp/wait_deploy.py
@@ -84,7 +85,7 @@ See [docs/wait-goal.md](docs/wait-goal.md) for the state model, dependency rules
 - Put credentials in environment variables or configuration files, not argv.
 - Program stdout and stderr are saved, up to 64 KiB each. Keep secrets out of output; the resume instruction references the log rather than automatically embedding it.
 - `$wait` persists an event ID and delivery state before notification. Bounded retries reuse that ID, so duplicate wake-ups can be deduplicated safely.
-- A wake-up message does not grant permission to restart or mutate the watched system. The receiving agent must verify current state and existing authority.
+- The submitting agent writes a short `event_note` describing the next step. It must not contain credentials or copied external output, and it does not authorize restarting or mutating the watched system.
 - The `$wait-goal` graph must remain acyclic and only the root agent may mutate it.
 
 ## Related work

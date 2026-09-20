@@ -23,6 +23,7 @@ EXIT_ACTIVATION_CANCELLED = 76
 EXIT_TIMEOUT = 124
 CLIENTS = {"claude", "codewiz", "codex", "copilot", "cursor"}
 DEFAULT_WAIT_TIMEOUT = 3600.0
+MAX_EVENT_NOTE_LENGTH = 240
 
 
 def positive_number(value: str) -> float:
@@ -37,6 +38,17 @@ def positive_int(value: str) -> int:
     if number <= 0:
         raise argparse.ArgumentTypeError("must be positive")
     return number
+
+
+def concise_event_note(value: str) -> str:
+    note = value.strip()
+    if not note:
+        raise argparse.ArgumentTypeError("must not be blank")
+    if len(note) > MAX_EVENT_NOTE_LENGTH:
+        raise argparse.ArgumentTypeError(f"must be at most {MAX_EVENT_NOTE_LENGTH} characters")
+    if "\r" in note or "\n" in note:
+        raise argparse.ArgumentTypeError("must be a single line")
+    return note
 
 
 def absolute_path(path: Path) -> Path:
@@ -225,6 +237,11 @@ def add_runtime_arguments(result: argparse.ArgumentParser) -> None:
         "--event-id",
         help="Stable event ID; pass the prepared wait-goal watch ID when integrating",
     )
+    result.add_argument(
+        "--event-note",
+        type=concise_event_note,
+        help="Short agent-authored instruction for what to do after the event",
+    )
     result.add_argument("--goal-state", type=Path, help="Goal state used for startup activation")
     result.add_argument("--goal-node", help="External goal node used for startup activation")
     result.add_argument("--loop-state", type=Path, help="Loop state that owns this timer watch")
@@ -261,12 +278,19 @@ def add_runtime_arguments(result: argparse.ArgumentParser) -> None:
 
 
 def resume_instruction(args: argparse.Namespace) -> str:
-    """Fixed wake text: which command to run to resume, not what happened."""
+    """Build the wake command with its agent-authored note."""
     if args.goal_state:
-        return f"$wait-goal resume {args.goal_state}; node={args.goal_node}; event_id={args.event_id}; log_file={args.log_file}"
-    if args.loop_state:
-        return f"$wait-loop resume {args.loop_state}; event_id={args.event_id}; log_file={args.log_file}"
-    return f"$wait resume {args.log_file}; event_id={args.event_id}"
+        command = f"$wait-goal resume {args.goal_state}"
+        fields = [f"node={args.goal_node}", f"event_id={args.event_id}", f"log_file={args.log_file}"]
+    elif args.loop_state:
+        command = f"$wait-loop resume {args.loop_state}"
+        fields = [f"event_id={args.event_id}", f"log_file={args.log_file}"]
+    else:
+        command = f"$wait resume {args.log_file}"
+        fields = [f"event_id={args.event_id}"]
+    if note := getattr(args, "event_note", None):
+        fields.append(f"event_note={json.dumps(note, ensure_ascii=False)}")
+    return "; ".join([command, *fields])
 
 
 def job_parser() -> argparse.ArgumentParser:

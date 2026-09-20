@@ -17,7 +17,7 @@ from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TypedDict, cast
+from typing import NotRequired, TypedDict, cast
 
 import wait_runtime
 from wait_protocol import SOCKET_PATH
@@ -47,6 +47,7 @@ class WaitMetadata(TypedDict):
     since: str
     watch_id: str
     phase: str
+    event_note: NotRequired[str]
 
 
 class WatchEvent(TypedDict):
@@ -344,6 +345,12 @@ class GoalGraph:
                 require_string(wait.get(field), f"node {node_id!r} wait.{field}")
             if wait.get("client", "codex") not in CLIENTS:
                 raise GoalError(f"node {node_id!r} has invalid wait client")
+            event_note = wait.get("event_note")
+            if event_note is not None:
+                try:
+                    wait_runtime.concise_event_note(event_note)
+                except (argparse.ArgumentTypeError, AttributeError) as exc:
+                    raise GoalError(f"node {node_id!r} has invalid wait event_note") from exc
             phase = wait.get("phase")
             if not isinstance(phase, str) or phase not in WAIT_PHASES:
                 raise GoalError(f"node {node_id!r} has invalid wait phase")
@@ -886,6 +893,7 @@ class GoalGraph:
         self,
         node_id: str,
         label: str,
+        event_note: str,
         log_file: str,
         lock_file: str,
         startup_file: str,
@@ -903,6 +911,7 @@ class GoalGraph:
         watch_id = uuid.uuid4().hex
         node["wait"] = {
             "label": label,
+            "event_note": event_note,
             "client": self.state["client"],
             "thread": cast(str, self.state["thread"]),
             "log_file": absolute_path(log_file),
@@ -1244,6 +1253,8 @@ def submit_prepared_wait(
     submit_argv = [
         "--label",
         wait["label"],
+        "--event-note",
+        wait["event_note"],
         "--client",
         wait["client"],
         "--session",
@@ -1308,6 +1319,7 @@ def command_wait(args: argparse.Namespace) -> None:
         watch_id = graph.prepare_external_wait(
             args.id,
             args.label,
+            args.event_note,
             log_file,
             lock_file,
             startup_file,
@@ -1335,6 +1347,8 @@ def command_wait(args: argparse.Namespace) -> None:
         result["start_argv"] = [
             "--label",
             wait["label"],
+            "--event-note",
+            wait["event_note"],
             "--client",
             wait["client"],
             "--session",
@@ -1511,6 +1525,7 @@ def parser() -> argparse.ArgumentParser:
     add_state_argument(wait)
     wait.add_argument("--id", required=True)
     wait.add_argument("--label", required=True)
+    wait.add_argument("--event-note", type=wait_runtime.concise_event_note, required=True)
     wait.add_argument("--log-file", help="Override the generated watcher log path")
     wait.add_argument("--lock-file", help="Override the generated watcher lock path")
     wait.add_argument("--startup-file", help="Override the generated startup receipt path")

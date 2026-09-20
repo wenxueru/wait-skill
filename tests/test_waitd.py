@@ -38,10 +38,12 @@ class WaitDaemonTest(unittest.IsolatedAsyncioTestCase):
         await goal("start", "--id", "deploy")
         log, lock, startup = (self.root / name for name in ("watch.json", "watch.lock", "started.json"))
         prepared = await goal("wait", "--id", "deploy", "--label", "deployment",
+                              "--event-note", "Recheck deployment and continue",
                               "--log-file", str(log), "--lock-file", str(lock), "--startup-file", str(startup))
         watch_id = prepared["watch_id"]
         submitted = self.daemon.submit([
-            "--label", "deployment", "--client", "claude", "--session", "native-test",
+            "--label", "deployment", "--event-note", "Recheck deployment and continue",
+            "--client", "claude", "--session", "native-test",
             "--event-id", watch_id, "--goal-state", str(state), "--goal-node", "deploy",
             "--log-file", str(log), "--lock-file", str(lock), "--startup-file", str(startup),
             "--activation-interval", ".01", "--notification-timeout", "5",
@@ -59,7 +61,8 @@ class WaitDaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response["result"]["exit_code"], 2)
         self.assertEqual(
             response["resume_message"],
-            f"$wait-goal resume {state}; node=deploy; event_id={watch_id}; log_file={log}",
+            f"$wait-goal resume {state}; node=deploy; event_id={watch_id}; log_file={log}; "
+            'event_note="Recheck deployment and continue"',
         )
         self.assertEqual(json.loads(state.read_text())["nodes"]["deploy"]["status"], "waiting")
         with lock.open("a") as handle:
@@ -243,6 +246,8 @@ class WaitDaemonTest(unittest.IsolatedAsyncioTestCase):
         return [
             "--label",
             "demo",
+            "--event-note",
+            "Recheck demo state",
             "--timeout",
             "2",
             "--lock-file",
@@ -311,7 +316,7 @@ class WaitDaemonTest(unittest.IsolatedAsyncioTestCase):
         for mode in ("wait", "wait-loop", "wait-goal"):
             with self.subTest(mode=mode):
                 target = "log.json" if mode == "wait" else "state.json"
-                argv = ["--label", "x", "--log-file", "log.json",
+                argv = ["--label", "x", "--event-note", "Read the log and continue", "--log-file", "log.json",
                         "--lock-file", "lock", "--session", "session", "--event-id", "event"]
                 if mode != "wait":
                     argv += ["--loop-state" if mode == "wait-loop" else "--goal-state", target]
@@ -321,23 +326,30 @@ class WaitDaemonTest(unittest.IsolatedAsyncioTestCase):
                 args, _ = waitd.wait_runtime.parse_job_args(waitd.absolute_wait_argv(argv, self.root))
                 message = waitd.wait_runtime.resume_instruction(args)
                 if mode == "wait":
-                    self.assertEqual(message, f"$wait resume {args.log_file}; event_id={args.event_id}")
+                    self.assertEqual(
+                        message,
+                        f'$wait resume {args.log_file}; event_id={args.event_id}; '
+                        'event_note="Read the log and continue"',
+                    )
                 elif mode == "wait-loop":
                     self.assertEqual(
                         message,
-                        f"$wait-loop resume {args.loop_state}; event_id={args.event_id}; log_file={args.log_file}",
+                        f"$wait-loop resume {args.loop_state}; event_id={args.event_id}; "
+                        f'log_file={args.log_file}; event_note="Read the log and continue"',
                     )
                 else:
                     self.assertEqual(
                         message,
                         f"$wait-goal resume {args.goal_state}; node={args.goal_node}; "
-                        f"event_id={args.event_id}; log_file={args.log_file}",
+                        f'event_id={args.event_id}; log_file={args.log_file}; '
+                        'event_note="Read the log and continue"',
                     )
 
     async def test_loop_restart_repairs_missing_timer_registration(self) -> None:
         path = self.root / "loop.json"
         await self.daemon.dispatch({"operation": "loop", "cwd": str(self.root), "argv": [
-            "init", "--state", str(path), "--task", "inspect", "--interval", "60", "--session", "s"]})
+            "init", "--state", str(path), "--task", "inspect", "--event-note", "Inspect again",
+            "--interval", "60", "--session", "s"]})
         # Simulate a committed complete followed by a crash before registration.
         await self.daemon.state_commands.run("loop", ["complete", "--state", str(path), "--summary", "done"], self.root)
         state = json.loads(path.read_text())
@@ -356,7 +368,8 @@ class WaitDaemonTest(unittest.IsolatedAsyncioTestCase):
         goal.write_text(json.dumps({"status": "open", "thread": "s", "nodes": {"n": {"status": "running"}}}))
         path = self.root / "monitor.json"
         response = await self.daemon.dispatch({"operation": "loop", "cwd": str(self.root), "argv": [
-            "init", "--state", str(path), "--task", "inspect", "--interval", "60", "--session", "s",
+            "init", "--state", str(path), "--task", "inspect", "--event-note", "Inspect again",
+            "--interval", "60", "--session", "s",
             "--goal-state", str(goal), "--goal-node", "n"]})
         self.assertEqual(response["code"], 0)
         self.assertEqual((await self.daemon.reconcile_loops())[0]["goal"]["node"], "n")
@@ -367,7 +380,8 @@ class WaitDaemonTest(unittest.IsolatedAsyncioTestCase):
     async def test_complete_registers_timer_and_delivers_without_manual_start(self) -> None:
         path = self.root / "loop.json"
         await self.daemon.dispatch({"operation": "loop", "cwd": str(self.root), "argv": [
-            "init", "--state", str(path), "--task", "inspect", "--interval", ".01", "--session", "s"]})
+            "init", "--state", str(path), "--task", "inspect", "--event-note", "Inspect again",
+            "--interval", ".01", "--session", "s"]})
         with patch.object(self.daemon, "_deliver", new_callable=AsyncMock, return_value=None) as deliver:
             response = await self.daemon.dispatch({"operation": "loop", "cwd": str(self.root), "argv": [
                 "complete", "--state", str(path), "--summary", "done"]})
@@ -378,7 +392,8 @@ class WaitDaemonTest(unittest.IsolatedAsyncioTestCase):
             args, _ = waitd.wait_runtime.parse_job_args(self.daemon.watchers[watch_id]["argv"])
             self.assertEqual(
                 waitd.wait_runtime.resume_instruction(args),
-                f"$wait-loop resume {path.resolve()}; event_id={args.event_id}; log_file={args.log_file}",
+                f"$wait-loop resume {path.resolve()}; event_id={args.event_id}; "
+                f'log_file={args.log_file}; event_note="Inspect again"',
             )
             deliver.assert_awaited_once()
 
@@ -651,6 +666,8 @@ class WaitDaemonTest(unittest.IsolatedAsyncioTestCase):
                     str(loop_state),
                     "--task",
                     "inspect queue",
+                    "--event-note",
+                    "Inspect the queue again",
                     "--interval",
                     "60",
                     "--session",
@@ -729,6 +746,8 @@ class WaitServiceTest(unittest.TestCase):
                             str(loop_state),
                             "--task",
                             "inspect queue",
+                            "--event-note",
+                            "Inspect the queue again",
                             "--interval",
                             "60",
                             "--session",
@@ -741,7 +760,7 @@ class WaitServiceTest(unittest.TestCase):
                 self.assertEqual(response["output"]["task"], "inspect queue")
                 submitted = waitctl.request({
                     "operation": "submit", "cwd": str(root),
-                    "argv": ["--label", "socket-test", "--timeout", "2",
+                    "argv": ["--label", "socket-test", "--event-note", "Check the result", "--timeout", "2",
                              "--", sys.executable, "-c", "import time; time.sleep(.1); print('Ready')"],
                 }, socket_path)
                 followed = waitctl.request({"operation": "follow", "watch_id": submitted["watch_id"], "timeout": 2}, socket_path)
@@ -769,6 +788,7 @@ class WaitServiceTest(unittest.TestCase):
                 goal("start", "--state", str(state), "--id", "deploy")
                 response = goal(
                     "wait", "--state", str(state), "--id", "deploy", "--label", "deployment",
+                    "--event-note", "Recheck deployment and continue",
                     "--timeout", "10", "--", sys.executable, "-c", "print('deploy done')",
                 )
                 self.assertEqual(response["code"], 0, response)

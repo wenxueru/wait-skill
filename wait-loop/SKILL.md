@@ -20,7 +20,7 @@ Here, `<invoke>` is `$wait-loop` or `/wait-loop` according to the client.
 
 ## Protocol
 
-1. Run `waitctl.py loop -- init` with the task, interval, client, session, and a finite overall `--duration`. Retain its returned `state_file`. Each timer resumes automatically with `$wait-loop resume {state_file}; event_id={event_id}; log_file={log_file}` — nothing to prepare here. The default is 24 hours; choose a shorter duration when it fits the task. Add `--max-iterations` when the requested count is finite.
+1. Run `waitctl.py loop -- init` with the task, interval, client, session, a finite overall `--duration`, and a short single-line `--event-note` saying what to do after the timer wakes. Retain its returned `state_file`. Each timer resumes with `$wait-loop resume {state_file}; event_id={event_id}; log_file={log_file}; event_note="{event_note}"`. The default is 24 hours; choose a shorter duration when it fits the task. Add `--max-iterations` when the requested count is finite.
 2. Execute the saved task once, using reasonable defaults for reversible choices within the task and existing authorization. The root session performs each iteration; do not create an autonomous child loop. Reuse the iteration's Todo item when calling wait.
 3. Resolve the iteration:
    - Success: run `complete --summary`. If it returns `completed`, report the outcome and stop; otherwise retain `watch_id` and `next_run_at`.

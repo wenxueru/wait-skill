@@ -20,7 +20,7 @@ description: 在 CodeWiz、Cursor、Claude Code、GitHub Copilot 和 Codex 中�
 
 ## 协议
 
-1. 运行 `waitctl.py loop -- init`，传入任务、间隔、客户端、会话和有限的总 `--duration`；保留返回的 `state_file`。每次计时会自动用 `$wait-loop resume {state_file}; event_id={event_id}; log_file={log_file}` 唤醒，无需额外准备。默认总时长为 24 小时；任务不需要那么久时，设置更短的期限。用户指定有限轮数时再传 `--max-iterations`。
+1. 运行 `waitctl.py loop -- init`，传入任务、间隔、客户端、会话、有限的总 `--duration`，以及简短单行的 `--event-note`，说明计时唤醒后要做什么；保留返回的 `state_file`。每次计时会用 `$wait-loop resume {state_file}; event_id={event_id}; log_file={log_file}; event_note="{event_note}"` 唤醒。默认总时长为 24 小时；任务不需要那么久时，设置更短的期限。用户指定有限轮数时再传 `--max-iterations`。
 2. 立即执行一次已保存的任务，任务与已有授权范围内的可逆选择采用合理默认值。每轮都由根会话执行，不创建脱离控制的子 Agent 循环。调用 wait 时沿用本轮任务的 Todo 条目。
 3. 处理本轮结果：
    - 成功：运行 `complete --summary`。返回 `completed` 时汇报结果并停止；否则保留 `watch_id` 和 `next_run_at`。

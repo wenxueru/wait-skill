@@ -55,11 +55,12 @@ print(json.dumps(poll(query, evaluate, interval=5, timeout=3500)))
 ```bash
 python src/waitctl.py start -- \
   --label "deployment api" \
+  --event-note "复查部署状态；成功则检查健康，失败则报告原因" \
   --client codex --session "$AGENT_SESSION_ID" \
   -- env PYTHONPATH="$PWD/src" python /tmp/wait_deploy.py
 ```
 
-保留返回的 `watch_id`、`log_file` 和 `lock_file`。文件路径和事件 ID 自动生成；完成后服务总是用 `$wait resume {log_file}; event_id={event_id}` 唤醒。唤醒文字只是指路，真正发生了什么要读 `log_file` 才知道。需要自定义路径时再传 `--log-file`、`--lock-file`。
+保留返回的 `watch_id`、`log_file` 和 `lock_file`。文件路径和事件 ID 自动生成；完成后服务用 `$wait resume {log_file}; event_id={event_id}; event_note="{event_note}"` 唤醒。`event_note` 是 Agent 提交等待时写下的简短下一步，不来自程序输出；真正发生了什么仍要读 `log_file` 并复查当前状态。需要自定义路径时再传 `--log-file`、`--lock-file`。
 
 ## 等待程序负责什么
 
@@ -120,6 +121,7 @@ def query():
 ```bash
 python src/waitctl.py goal -- wait \
   --state "$GOAL_STATE" --id deploy --label "deployment api" \
+  --event-note "读取日志，wake 节点，再复查部署状态" \
   --timeout 3500 \
   -- env PYTHONPATH="$PWD/src" python /tmp/wait_deploy.py
 ```
@@ -133,7 +135,7 @@ python src/waitctl.py goal -- activate-wait \
   --state "$GOAL_STATE" --id deploy --watch-id "$WATCH_ID"
 ```
 
-激活前节点保持 `running`，服务持锁并写启动回执，但不启动程序；激活后进入 `waiting`。完成后服务用 `$wait-goal resume {goal_state}; node={goal_node}; event_id={event_id}; log_file={log_file}` 唤醒，字段全部来自提交时绑定的路径，无需额外准备。
+激活前节点保持 `running`，服务持锁并写启动回执，但不启动程序；激活后进入 `waiting`。完成后服务用 `$wait-goal resume {goal_state}; node={goal_node}; event_id={event_id}; log_file={log_file}; event_note="{event_note}"` 唤醒。路径来自提交时绑定，`event_note` 来自根 Agent。
 
 收到结果先读日志，再用对应 event 执行 `wake`：
 
@@ -146,4 +148,4 @@ python src/waitctl.py goal -- wake \
 
 ## 安全要求
 
-等待程序应只读；凭据放在环境或配置中，不写入命令、输出、状态或消息。服务不会隐式调用 shell，也不会过滤程序输出中的秘密，Agent 必须准备安全的输出。唤醒消息不授予重试、重启、部署或其他外部修改权限。
+等待程序应只读；凭据放在环境或配置中，不写入命令、输出、状态、`event_note` 或消息。服务不会隐式调用 shell，也不会过滤程序输出中的秘密，Agent 必须准备安全的输出。`event_note` 只恢复上下文，唤醒消息不授予重试、重启、部署或其他外部修改权限。

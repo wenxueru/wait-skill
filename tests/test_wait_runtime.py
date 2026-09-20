@@ -4,6 +4,7 @@ import json
 import sys
 import tempfile
 import unittest
+from argparse import ArgumentTypeError
 from argparse import Namespace
 from pathlib import Path
 
@@ -12,6 +13,12 @@ import wait_runtime  # noqa: E402
 
 
 class RuntimeTest(unittest.TestCase):
+    def test_event_note_must_be_concise_and_single_line(self) -> None:
+        self.assertEqual(wait_runtime.concise_event_note("  Recheck deployment  "), "Recheck deployment")
+        for value in ("", "line one\nline two", "x" * 241):
+            with self.subTest(value=value[:20]), self.assertRaises(ArgumentTypeError):
+                wait_runtime.concise_event_note(value)
+
     def test_notification_limits_preserve_defaults_and_overrides(self) -> None:
         for client in sorted(wait_runtime.CLIENTS):
             with self.subTest(client=client):

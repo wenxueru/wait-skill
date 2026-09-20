@@ -49,6 +49,7 @@ Agent 准备等待程序。本地 `waitd` 服务负责运行程序、保存输�
 ```bash
 python src/waitctl.py start -- \
   --label "deployment api" \
+  --event-note "复查部署状态；成功则检查健康，失败则报告原因" \
   --client codex \
   --session "$AGENT_SESSION_ID" \
   -- env PYTHONPATH="$PWD/src" python /tmp/wait_deploy.py
@@ -84,7 +85,7 @@ $wait-goal 发布 API，仅在测试和健康检查均通过后结束。
 - 将凭据放在环境变量或配置文件中，不要放入命令行参数。
 - 程序的标准输出和标准错误各保存最多 64 KiB；输出不得含凭据。唤醒指令只引用日志，不自动拼入原始输出。
 - `$wait` 会在通知前持久化 event ID 和投递状态；有限次数的重试复用同一 ID，因此可以安全去重重复唤醒。
-- 唤醒消息并不授权重新启动或修改被监视的系统。接收消息的智能体必须重新确认当前状态及已有权限。
+- `event_note` 由提交等待的 Agent 简短描述下一步，不得包含凭据或外部输出；它只恢复上下文，不授权重新启动或修改被监视的系统。
 - `$wait-goal` 的依赖图必须保持无环，并且只有根 Agent 可以修改。
 
 ## 相关工作

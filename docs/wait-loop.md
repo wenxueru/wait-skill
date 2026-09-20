@@ -28,6 +28,7 @@ Run a queue check every ten minutes, at most four times and for no longer than o
 ```bash
 python src/waitctl.py loop -- init \
   --task "Inspect the queue and report actionable changes" \
+  --event-note "Read timer log; begin on Ready or stop on Expired" \
   --interval 600 \
   --duration 3600 \
   --max-iterations 4 \
@@ -50,7 +51,7 @@ WATCH_ID=WATCH_ID_FROM_COMPLETE
 
 After each timer registration, set up event delivery using the saved watch ID and the [client adapter](clients.md), then end the turn.
 
-On each timer, the service resumes with `$wait-loop resume {state_file}; event_id={event_id}; log_file={log_file}`, generated from the loop's own state path — nothing to prepare at initialization. When the log reports `event: exited`, `exit_code: 0`, and stdout `Ready`, consume the event before executing the task:
+On each timer, the service resumes with `$wait-loop resume {state_file}; event_id={event_id}; log_file={log_file}; event_note="{event_note}"`. The loop supplies the state path and preserves the short note authored by the agent at initialization. When the log reports `event: exited`, `exit_code: 0`, and stdout `Ready`, consume the event before executing the task:
 
 ```bash
 python src/waitctl.py loop -- begin \

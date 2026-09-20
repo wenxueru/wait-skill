@@ -37,6 +37,7 @@ python src/waitctl.py daemon stop
 ```bash
 python src/waitctl.py start -- \
   --label "deployment api" \
+  --event-note "复查部署状态；成功则检查健康，失败则报告原因" \
   --client codex --session "$AGENT_SESSION_ID" \
   -- env PYTHONPATH="$PWD/src" python /tmp/wait_deploy.py
 ```
@@ -45,7 +46,7 @@ python src/waitctl.py start -- \
 
 服务保存标准输出、标准错误和退出码，只报告 `exited`、`timeout`、`start_failed` 或 `interrupted`，不解析输出。两种输出各保留最多 64 KiB，超出部分继续读取但丢弃。取消或超时会终止程序所在的进程组。每次等待都有有限超时，默认一小时。
 
-恢复时服务总是发一条由提交路径固定生成的指令——`$wait resume {log_file}; event_id={event_id}`，传了 `--goal-state` 或 `--loop-state` 时是对应变体。这条文字从不取自程序输出；读日志、决定怎么恢复仍是 Agent 的事。结果约定见 [wait](wait.zh-CN.md)，投递方式见[客户端说明](clients.zh-CN.md)。
+恢复时服务发送 `$wait resume {log_file}; event_id={event_id}; event_note="{event_note}"`，传了 `--goal-state` 或 `--loop-state` 时使用对应变体。命令结构由服务生成，简短的 `event_note` 由提交 Agent 通过 `--event-note` 提供；两者都不取自程序输出。读日志、复查状态并决定怎么恢复仍是 Agent 的事。
 
 ## Goal 与 loop 命令
 
@@ -57,13 +58,14 @@ python src/waitctl.py goal -- ready --state "$GOAL_STATE"
 
 python src/waitctl.py loop -- init \
   --task "检查队列" --interval 600 --duration 3600 \
+  --event-note "读取计时日志，Ready 则开始下一轮，Expired 则结束" \
   --session "$AGENT_SESSION_ID"
 python src/waitctl.py loop -- show --state "$LOOP_STATE"
 ```
 
 同类命令串行执行，沿用状态引擎的校验、文件锁、事件历史和原子写入，每条命令上限 30 秒。响应包含退出 `code`、解析后的 `output` 和 `error`。持久文件仍是状态依据；也可直接使用 `wait_goal.py` 和 `wait_loop.py` 管理状态。
 
-每轮完成后，服务注册一个阻塞计时程序；计时完成时用 `$wait-loop resume {state_file}; event_id={event_id}; log_file={log_file}` 唤醒，这条消息由 loop 自己的状态路径生成。根 Agent 读取计时结果，再决定是否开始下一轮。
+每轮完成后，服务注册一个阻塞计时程序；计时完成时用 `$wait-loop resume {state_file}; event_id={event_id}; log_file={log_file}; event_note="{event_note}"` 唤醒。状态路径由 loop 提供，note 来自初始化 loop 的 Agent。
 
 ## 重启与恢复
 
