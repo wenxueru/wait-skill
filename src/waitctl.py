@@ -14,6 +14,7 @@ import sys
 import time
 from pathlib import Path
 
+import wait_runtime
 from wait_protocol import (
     PROTOCOL_VERSION,
     RUNTIME_DIR,
@@ -24,6 +25,7 @@ from wait_protocol import (
 
 DAEMON_SCRIPT = Path(__file__).with_name("waitd.py")
 DAEMON_LOG = RUNTIME_DIR / "waitd.log"
+STARTUP_TIMEOUT = 5.0
 
 
 def request(
@@ -108,6 +110,37 @@ def forwarded_args(values: list[str]) -> list[str]:
     return values[1:] if values[:1] == ["--"] else values
 
 
+def validate_start_argv(values: list[str]) -> list[str]:
+    argv = forwarded_args(values)
+    wait_runtime.validate_job_argv(argv)
+    return argv
+
+
+def verify_start(response: dict[str, object], timeout: float = STARTUP_TIMEOUT) -> dict[str, object]:
+    watch_id = str(response["watch_id"])
+    deadline = time.monotonic() + timeout
+    while True:
+        record = request({"operation": "show", "watch_id": watch_id})
+        result = record.get("result")
+        event = result.get("event") if isinstance(result, dict) else None
+        if event in {"start_failed", "watcher_failed", "already_watching"}:
+            raise RuntimeError(f"watcher startup failed: {event}: {result.get('error', '')}".rstrip(": "))
+        query_verified = record.get("query_status") == "verified"
+        active = record.get("state") == "active"
+        lock_ready = record.get("lock_status") == "held"
+        if query_verified and ((active and lock_ready) or not active):
+            return {
+                **response,
+                "watcher": "active" if active else record.get("state"),
+                "query": "verified",
+                "delivery": response.get("notification_channel", {}).get("status"),
+            }
+        if time.monotonic() >= deadline:
+            request({"operation": "cancel", "watch_id": watch_id})
+            raise RuntimeError(f"watcher startup was not verified within {timeout:g} seconds; cancelled {watch_id}")
+        time.sleep(0.05)
+
+
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     commands = result.add_subparsers(dest="command", required=True)
@@ -154,15 +187,19 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 response = stop_daemon()
         else:
+            start_argv = validate_start_argv(args.argv) if args.command == "start" else None
             start_daemon()
             if args.command == "start":
+                assert start_argv is not None
                 response = request(
                     {
                         "operation": "submit",
-                        "argv": forwarded_args(args.argv),
+                        "argv": start_argv,
                         "cwd": os.getcwd(),
                     },
                 )
+                if response.get("ok", False):
+                    response = verify_start(response)
             elif args.command == "list":
                 response = request({"operation": "list"})
             elif args.command == "show":

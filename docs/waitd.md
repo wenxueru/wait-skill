@@ -1,21 +1,18 @@
-# `waitd`: Local wait supervisor
+# `waitd` service
 
 [简体中文](waitd.zh-CN.md)
 
-`waitd` runs waiting programs in one local service and accepts wait, goal, and loop commands from `waitctl` over a Unix socket.
+`waitd` is the local control plane for wait, goal, and loop operations. Agents define read-only waiting programs and decide how to handle results. The service owns process execution, deadlines, locks, durable logs, and wake delivery.
 
 ```text
-Agent ── waitctl ── waitd
-                    ├─ program execution, timeout, cancellation
-                    ├─ result persistence and resume delivery
-                    └─ serialized goal / loop state commands
+agent -> waitctl -> waitd -> waiting program
+                         -> result log
+                         -> client notification
 ```
 
-The agent supplies program logic, decides how to recover, and accepts results. The service manages execution, generates the resume instruction, and records decisions; it does not interpret business output or schedule child agents.
+## Service lifecycle
 
-## Start and inspect
-
-`waitctl start`, `waitctl goal`, and `waitctl loop` start the service on demand.
+`waitctl start`, `waitctl goal`, and `waitctl loop` start the service when needed. Manual controls are:
 
 ```bash
 python src/waitctl.py daemon start
@@ -26,53 +23,103 @@ python src/waitctl.py cancel WATCH_ID
 python src/waitctl.py daemon stop
 ```
 
-The service uses `/tmp/wait-skill-<uid>/waitd.sock`, with a mode-`0600` registry inside a mode-`0700` directory. It retains active watches, timers awaiting loop acknowledgement, and the 256 most recently finished other records.
+The Unix control socket is `/tmp/wait-skill-<uid>/waitd.sock`. Its directory uses mode `0700`; the registry uses `0600`. A protocol version and source fingerprint prevent an old daemon from silently serving new code. The registry retains active watches, loop timers awaiting acknowledgement, and the latest 256 other completed records.
 
-`ping` reports the protocol version and source fingerprint. When the service is outdated, `waitctl` stops it and waits for its lock before starting the new version. `daemon stop` also waits for lock release.
+## Starting a watcher
 
-## Submit a waiting program
+`waitctl start` has two argument boundaries:
 
-Prepare the program as in the [wait example](wait.md):
+```text
+waitctl.py start -- <waitd options> -- <waiting program and its arguments>
+```
+
+The first `--` ends `waitctl` parsing. The second separates watcher options from the program. Legacy status-matching flags such as `--ready` and `--terminal` are not watcher options; put that logic inside the waiting program, normally with `wait_for.poll`.
+
+Complete Codex example:
 
 ```bash
 python src/waitctl.py start -- \
   --label "deployment api" \
-  --event-note "Recheck deployment; health-check success or report failure" \
-  --client codex --session "$AGENT_SESSION_ID" \
+  --event-note "Recheck deployment; verify health on success, report the cause on failure" \
+  --client codex \
+  --session "$CODEX_THREAD_ID" \
+  --remote "unix:///path/to/app-server-control.sock" \
+  --timeout 3600 \
   -- env PYTHONPATH="$PWD/src" python /tmp/wait_deploy.py
 ```
 
-Standalone log and lock paths are automatic; explicit paths override them. Paths are resolved against the submitting directory. Program arguments after the inner `--` are preserved and executed without a shell.
+Before returning success, `waitctl` verifies that:
 
-The service captures stdout, stderr, and the exit code. It reports `exited`, `timeout`, `start_failed`, or `interrupted`, without parsing output. Each stream is limited to 64 KiB; excess output is drained and discarded. Cancellation and timeout stop the program's process group. Every wait has a finite timeout, defaulting to one hour.
+- the daemon accepted the watcher and `show` can retrieve it;
+- the watcher holds its lock while active;
+- the waiting program was spawned successfully;
+- the notification channel has an explicit state;
+- the watcher has a finite deadline.
 
-On resume, the service sends `$wait resume {log_file}; event_id={event_id}; event_note="{event_note}"`, or the goal/loop variant. The service builds the command structure; the submitting agent supplies the short note through `--event-note`. Neither comes from program output. The agent still reads the log, rechecks state, and decides how to recover.
+The successful response exposes these separately:
 
-## Goal and loop commands
-
-```bash
-python src/waitctl.py goal -- init \
-  --objective "Ship after CI passes" --session "$AGENT_SESSION_ID"
-python src/waitctl.py goal -- check --state "$GOAL_STATE"
-python src/waitctl.py goal -- ready --state "$GOAL_STATE"
-
-python src/waitctl.py loop -- init \
-  --task "Inspect the queue" --interval 600 --duration 3600 \
-  --event-note "Read timer log; begin on Ready or stop on Expired" \
-  --session "$AGENT_SESSION_ID"
-python src/waitctl.py loop -- show --state "$LOOP_STATE"
+```json
+{
+  "watcher": "active",
+  "query": "verified",
+  "delivery": "ready",
+  "session": "<thread-id>",
+  "deadline": 1700000000.0
+}
 ```
 
-Each command family is serialized and uses its state engine's validation, locking, event history, and atomic writes. Commands have a 30-second limit. Responses contain exit `code`, parsed `output`, and `error` text. Durable files remain the source of truth; `wait_goal.py` and `wait_loop.py` can also manage state directly.
+For Codex, `ready` means a Unix app-server endpoint completed a WebSocket upgrade; explicit web endpoints are `configured`. For Claude Code, `native_required` means the root still needs to attach a native background `follow` task. A watcher without a session is `disabled` for automatic delivery.
 
-After each completed iteration, the service registers a blocking timer program and resumes with `$wait-loop resume {state_file}; event_id={event_id}; log_file={log_file}; event_note="{event_note}"`. The loop supplies its state path and preserves the note authored at initialization.
+If startup cannot be verified within five seconds, `waitctl` cancels the watcher and exits nonzero. A program that cannot be spawned also exits nonzero. Its diagnostic log and terminal registry record remain available; the lock is released. This preserves failure evidence without leaving an active half-started watcher.
+
+## Program and result contract
+
+The waiting program runs directly, without an implicit shell. Relative coordination paths are resolved from the submitter's directory; program arguments after the second `--` are unchanged. Standalone waits receive generated log and lock paths unless explicit paths are supplied.
+
+The service records one process event:
+
+- `exited` with the program exit code;
+- `timeout` when the watcher deadline expires;
+- `start_failed` when the executable cannot start;
+- `interrupted` when a service restart makes replay unsafe.
+
+Stdout and stderr are each capped at 64 KiB. Cancellation and timeout terminate the program's process group. The service does not interpret business status, so agents must read the log and recheck external state.
+
+The generated wake message is:
+
+```text
+$wait resume {log_file}; event_id={event_id}; event_note="{event_note}"
+```
+
+Goal and loop variants add their state identifiers. `event_note` comes from the submitting agent, never from program output.
+
+## Notification states
+
+Codex notification is preflighted before the program starts. A missing or incompatible Unix endpoint returns `notification_unavailable` with `query_status: not_started`; no watcher is created. At delivery, `codex queue` stdout and stderr use the same 64 KiB bounds. Connection and protocol failures become `notification_unavailable` without retrying; other rejections use the configured bounded retry policy.
+
+Claude Code delivery becomes `native_pending` when the result is durable. The owning conversation receives it through `waitctl follow`, as described in [client delivery](clients.md).
+
+## Goal and loop operations
+
+State commands run through the same service:
+
+```bash
+python src/waitctl.py goal -- init --objective "Release after CI" --session "$SESSION_ID"
+python src/waitctl.py goal -- check --state "$GOAL_STATE"
+python src/waitctl.py loop -- init \
+  --task "Check the queue" --interval 600 --duration 3600 \
+  --event-note "Read the timer event and begin the next check" \
+  --session "$SESSION_ID"
+```
+
+Commands of the same state type are serialized and limited to 30 seconds. Durable state files remain authoritative. Loop timer registration is recorded before execution so restart reconciliation can restore a missing registration without repeating an iteration.
 
 ## Restart and recovery
 
-- A queued program can start after restart. If execution started but no result was saved, report `interrupted` instead of replaying it.
-- Saved results continue delivery with the same event ID and deadlines. An interrupted delivery with an unknown outcome becomes `unconfirmed`; inspect the destination before retrying.
-- The registry records loop paths before state commands run, allowing missing timer registration to be repaired without repeating an iteration. A timer whose execution was interrupted follows the same no-replay rule.
-- If the service dies, watcher locks are released. Goal checks report affected waiting nodes as `orphaned_wait`; the root must inspect and recover them.
-- Keep credentials out of argv, output, and persisted files.
+- A registered program that never started may start after daemon recovery. A program that might already have acted is not replayed; it becomes `interrupted`.
+- A durable result resumes notification with the same event ID and deadline. An interrupted, ambiguous delivery becomes `unconfirmed`.
+- Watcher locks are released on terminal state. Goal checks report affected nodes as `orphaned_wait` for root recovery.
+- Duplicate event IDs and duplicate lock ownership are rejected.
+- Recovery never grants authority to retry external mutations.
 
-When upgrading from status-matching submissions, inspect existing waits, cancel obsolete ones, and resubmit a waiting program. For status queries, write a script using `wait_for.poll(query, evaluate)`; the old `wait_for.py --ready/--terminal` CLI is removed.
+When migrating from the removed status-matching CLI, first inspect and cancel obsolete watches. Replace `--ready` and `--terminal` with a waiting script that calls `wait_for.poll(query, evaluate)`.

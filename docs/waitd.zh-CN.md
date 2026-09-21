@@ -1,21 +1,18 @@
-# `waitd`：本地等待服务
+# `waitd` 本地服务
 
 [English](waitd.md)
 
-`waitd` 集中运行等待程序，通过 Unix socket 接收 `waitctl` 的 wait、goal 和 loop 命令。
+`waitd` 是 wait、goal 和 loop 的本地控制面。Agent 定义只读等待程序并决定如何处理结果；服务负责进程、截止时间、锁、持久日志和唤醒投递。
 
 ```text
-Agent ── waitctl ── waitd
-                    ├─ 运行程序、超时、取消
-                    ├─ 保存结果、投递唤醒消息
-                    └─ 串行执行 goal / loop 状态命令
+Agent -> waitctl -> waitd -> 等待程序
+                         -> 结果日志
+                         -> 客户端通知
 ```
 
-Agent 提供程序逻辑，决定如何恢复并验收结果。服务管理执行、生成唤醒消息、记录决定，不解释业务输出，也不调度子 Agent。
+## 服务生命周期
 
-## 启动与查看
-
-`waitctl start`、`waitctl goal` 和 `waitctl loop` 会按需启动服务。
+`waitctl start`、`waitctl goal` 和 `waitctl loop` 会按需启动服务。手动管理命令如下：
 
 ```bash
 python src/waitctl.py daemon start
@@ -26,53 +23,103 @@ python src/waitctl.py cancel WATCH_ID
 python src/waitctl.py daemon stop
 ```
 
-服务使用 `/tmp/wait-skill-<uid>/waitd.sock`；目录权限为 `0700`，注册表权限为 `0600`。注册表保留活动等待、尚未收到 loop 确认的计时器，以及其他最近完成的 256 条记录。
+Unix 控制 socket 位于 `/tmp/wait-skill-<uid>/waitd.sock`。目录权限为 `0700`，注册表权限为 `0600`。协议版本和源码指纹用于阻止旧服务静默运行新代码。注册表保留活动 watcher、等待确认的 loop 计时器，以及其他最近完成的 256 条记录。
 
-`ping` 返回协议版本和源码指纹。服务过旧时，`waitctl` 停止旧进程并等锁释放，再启动新版；`daemon stop` 也会等待锁释放。
+## 启动 watcher
 
-## 提交等待程序
+`waitctl start` 有两层参数边界：
 
-按 [wait 示例](wait.zh-CN.md)准备程序：
+```text
+waitctl.py start -- <waitd 参数> -- <等待程序及其参数>
+```
+
+第一个 `--` 结束 `waitctl` 参数解析，第二个把 watcher 参数与等待程序分开。`--ready`、`--terminal` 等旧状态匹配参数不属于 watcher；应把判断逻辑写入等待程序，通常使用 `wait_for.poll`。
+
+可直接复制的 Codex 示例：
 
 ```bash
 python src/waitctl.py start -- \
   --label "deployment api" \
-  --event-note "复查部署状态；成功则检查健康，失败则报告原因" \
-  --client codex --session "$AGENT_SESSION_ID" \
+  --event-note "复查部署；成功则检查健康，失败则报告原因" \
+  --client codex \
+  --session "$CODEX_THREAD_ID" \
+  --remote "unix:///path/to/app-server-control.sock" \
+  --timeout 3600 \
   -- env PYTHONPATH="$PWD/src" python /tmp/wait_deploy.py
 ```
 
-独立 wait 自动生成日志和锁文件路径，也可显式指定。相对路径按提交目录解析；内层 `--` 后的程序参数原样保留，不隐式调用 shell。
+返回成功前，`waitctl` 会确认：
 
-服务保存标准输出、标准错误和退出码，只报告 `exited`、`timeout`、`start_failed` 或 `interrupted`，不解析输出。两种输出各保留最多 64 KiB，超出部分继续读取但丢弃。取消或超时会终止程序所在的进程组。每次等待都有有限超时，默认一小时。
+- 服务已接收 watcher，且可以通过 `show` 查询；
+- 活动 watcher 正持有 lock；
+- 等待程序已经成功启动；
+- 通知通道具有明确状态；
+- watcher 具有有限截止时间。
 
-恢复时服务发送 `$wait resume {log_file}; event_id={event_id}; event_note="{event_note}"`，传了 `--goal-state` 或 `--loop-state` 时使用对应变体。命令结构由服务生成，简短的 `event_note` 由提交 Agent 通过 `--event-note` 提供；两者都不取自程序输出。读日志、复查状态并决定怎么恢复仍是 Agent 的事。
+成功响应分别展示这些状态：
 
-## Goal 与 loop 命令
-
-```bash
-python src/waitctl.py goal -- init \
-  --objective "CI 通过后发布" --session "$AGENT_SESSION_ID"
-python src/waitctl.py goal -- check --state "$GOAL_STATE"
-python src/waitctl.py goal -- ready --state "$GOAL_STATE"
-
-python src/waitctl.py loop -- init \
-  --task "检查队列" --interval 600 --duration 3600 \
-  --event-note "读取计时日志，Ready 则开始下一轮，Expired 则结束" \
-  --session "$AGENT_SESSION_ID"
-python src/waitctl.py loop -- show --state "$LOOP_STATE"
+```json
+{
+  "watcher": "active",
+  "query": "verified",
+  "delivery": "ready",
+  "session": "<thread-id>",
+  "deadline": 1700000000.0
+}
 ```
 
-同类命令串行执行，沿用状态引擎的校验、文件锁、事件历史和原子写入，每条命令上限 30 秒。响应包含退出 `code`、解析后的 `output` 和 `error`。持久文件仍是状态依据；也可直接使用 `wait_goal.py` 和 `wait_loop.py` 管理状态。
+Codex 的 `ready` 表示 Unix app-server 端点已完成 WebSocket 升级；显式 WebSocket 端点显示为 `configured`。Claude Code 的 `native_required` 表示 Root 仍需挂接原生后台 `follow` 任务。不绑定会话时自动投递为 `disabled`。
 
-每轮完成后，服务注册一个阻塞计时程序；计时完成时用 `$wait-loop resume {state_file}; event_id={event_id}; log_file={log_file}; event_note="{event_note}"` 唤醒。状态路径由 loop 提供，note 来自初始化 loop 的 Agent。
+如果五秒内无法验证启动，`waitctl` 会取消 watcher 并以非零码退出。程序无法启动时同样返回非零。诊断日志和终态注册记录会保留，lock 会释放；这样既保留失败证据，也不会留下仍处于活动状态的半启动 watcher。
+
+## 程序与结果契约
+
+等待程序直接执行，不隐式调用 shell。协调路径相对提交目录解析；第二个 `--` 后的程序参数保持原样。独立 wait 默认生成日志和锁路径，也可以显式指定。
+
+服务记录以下进程事件之一：
+
+- `exited`：程序退出，并记录退出码；
+- `timeout`：超过 watcher 截止时间；
+- `start_failed`：程序无法启动；
+- `interrupted`：服务重启后无法安全重放。
+
+stdout 和 stderr 各保留最多 64 KiB。取消或超时会终止程序进程组。服务不解释业务状态，Agent 必须读取日志并重新检查外部状态。
+
+服务生成的唤醒消息为：
+
+```text
+$wait resume {log_file}; event_id={event_id}; event_note="{event_note}"
+```
+
+Goal 和 loop 变体还会携带各自的状态标识。`event_note` 来自提交等待的 Agent，不从程序输出生成。
+
+## 通知状态
+
+Codex 会在程序启动前预检通知端点。Unix 端点缺失或不兼容时返回 `notification_unavailable` 和 `query_status: not_started`，且不创建 watcher。投递时，`codex queue` 的 stdout 和 stderr 同样各限制为 64 KiB。连接或协议故障直接变为 `notification_unavailable`，不重试；其他拒绝按配置的有界策略重试。
+
+Claude Code 在结果持久化后进入 `native_pending`，所属对话按[客户端投递](clients.zh-CN.md)中的方法通过 `waitctl follow` 接收事件。
+
+## Goal 与 loop
+
+状态命令通过同一个服务执行：
+
+```bash
+python src/waitctl.py goal -- init --objective "CI 通过后发布" --session "$SESSION_ID"
+python src/waitctl.py goal -- check --state "$GOAL_STATE"
+python src/waitctl.py loop -- init \
+  --task "检查队列" --interval 600 --duration 3600 \
+  --event-note "读取计时事件并开始下一轮检查" \
+  --session "$SESSION_ID"
+```
+
+同类状态命令串行执行，每条最长 30 秒；持久状态文件始终是事实来源。服务在执行 loop 计时器前记录注册意图，因此重启恢复可以补齐遗漏的注册，而不会重复迭代。
 
 ## 重启与恢复
 
-- 尚未执行的程序可以在重启后启动；已经开始但未保存结果的程序报告 `interrupted`，不擅自重跑。
-- 已保存的结果继续投递，沿用原 event ID 和期限。投递中断且结果不确定时标记 `unconfirmed`，重试前先检查目标会话。
-- 服务在执行状态命令前记录 loop 路径，可以补齐遗漏的计时器注册，不重复迭代。已经启动却中断的计时器同样不自动重跑。
-- 服务退出后 watcher 锁释放，goal 检查会把受影响的等待节点报告为 `orphaned_wait`，由根 Agent 检查和恢复。
-- 参数、输出和持久文件都不应包含凭据。
+- 已注册但尚未启动的程序可以在服务恢复后启动；可能已经执行过的程序不会重放，而是标记为 `interrupted`。
+- 已持久化结果沿用原 event ID 和截止时间继续投递；中断且结果不确定的投递标记为 `unconfirmed`。
+- watcher 进入终态后释放 lock。Goal 检查会把受影响节点报告为 `orphaned_wait`，由 Root 恢复。
+- 重复 event ID 和重复 lock 所有权都会被拒绝。
+- 恢复过程不会自动扩大重试外部修改的权限。
 
-从旧状态匹配接口升级时，先检查现有等待，取消不再需要的记录，再重新提交等待程序。保留原状态查询时，编写调用 `wait_for.poll(query, evaluate)` 的脚本；旧 `wait_for.py --ready/--terminal` 命令行接口已移除。
+从已移除的状态匹配 CLI 迁移时，先检查并取消废弃 watcher，再把 `--ready` 和 `--terminal` 改写成调用 `wait_for.poll(query, evaluate)` 的等待脚本。

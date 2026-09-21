@@ -109,8 +109,46 @@ class WaitDaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(restored.watchers[submitted["watch_id"]]["result"]["event"], "interrupted")
 
     def test_service_rejects_query_flags(self) -> None:
-        with self.assertRaises(SystemExit):
+        with self.assertRaisesRegex(ValueError, "legacy status-matching CLI was removed"):
             self.daemon.submit(["--label", "x", "--ready", "Ready", "--", "true"], str(self.root))
+
+    def test_waitctl_rejects_legacy_query_flags_before_starting_service(self) -> None:
+        with self.assertRaisesRegex(ValueError, "legacy status-matching CLI was removed"):
+            waitctl.validate_start_argv(["--", "--label", "x", "--ready", "Ready", "--", "true"])
+
+    def test_waitctl_requires_a_program_boundary(self) -> None:
+        with self.assertRaisesRegex(ValueError, "must be followed by '--'"):
+            waitctl.validate_start_argv(["--", "--label", "x", "true"])
+
+    def test_waitctl_verifies_active_startup(self) -> None:
+        response = {
+            "ok": True,
+            "watch_id": "watch-1",
+            "notification_channel": {"status": "ready"},
+        }
+        record = {
+            "ok": True,
+            "state": "active",
+            "query_status": "verified",
+            "lock_status": "held",
+        }
+        with patch.object(waitctl, "request", return_value=record):
+            verified = waitctl.verify_start(response)
+        self.assertEqual(verified["watcher"], "active")
+        self.assertEqual(verified["query"], "verified")
+        self.assertEqual(verified["delivery"], "ready")
+
+    def test_waitctl_rejects_program_start_failure(self) -> None:
+        record = {
+            "ok": True,
+            "state": "failed",
+            "result": {"event": "start_failed", "error": "missing executable"},
+        }
+        with (
+            patch.object(waitctl, "request", return_value=record),
+            self.assertRaisesRegex(RuntimeError, "missing executable"),
+        ):
+            waitctl.verify_start({"ok": True, "watch_id": "watch-1"})
 
     async def test_minimal_wait_generates_paths_and_resume_message(self) -> None:
         argv = ["--label", "minimal", "--client", "claude",
@@ -241,6 +279,9 @@ class WaitDaemonTest(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name)
         self.daemon = waitd.WaitDaemon(self.root / "registry.json")
+        preflight = patch.object(waitd.wait_runtime, "preflight_codex_remote", return_value="unix:///test.sock")
+        preflight.start()
+        self.addCleanup(preflight.stop)
 
     def watcher_argv(self, status: str) -> list[str]:
         return [
@@ -305,12 +346,92 @@ class WaitDaemonTest(unittest.IsolatedAsyncioTestCase):
     async def test_delivery_launch_failure_is_persisted(self) -> None:
         args, _ = waitd.wait_runtime.parse_job_args(self.watcher_argv("Ready"))
         args.thread = "session"
+        args.remote = "unix:///test.sock"
         result = {"event_id": "delivery", "event": "exited", "status": "Ready"}
         record = {"watch_id": "delivery", "cwd": str(self.root), "state": "active"}
         with patch.object(asyncio, "create_subprocess_exec", side_effect=FileNotFoundError):
             code = await self.daemon._deliver(args, result, record, asyncio.Event())
         self.assertEqual(code, 70)
         self.assertEqual(json.loads(args.log_file.read_text())["notification"], "failed")
+
+    async def test_codex_preflight_failure_does_not_start_query(self) -> None:
+        log = self.root / "unavailable.json"
+        with patch.object(
+            waitd.wait_runtime,
+            "preflight_codex_remote",
+            side_effect=waitd.wait_runtime.NotificationUnavailable("notification_unavailable: missing endpoint"),
+        ):
+            with self.assertRaisesRegex(ValueError, "notification_unavailable"):
+                self.daemon.submit([
+                    "--label", "demo", "--client", "codex", "--session", "thread-1",
+                    "--log-file", str(log), "--", sys.executable, "-c", "raise SystemExit(99)",
+                ], str(self.root))
+        result = json.loads(log.read_text())
+        self.assertEqual(result["query_status"], "not_started")
+        self.assertEqual(result["notification"], "notification_unavailable")
+        self.assertFalse(self.daemon.tasks)
+
+    async def test_codex_delivery_preserves_stderr_and_stops_retrying(self) -> None:
+        args, _ = waitd.wait_runtime.parse_job_args(self.watcher_argv("Ready"))
+        args.thread = "session"
+        args.remote = "unix:///missing.sock"
+        result = {"event_id": "delivery", "event": "exited", "status": "Ready"}
+        record = {"watch_id": "delivery", "cwd": str(self.root), "state": "active"}
+        command = [sys.executable, "-c", "import sys; print('failed to connect to remote app server', file=sys.stderr); raise SystemExit(1)"]
+        with patch.object(waitd.wait_runtime, "notification_command", return_value=command):
+            code = await self.daemon._deliver(args, result, record, asyncio.Event())
+        self.assertEqual(code, waitd.wait_runtime.EXIT_NOTIFY_FAILED)
+        self.assertEqual(result["notification"], "notification_unavailable")
+        self.assertEqual(result["notification_attempts"], 1)
+        self.assertIn("failed to connect", result["notification_stderr"])
+
+    async def test_codex_submit_reports_preflighted_channel(self) -> None:
+        submitted = self.daemon.submit(
+            ["--client", "codex", "--session", "session-1", *self.watcher_argv("Waiting")],
+            str(self.root),
+        )
+        self.assertEqual(submitted["query_status"], "pending")
+        self.assertEqual(
+            submitted["notification_channel"],
+            {"status": "ready", "remote": "unix:///test.sock"},
+        )
+        args, _ = waitd.wait_runtime.parse_job_args(self.daemon.watchers[submitted["watch_id"]]["argv"])
+        self.assertIsNone(args.remote)  # Delivery resolves the endpoint again.
+        self.daemon.cancel(submitted["watch_id"])
+        await self.daemon.tasks[submitted["watch_id"]]
+
+    async def test_codex_queue_rejection_exhausts_retries(self) -> None:
+        args, _ = waitd.wait_runtime.parse_job_args(self.watcher_argv("Ready"))
+        args.thread = "session"
+        args.remote = "unix:///test.sock"
+        args.max_notification_attempts = 2
+        args.notification_retry_interval = 0.01
+        result = {"event_id": "delivery", "event": "exited", "status": "Ready"}
+        record = {"watch_id": "delivery", "cwd": str(self.root), "state": "active"}
+        command = [sys.executable, "-c", "import sys; print('thread not found', file=sys.stderr); raise SystemExit(1)"]
+        with patch.object(waitd.wait_runtime, "notification_command", return_value=command):
+            code = await self.daemon._deliver(args, result, record, asyncio.Event())
+        self.assertEqual(code, waitd.wait_runtime.EXIT_NOTIFY_FAILED)
+        self.assertEqual(result["notification"], "failed")
+        self.assertEqual(result["notification_attempts"], 2)
+        self.assertIn("thread not found", result["notification_stderr"])
+
+    async def test_codex_endpoint_loss_during_wait_is_not_retried(self) -> None:
+        args, _ = waitd.wait_runtime.parse_job_args(self.watcher_argv("Ready"))
+        args.thread = "session"
+        args.remote = "unix:///gone.sock"
+        result = {"event_id": "delivery", "event": "exited", "status": "Ready"}
+        record = {"watch_id": "delivery", "cwd": str(self.root), "state": "active"}
+        command = [sys.executable, "-c", "import sys; print('queue rejected', file=sys.stderr); raise SystemExit(1)"]
+        unavailable = waitd.wait_runtime.NotificationUnavailable("notification_unavailable: endpoint gone")
+        with (
+            patch.object(waitd.wait_runtime, "notification_command", return_value=command),
+            patch.object(waitd.wait_runtime, "preflight_codex_remote", side_effect=unavailable),
+        ):
+            code = await self.daemon._deliver(args, result, record, asyncio.Event())
+        self.assertEqual(code, waitd.wait_runtime.EXIT_NOTIFY_FAILED)
+        self.assertEqual(result["notification"], "notification_unavailable")
+        self.assertEqual(result["notification_attempts"], 1)
 
     def test_resume_instruction_matches_mode(self) -> None:
         for mode in ("wait", "wait-loop", "wait-goal"):

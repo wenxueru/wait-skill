@@ -111,6 +111,8 @@ def validate(state: object) -> dict[str, object]:
             raise LoopError("event_note must be a concise single-line string") from exc
     if state["client"] not in CLIENTS:
         raise LoopError("invalid client")
+    if state.get("remote") is not None and not isinstance(state["remote"], str):
+        raise LoopError("remote must be a string or null")
     if not isinstance(state["session"], str) or not state["session"].strip():
         raise LoopError("session must be a non-empty string")
     if state["status"] not in STATUSES:
@@ -292,6 +294,7 @@ def command_init(args: argparse.Namespace) -> None:
         "event_note": args.event_note,
         "client": args.client,
         "session": args.session,
+        "remote": getattr(args, "remote", None),
         "interval_seconds": args.interval,
         "deadline_at": now + args.duration,
         "max_iterations": args.max_iterations,
@@ -357,6 +360,8 @@ def timer_argv(state: LoopState, path: Path) -> list[str]:
     ]
     if event_note := state.get("event_note"):
         argv.extend(["--event-note", str(event_note)])
+    if remote := state.get("remote"):
+        argv.extend(["--remote", str(remote)])
     return [
         *argv,
         "--",
@@ -422,6 +427,10 @@ def parser() -> argparse.ArgumentParser:
     init.add_argument("--max-iterations", type=positive_int)
     init.add_argument("--client", choices=sorted(CLIENTS), default="codex")
     init.add_argument("--session", "--thread", dest="session", required=True)
+    init.add_argument(
+        "--remote",
+        help="Codex app-server endpoint; defaults to the app-server control socket when omitted",
+    )
     init.add_argument("--goal-state", type=Path)
     init.add_argument("--goal-node")
     init.set_defaults(handler=command_init)

@@ -50,7 +50,7 @@ def evaluate(data):
 print(json.dumps(poll(query, evaluate, interval=5, timeout=3500)))
 ```
 
-在仓库目录提交程序，`PYTHONPATH` 指向本 Skill 的 `scripts` 目录：
+在仓库目录提交程序，`PYTHONPATH` 指向本 Skill 的 `src` 目录：
 
 ```bash
 python src/waitctl.py start -- \
@@ -60,7 +60,7 @@ python src/waitctl.py start -- \
   -- env PYTHONPATH="$PWD/src" python /tmp/wait_deploy.py
 ```
 
-保留返回的 `watch_id`、`log_file` 和 `lock_file`。文件路径和事件 ID 自动生成；完成后服务用 `$wait resume {log_file}; event_id={event_id}; event_note="{event_note}"` 唤醒。`event_note` 是 Agent 提交等待时写下的简短下一步，不来自程序输出；真正发生了什么仍要读 `log_file` 并复查当前状态。需要自定义路径时再传 `--log-file`、`--lock-file`。
+成功响应会分别报告活动 watcher、已验证的程序启动和通知通道状态。保存其中的 `watch_id`、`log_file`、`lock_file` 和截止时间；路径与 event ID 默认自动生成，仅在必要时覆盖。完成后服务发送 `$wait resume {log_file}; event_id={event_id}; event_note="{event_note}"`。Note 由提交等待的 Agent 编写；实际结果仍以日志和重新查询的外部状态为准。
 
 ## 等待程序负责什么
 
@@ -108,7 +108,7 @@ def query():
 ## 执行协议
 
 1. Agent 准备只读等待程序和有限超时，复用当前任务的 Todo。
-2. 服务取得锁后运行程序。同一工作目录、客户端／会话／端点、标签和程序命令使用同一自动锁；重复等待返回 `already_watching`。确认锁和服务记录后再结束轮次。
+2. 服务先预检投递通道，再取得锁并启动程序。`waitctl` 只有在 watcher 可查询、活动锁已持有且程序已启动后才返回成功。同一工作目录、客户端／会话／端点、标签和程序命令使用同一自动锁；重复等待返回 `already_watching`。
 3. 程序退出、超时或启动失败后，服务先保存结果再投递。投递状态不代表 Agent 已处理结果。
 4. Agent 恢复后核对日志和事件 ID，复查外部状态，再更新 Todo 和执行下一步。
 

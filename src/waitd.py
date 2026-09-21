@@ -16,6 +16,7 @@ import time
 import uuid
 from contextlib import suppress
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any, TextIO
 
 import wait_loop
@@ -148,7 +149,12 @@ async def wait_for_cancel(cancel_event: asyncio.Event, timeout: float) -> bool:
     return True
 
 
-async def run_program(command: list[str], timeout: float, cwd: str) -> dict[str, object]:
+async def run_program(
+    command: list[str],
+    timeout: float,
+    cwd: str,
+    on_started: Callable[[int], None] | None = None,
+) -> dict[str, object]:
     """Run once; preserve bounded output without interpreting it."""
     result: dict[str, object] = {"event": "exited", "exit_code": None}
     output = {"stdout": bytearray(), "stderr": bytearray()}
@@ -163,6 +169,8 @@ async def run_program(command: list[str], timeout: float, cwd: str) -> dict[str,
         )
     except OSError as exc:
         return {**result, "event": "start_failed", "error": str(exc), "stdout": "", "stderr": ""}
+    if on_started:
+        on_started(process.pid)
 
     async def drain(name: str, stream: asyncio.StreamReader) -> None:
         while chunk := await stream.read(8192):
@@ -304,6 +312,7 @@ class WaitDaemon:
     def submit(self, argv: list[str], cwd: str) -> dict[str, object]:
         directory = working_directory(cwd)
         resolved_argv = absolute_wait_argv(argv, directory)
+        wait_runtime.validate_job_argv(resolved_argv)
         options = wait_runtime.job_parser().parse_args(resolved_argv)
         if not options.goal_state and not options.loop_state:
             identity = json.dumps(
@@ -324,6 +333,30 @@ class WaitDaemon:
             raise ValueError(f"watch ID already exists: {watch_id}")
         if args.event_id is None:
             resolved_argv = ["--event-id", watch_id, *resolved_argv]
+        notification_channel: dict[str, object] = {"status": "disabled"}
+        if args.client == "codex" and args.thread:
+            try:
+                remote = wait_runtime.preflight_codex_remote(args.remote)
+            except wait_runtime.NotificationUnavailable as exc:
+                wait_runtime.persist_result(
+                    args.log_file,
+                    {
+                        "event": "notification_unavailable",
+                        "query_status": "not_started",
+                        "notification": "notification_unavailable",
+                        "notification_stderr": str(exc),
+                        "label": args.label,
+                        "event_id": watch_id,
+                        "log_file": str(args.log_file),
+                    },
+                )
+                raise ValueError(str(exc)) from exc
+            notification_channel = {
+                "status": "ready" if remote.startswith("unix://") else "configured",
+                "remote": remote,
+            }
+        elif args.client == "claude" and args.thread:
+            notification_channel = {"status": "native_required"}
         now = time.time()
         deadline_at = now + args.timeout
         self.watchers[watch_id] = {
@@ -335,6 +368,9 @@ class WaitDaemon:
             "submitted_at": now,
             "deadline_at": deadline_at,
             "updated_at": now,
+            "query_status": "pending",
+            "notification_channel": notification_channel,
+            "session": args.thread,
         }
         if args.goal_state:
             self.watchers[watch_id]["activation_deadline_at"] = min(
@@ -348,6 +384,10 @@ class WaitDaemon:
             "state": "active",
             "log_file": str(args.log_file) if args.log_file else None,
             "lock_file": str(args.lock_file) if args.lock_file else None,
+            "query_status": "pending",
+            "notification_channel": notification_channel,
+            "session": args.thread,
+            "deadline": deadline_at,
         }
 
     def cancel(self, watch_id: str) -> dict[str, object]:
@@ -473,6 +513,7 @@ class WaitDaemon:
             except BlockingIOError:
                 lock.close()
                 return {"event": "already_watching", "status": None}, wait_runtime.EXIT_ALREADY_WATCHING
+            self._update_record(record, lock_status="held")
         try:
             phase = str(record.get("phase") or ("activating" if args.goal_state else "queued"))
             if phase == "activating":
@@ -593,6 +634,7 @@ class WaitDaemon:
         finally:
             if lock is not None:
                 lock.close()
+                self._update_record(record, lock_status="released")
 
     async def _activate_goal_wait(
         self,
@@ -638,7 +680,10 @@ class WaitDaemon:
         remaining = float(record["deadline_at"]) - time.time()
         if remaining <= 0:
             return {"event": "timeout", "exit_code": None, "stdout": "", "stderr": ""}
-        task = asyncio.create_task(run_program(command, remaining, record["cwd"]))
+        def started(pid: int) -> None:
+            self._update_record(record, phase="querying", query_status="verified", query_pid=pid)
+
+        task = asyncio.create_task(run_program(command, remaining, record["cwd"], started))
         try:
             while not task.done():
                 if cancel_event.is_set() or not wait_runtime.watch_is_current(args):
@@ -670,44 +715,44 @@ class WaitDaemon:
             result.update(notification="attempting", notification_attempts=attempt)
             self._persist_result(args, record, result)
             message = wait_runtime.resume_instruction(args)
-            command = wait_runtime.notification_command(
-                args.client,
-                args.thread,
-                message,
-                args.remote,
-                args.resume_args,
-            )
             try:
-                process = await asyncio.create_subprocess_exec(
-                    *command,
-                    cwd=record["cwd"],
-                    stdout=asyncio.subprocess.DEVNULL,
-                    stderr=asyncio.subprocess.DEVNULL,
-                    start_new_session=True,
+                remote = args.remote
+                if args.client == "codex":
+                    remote = wait_runtime.resolve_codex_remote(args.remote)
+                command = wait_runtime.notification_command(
+                    args.client,
+                    args.thread,
+                    message,
+                    remote,
+                    args.resume_args,
                 )
-            except OSError:
-                result["notification"] = "failed"
+            except wait_runtime.NotificationUnavailable as exc:
+                result.update(notification="notification_unavailable", notification_stderr=str(exc))
                 self._persist_result(args, record, result)
                 return wait_runtime.EXIT_NOTIFY_FAILED
-            try:
-                returncode = await asyncio.wait_for(process.wait(), timeout=timeout)
-            except (asyncio.CancelledError, asyncio.TimeoutError) as exc:
-                with suppress(ProcessLookupError):
-                    os.killpg(process.pid, signal.SIGTERM)
-                with suppress(asyncio.TimeoutError):
-                    await asyncio.wait_for(process.wait(), timeout=0.2)
-                if process.returncode is None:
-                    with suppress(ProcessLookupError):
-                        os.killpg(process.pid, signal.SIGKILL)
-                    await process.wait()
-                if isinstance(exc, asyncio.CancelledError):
-                    raise
+            outcome = await run_program(command, timeout, record["cwd"])
+            if outcome["event"] == "start_failed":
+                result.update(notification="failed", notification_stderr=outcome["error"])
+                self._persist_result(args, record, result)
+                return wait_runtime.EXIT_NOTIFY_FAILED
+            result.update(
+                notification_exit_code=outcome["exit_code"],
+                notification_stdout=outcome["stdout"],
+                notification_stderr=outcome["stderr"],
+            )
+            if outcome.get("output_truncated"):
+                result["notification_output_truncated"] = True
+            if outcome["event"] == "timeout":
                 failed = "unconfirmed"
+            elif outcome["exit_code"] == 0:
+                result.update(notification=wait_runtime.notification_success(args.client), delivered_at=time.time())
+                self._persist_result(args, record, result)
+                return None
+            elif args.client == "codex" and await self._codex_channel_lost(args, outcome["stderr"]):
+                result["notification"] = "notification_unavailable"
+                self._persist_result(args, record, result)
+                return wait_runtime.EXIT_NOTIFY_FAILED
             else:
-                if returncode == 0:
-                    result.update(notification=wait_runtime.notification_success(args.client), delivered_at=time.time())
-                    self._persist_result(args, record, result)
-                    return None
                 failed = "failed"
             exhausted = attempt == max_attempts
             result["notification"] = failed if exhausted else f"{failed}_retrying"
@@ -717,6 +762,16 @@ class WaitDaemon:
             delay = min(args.notification_retry_interval * 2 ** min(attempt - 1, 10), 300.0)
             await wait_for_cancel(cancel_event, delay)
         return wait_runtime.EXIT_NOTIFY_FAILED
+
+    async def _codex_channel_lost(self, args: argparse.Namespace, stderr: str) -> bool:
+        """A dead endpoint must not be retried; re-check it when stderr is inconclusive."""
+        if wait_runtime.notification_failure_is_unavailable(stderr):
+            return True
+        try:
+            await asyncio.to_thread(wait_runtime.preflight_codex_remote, args.remote)
+        except wait_runtime.NotificationUnavailable:
+            return True
+        return False
 
     async def _await_goal_wake(
         self,

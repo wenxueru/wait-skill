@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import fcntl
 import json
 import math
 import os
+import secrets
+import socket
 import tempfile
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager, suppress
@@ -17,6 +20,10 @@ class StateError(ValueError):
     """Raised when a durable goal or loop state file is missing, invalid, or unwritable."""
 
 
+class NotificationUnavailable(ValueError):
+    """Raised when a notification endpoint cannot accept wake messages."""
+
+
 EXIT_NOTIFY_FAILED = 70
 EXIT_ALREADY_WATCHING = 75
 EXIT_ACTIVATION_CANCELLED = 76
@@ -24,6 +31,7 @@ EXIT_TIMEOUT = 124
 CLIENTS = {"claude", "codewiz", "codex", "copilot", "cursor"}
 DEFAULT_WAIT_TIMEOUT = 3600.0
 MAX_EVENT_NOTE_LENGTH = 240
+LEGACY_QUERY_OPTIONS = {"--ready", "--terminal", "--interval", "--query-timeout"}
 
 
 def positive_number(value: str) -> float:
@@ -75,14 +83,31 @@ def validate_distinct_paths(
         seen[canonical] = name
 
 
+def validate_job_argv(argv: Sequence[str]) -> None:
+    try:
+        boundary = argv.index("--")
+    except ValueError as exc:
+        raise ValueError("watcher options must be followed by '--' and a waiting program") from exc
+    misplaced = sorted({item.split("=", 1)[0] for item in argv[:boundary]} & LEGACY_QUERY_OPTIONS)
+    if misplaced:
+        raise ValueError(
+            f"{', '.join(misplaced)} are not watcher options; the legacy status-matching CLI was removed. "
+            "Put status logic in the waiting program after '--'."
+        )
+    if boundary == len(argv) - 1:
+        raise ValueError("a waiting program is required after '--'")
+
+
 def notification_command(
     client: str,
     session: str,
     message: str,
-    remote: str,
+    remote: str | None,
     resume_args: Sequence[str] = (),
 ) -> list[str]:
     if client == "codex":
+        if not remote:
+            raise NotificationUnavailable("notification_unavailable: no Codex app-server endpoint; pass --remote")
         return ["codex", "queue", "--remote", remote, "--thread", session, *resume_args, "--message", message]
     if client == "codewiz":
         return ["codewiz", "run", "--session", session, *resume_args, message]
@@ -97,6 +122,80 @@ def notification_command(
 
 def notification_success(client: str) -> str:
     return "queued" if client == "codex" else "completed"
+
+
+def codex_control_socket() -> Path:
+    """Default Codex app-server control socket, honoring CODEX_HOME."""
+    root = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")).expanduser()
+    return root / "app-server-control" / "app-server-control.sock"
+
+
+def resolve_codex_remote(remote: str | None) -> str:
+    """Normalize a Codex --remote value; empty and bare unix:// mean the control socket."""
+    if not remote or remote == "unix://":
+        return f"unix://{codex_control_socket()}"
+    if remote.startswith("unix://"):
+        path = Path(remote.removeprefix("unix://")).expanduser()
+        if not path.is_absolute():
+            raise NotificationUnavailable(
+                f"notification_unavailable: unix socket path must be absolute: {remote}"
+            )
+        return f"unix://{path}"
+    if remote.startswith(("ws://", "wss://")):
+        return remote
+    raise NotificationUnavailable(f"notification_unavailable: unsupported Codex --remote: {remote}")
+
+
+def preflight_codex_remote(remote: str | None, timeout: float = 1.0) -> str:
+    """Return a delivery-ready endpoint or raise NotificationUnavailable.
+
+    Unix endpoints must complete a WebSocket upgrade handshake, which tells the
+    app-server control socket apart from unrelated sockets such as
+    ~/.codex/ipc/ipc.sock. Explicit ws:// and wss:// endpoints are returned as
+    configured without a probe.
+    """
+    endpoint = resolve_codex_remote(remote)
+    if not endpoint.startswith("unix://"):
+        return endpoint
+    path = Path(endpoint.removeprefix("unix://"))
+    if not path.exists():
+        raise NotificationUnavailable(
+            f"notification_unavailable: Codex app-server socket not found: {path}; "
+            "pass --remote or enable the app-server control socket"
+        )
+    request = (
+        "GET / HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+        f"Sec-WebSocket-Key: {base64.b64encode(secrets.token_bytes(16)).decode()}\r\n"
+        "Sec-WebSocket-Version: 13\r\n\r\n"
+    ).encode()
+    try:
+        with socket.socket(socket.AF_UNIX) as connection:
+            connection.settimeout(timeout)
+            connection.connect(os.fspath(path))
+            connection.sendall(request)
+            response = connection.recv(4096)
+    except OSError as exc:
+        raise NotificationUnavailable(f"notification_unavailable: cannot reach {path}: {exc}") from exc
+    status = response.split(b"\r\n", 1)[0]
+    if b" 101 " not in status:
+        detail = status.decode("utf-8", errors="replace").strip() or "no HTTP response"
+        raise NotificationUnavailable(
+            f"notification_unavailable: {path} is not a Codex app-server endpoint ({detail})"
+        )
+    return endpoint
+
+
+CONNECTION_FAILURE_MARKERS = (
+    "failed to connect",
+    "connection refused",
+    "no such file or directory",
+    "handshake",
+)
+
+
+def notification_failure_is_unavailable(stderr: str) -> bool:
+    """Whether codex queue stderr describes an unreachable endpoint, not a queue rejection."""
+    return any(marker in stderr.casefold() for marker in CONNECTION_FAILURE_MARKERS)
 
 
 def notification_limits(args: argparse.Namespace) -> tuple[int, float]:
@@ -223,7 +322,10 @@ def add_runtime_arguments(result: argparse.ArgumentParser) -> None:
         dest="thread",
         help="Existing agent session ID to resume; --thread is a compatibility alias",
     )
-    result.add_argument("--remote", default="unix://", help="Codex app-server endpoint")
+    result.add_argument(
+        "--remote",
+        help="Codex app-server endpoint; defaults to the app-server control socket when omitted",
+    )
     result.add_argument(
         "--resume-arg",
         dest="resume_args",
@@ -304,6 +406,7 @@ def job_parser() -> argparse.ArgumentParser:
 
 
 def parse_job_args(argv: Sequence[str]) -> tuple[argparse.Namespace, list[str]]:
+    validate_job_argv(argv)
     command_parser = job_parser()
     args = command_parser.parse_args(argv)
     command = args.command[1:] if args.command[:1] == ["--"] else args.command

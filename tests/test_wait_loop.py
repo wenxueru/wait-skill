@@ -122,6 +122,32 @@ class WaitLoopTest(unittest.TestCase):
         self.assertEqual(completed["last_event_id"], scheduled["watch_id"])
         self.assertEqual(completed["events"][-1]["operation"], "expire")
 
+    def test_remote_is_persisted_and_propagated_to_timers(self) -> None:
+        with patch.object(wait_loop.time, "time", return_value=100.0):
+            self.invoke(
+                wait_loop.command_init,
+                state=self.state,
+                task="check the queue",
+                event_note="Begin the next queue check",
+                client="codex",
+                session="session-1",
+                remote="ws://127.0.0.1:8000",
+                interval=60.0,
+                duration=3600.0,
+                max_iterations=None,
+            )
+            scheduled = self.invoke(wait_loop.command_complete, state=self.state, summary="first")
+        self.assertEqual(json.loads(self.state.read_text())["remote"], "ws://127.0.0.1:8000")
+        argv = wait_loop.timer_argv(wait_loop.LoopState(scheduled), self.state)
+        self.assertEqual(argv[argv.index("--remote") + 1], "ws://127.0.0.1:8000")
+
+    def test_remote_must_be_a_string_or_null(self) -> None:
+        self.init()
+        state = wait_loop.LoopStore(self.state).load().data
+        state["remote"] = 5
+        with self.assertRaises(wait_loop.LoopError):
+            wait_loop.LoopState(state)
+
     def test_default_state_is_unique_and_project_scoped(self) -> None:
         project = Path(self.directory.name) / "demo"
         nested = project / "src"

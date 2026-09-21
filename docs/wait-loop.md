@@ -33,7 +33,8 @@ python src/waitctl.py loop -- init \
   --duration 3600 \
   --max-iterations 4 \
   --client codex \
-  --session "$AGENT_SESSION_ID"
+  --session "$AGENT_SESSION_ID" \
+  --remote "unix:///path/to/app-server-control.sock"
 
 # Set this from init output.
 LOOP_STATE=/tmp/.wait-loop/PROJECT/LOOP.json
@@ -71,12 +72,13 @@ python src/waitctl.py loop -- expire \
 
 Without `--state`, `init` creates `/tmp/.wait-loop/<project-name>-<path-hash>/loop-<id>.json` and returns its canonical path. The closest Git root identifies the project. On macOS, the returned path may use `/private/tmp`.
 
-Use `waitctl loop` to manage the loop through `waitd`; `wait_loop.py` also works as a standalone state engine. The saved file survives service restarts and records the task, client/session, schedule, phase, watch ID, run summaries, and event history. Two limits control when the loop stops:
+Use `waitctl loop` to manage the loop through `waitd`; `wait_loop.py` also works as a standalone state engine. The saved file survives service restarts and records the task, client/session, remote endpoint, schedule, phase, watch ID, run summaries, and event history. Delivery and stop conditions are fixed at `init`:
 
 - `--duration` limits the complete loop and defaults to 24 hours.
 - `--max-iterations` optionally limits successful iterations.
+- `--remote` is optional and Codex-only. An explicit value is passed to every timer watcher; omission uses the default app-server control socket.
 
-The service registers each timer after `complete`, with a deadline of `next_run_at` plus 60 seconds. The program is `wait_loop.py due --wait`; it blocks until the saved timer is due or expired. It records the loop path before running state commands, so restart can repair a missing timer without repeating an iteration. Timer logs are stored beside the loop state, named with its watch ID.
+After `complete`, the service registers `wait_loop.py due --wait` with a deadline of `next_run_at` plus 60 seconds. Loop state saves its path and remote endpoint before registration, so daemon recovery can restore a missing timer without repeating the iteration. Every timer receives the same notification preflight as a standalone wait. Its log is stored beside loop state and named with the watch ID.
 
 ## Recovery and cancellation
 

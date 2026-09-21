@@ -50,7 +50,7 @@ def evaluate(data):
 print(json.dumps(poll(query, evaluate, interval=5, timeout=3500)))
 ```
 
-Submit from the repository directory, pointing `PYTHONPATH` to this skill's `scripts` directory:
+Submit from the repository directory, pointing `PYTHONPATH` to this skill's `src` directory:
 
 ```bash
 python src/waitctl.py start -- \
@@ -60,7 +60,7 @@ python src/waitctl.py start -- \
   -- env PYTHONPATH="$PWD/src" python /tmp/wait_deploy.py
 ```
 
-Keep the returned `watch_id`, `log_file`, and `lock_file`. Paths and event IDs are automatic; on completion the service resumes with `$wait resume {log_file}; event_id={event_id}; event_note="{event_note}"`. The submitting agent writes the short follow-up note; it never comes from program output. Read `log_file` and recheck current state to learn what actually happened. Override `--log-file` or `--lock-file` only when needed.
+Success means the response reports an active watcher, a verified program start, and the notification-channel state. Keep its `watch_id`, `log_file`, `lock_file`, and deadline. Paths and event IDs are automatic; override them only when needed. On completion the service sends `$wait resume {log_file}; event_id={event_id}; event_note="{event_note}"`. The submitting agent writes the note; actual results still come from the log and a fresh external-state check.
 
 ## Waiting-program contract
 
@@ -108,7 +108,7 @@ A `show` record with `state: completed` means execution and delivery finished, n
 ## Execution protocol
 
 1. The agent prepares a read-only waiting program and finite timeout, reusing the task's Todo item.
-2. The service acquires a lock before execution. Automatic locks identify the same working directory, client/session/endpoint, label, and program command. A duplicate returns `already_watching`. Confirm the held lock and service record, then end the turn.
+2. The service preflights delivery, acquires the lock, and starts the program. `waitctl` returns success only after it can query the watcher and verify the active lock and spawned program. Automatic locks identify the same working directory, client/session/endpoint, label, and program command; a duplicate returns `already_watching`.
 3. On exit, timeout, or startup failure, save the result before delivery. Delivery status does not establish that the agent handled it.
 4. On resume, the agent validates the log and event ID, re-checks external state, then updates Todo and continues.
 
