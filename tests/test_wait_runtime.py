@@ -1,20 +1,43 @@
 from __future__ import annotations
 
+import errno
 import json
 import os
 import sys
 import tempfile
 import unittest
-from argparse import ArgumentTypeError
-from argparse import Namespace
+from argparse import ArgumentTypeError, Namespace
 from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
-import wait_runtime  # noqa: E402
+import wait_runtime
 
 
 class RuntimeTest(unittest.TestCase):
+    def test_atomic_write_retries_transient_enoent(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "state.json"
+            missing = FileNotFoundError(errno.ENOENT, "temporary path vanished")
+            real_replace = os.replace
+            attempts = 0
+
+            def replace(source: str, destination: Path) -> None:
+                nonlocal attempts
+                attempts += 1
+                if attempts == 1:
+                    raise missing
+                real_replace(source, destination)
+
+            with (
+                mock.patch.object(wait_runtime.os, "replace", side_effect=replace),
+                mock.patch.object(wait_runtime.time, "sleep") as sleep,
+            ):
+                wait_runtime.atomic_write_text(path, "ready\n")
+            self.assertEqual(path.read_text(), "ready\n")
+            self.assertEqual(attempts, 2)
+            sleep.assert_called_once()
+
     def test_event_note_must_be_concise_and_single_line(self) -> None:
         self.assertEqual(wait_runtime.concise_event_note("  Recheck deployment  "), "Recheck deployment")
         for value in ("", "line one\nline two", "x" * 241):
@@ -58,27 +81,29 @@ class RuntimeTest(unittest.TestCase):
         )
 
     def test_codex_remote_resolution(self) -> None:
-        with tempfile.TemporaryDirectory() as home:
-            with mock.patch.dict(os.environ, {"CODEX_HOME": home}):
-                default = f"unix://{Path(home) / 'app-server-control' / 'app-server-control.sock'}"
-                self.assertEqual(wait_runtime.resolve_codex_remote(None), default)
-                self.assertEqual(wait_runtime.resolve_codex_remote("unix://"), default)
+        with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {"CODEX_HOME": home}):
+            default = f"unix://{Path(home) / 'app-server-control' / 'app-server-control.sock'}"
+            self.assertEqual(wait_runtime.resolve_codex_remote(None), default)
+            self.assertEqual(wait_runtime.resolve_codex_remote("unix://"), default)
         self.assertEqual(
             wait_runtime.resolve_codex_remote("unix:///tmp/codex-control.sock"),
             "unix:///tmp/codex-control.sock",
         )
         self.assertEqual(wait_runtime.resolve_codex_remote("wss://localhost:8000"), "wss://localhost:8000")
         for remote in ("http://localhost:8000", "unix://relative.sock"):
-            with self.subTest(remote=remote), self.assertRaisesRegex(
-                wait_runtime.NotificationUnavailable, "notification_unavailable"
+            with (
+                self.subTest(remote=remote),
+                self.assertRaisesRegex(wait_runtime.NotificationUnavailable, "notification_unavailable"),
             ):
                 wait_runtime.resolve_codex_remote(remote)
 
     def test_codex_preflight_requires_a_reachable_control_socket(self) -> None:
-        with tempfile.TemporaryDirectory() as home:
-            with mock.patch.dict(os.environ, {"CODEX_HOME": home}):
-                with self.assertRaisesRegex(wait_runtime.NotificationUnavailable, "socket not found"):
-                    wait_runtime.preflight_codex_remote(None)
+        with (
+            tempfile.TemporaryDirectory() as home,
+            mock.patch.dict(os.environ, {"CODEX_HOME": home}),
+            self.assertRaisesRegex(wait_runtime.NotificationUnavailable, "socket not found"),
+        ):
+            wait_runtime.preflight_codex_remote(None)
 
     def test_codex_preflight_requires_a_websocket_endpoint(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -98,9 +123,7 @@ class RuntimeTest(unittest.TestCase):
                         if available:
                             self.assertEqual(wait_runtime.preflight_codex_remote(endpoint), endpoint)
                         else:
-                            with self.assertRaisesRegex(
-                                wait_runtime.NotificationUnavailable, "notification_unavailable"
-                            ):
+                            with self.assertRaisesRegex(wait_runtime.NotificationUnavailable, "notification_unavailable"):
                                 wait_runtime.preflight_codex_remote(endpoint)
 
     def test_notification_connection_failures_are_unavailable(self) -> None:

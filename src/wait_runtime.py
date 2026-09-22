@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import errno
 import fcntl
 import json
 import math
@@ -11,7 +12,8 @@ import os
 import secrets
 import socket
 import tempfile
-from collections.abc import Iterator, Sequence
+import time
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager, suppress
 from pathlib import Path
 
@@ -31,6 +33,7 @@ EXIT_TIMEOUT = 124
 CLIENTS = {"claude", "codewiz", "codex", "copilot", "cursor"}
 DEFAULT_WAIT_TIMEOUT = 3600.0
 MAX_EVENT_NOTE_LENGTH = 240
+ATOMIC_WRITE_ATTEMPTS = 3
 LEGACY_QUERY_OPTIONS = {"--ready", "--terminal", "--interval", "--query-timeout"}
 
 
@@ -271,8 +274,20 @@ def watch_is_current(args: argparse.Namespace) -> bool:
     return True
 
 
-def atomic_write_text(path: Path, payload: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+def _retry_enoent(operation: Callable[[], None]) -> None:
+    for attempt in range(ATOMIC_WRITE_ATTEMPTS):
+        try:
+            operation()
+            return
+        except OSError as exc:
+            if exc.errno != errno.ENOENT or attempt + 1 == ATOMIC_WRITE_ATTEMPTS:
+                raise
+            time.sleep(0.01 * (attempt + 1))
+
+
+def _atomic_write_text(path: Path, payload: str, directory_mode: int = 0o777) -> None:
+    path.parent.mkdir(mode=directory_mode, parents=True, exist_ok=True)
+    temporary: str | None
     descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as output:
@@ -280,14 +295,20 @@ def atomic_write_text(path: Path, payload: str) -> None:
             output.flush()
             os.fsync(output.fileno())
         os.replace(temporary, path)
+        temporary = None
         directory = os.open(path.parent, os.O_RDONLY)
         try:
             os.fsync(directory)
         finally:
             os.close(directory)
     finally:
-        with suppress(FileNotFoundError):
-            os.unlink(temporary)
+        if temporary:
+            with suppress(FileNotFoundError):
+                os.unlink(temporary)
+
+
+def atomic_write_text(path: Path, payload: str) -> None:
+    _retry_enoent(lambda: _atomic_write_text(path, payload))
 
 
 @contextmanager
@@ -301,10 +322,13 @@ def file_lock(path: Path) -> Iterator[None]:
 
 
 def atomic_write_json(path: Path, value: object) -> None:
-    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     payload = json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-    atomic_write_text(path, payload)
-    path.chmod(0o600)
+
+    def write() -> None:
+        _atomic_write_text(path, payload, directory_mode=0o700)
+        path.chmod(0o600)
+
+    _retry_enoent(write)
 
 
 def persist_result(path: Path | None, result: dict[str, object]) -> None:

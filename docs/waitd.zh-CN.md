@@ -74,16 +74,11 @@ Codex 的 `ready` 表示 Unix app-server 端点已完成 WebSocket 升级；显�
 
 ## 程序与结果契约
 
-等待程序直接执行，不隐式调用 shell。协调路径相对提交目录解析；第二个 `--` 后的程序参数保持原样。独立 wait 默认生成日志和锁路径，也可以显式指定。
+等待程序直接执行，不隐式调用 shell。协调路径相对提交目录解析，第二个 `--` 后的程序参数保持原样。独立 wait 默认生成日志和锁路径，也可以显式指定。取消或超时会终止整个程序进程组。
 
-服务记录以下进程事件之一：
+正常执行产生 `exited`、`timeout` 或 `start_failed`；服务重启后无法确认已运行程序的结果时产生 `interrupted`。这些结果保留退出码以及最多各 64 KiB 的 stdout、stderr。服务不解释业务状态，Agent 必须读取日志并重新检查外部状态。
 
-- `exited`：程序退出，并记录退出码；
-- `timeout`：超过 watcher 截止时间；
-- `start_failed`：程序无法启动；
-- `interrupted`：服务重启后无法安全重放。
-
-stdout 和 stderr 各保留最多 64 KiB。取消或超时会终止程序进程组。服务不解释业务状态，Agent 必须读取日志并重新检查外部状态。
+持久化或收尾异常产生 `watcher_failed`，其中包含异常类型、repr 和 traceback。服务先保存程序结果，再更新 registry；如果后一步失败，正式结果日志不会被覆盖，registry 会在 `durable_result` 中携带已保存结果。
 
 服务生成的唤醒消息为：
 
@@ -116,10 +111,10 @@ python src/waitctl.py loop -- init \
 
 ## 重启与恢复
 
-- 已注册但尚未启动的程序可以在服务恢复后启动；可能已经执行过的程序不会重放，而是标记为 `interrupted`。
-- 已持久化结果沿用原 event ID 和截止时间继续投递；中断且结果不确定的投递标记为 `unconfirmed`。
-- watcher 进入终态后释放 lock。Goal 检查会把受影响节点报告为 `orphaned_wait`，由 Root 恢复。
-- 重复 event ID 和重复 lock 所有权都会被拒绝。
-- 恢复过程不会自动扩大重试外部修改的权限。
+Registry、状态和结果日志都通过唯一临时文件、fsync 和原子替换写入；瞬时 `ENOENT` 会做三次有界尝试。服务重启时为每个活动 watcher 记录 `recovered_at` 和 `recovery_action`，然后按已持久化的阶段恢复。
+
+尚未启动的程序可以继续启动。处于 `running` 或 `querying` 的 watcher 会先查找 event ID 匹配的结果日志：找到后沿用原 event ID 和截止时间继续收尾与投递，找不到才标记为 `interrupted`，不会重放可能已经产生外部影响的程序。投递曾开始但无法确认结果时标记为 `unconfirmed`。
+
+watcher 进入终态后释放 lock；重复 event ID 和重复 lock 所有权都会被拒绝。Goal 检查把受影响节点报告为 `orphaned_wait`，交由 Root 恢复。恢复流程只重建等待和投递状态，不授予重试外部修改的权限。
 
 从已移除的状态匹配 CLI 迁移时，先检查并取消废弃 watcher，再把 `--ready` 和 `--terminal` 改写成调用 `wait_for.poll(query, evaluate)` 的等待脚本。

@@ -74,16 +74,11 @@ If startup cannot be verified within five seconds, `waitctl` cancels the watcher
 
 ## Program and result contract
 
-The waiting program runs directly, without an implicit shell. Relative coordination paths are resolved from the submitter's directory; program arguments after the second `--` are unchanged. Standalone waits receive generated log and lock paths unless explicit paths are supplied.
+The waiting program runs directly, without an implicit shell. Relative coordination paths are resolved from the submitter's directory, and program arguments after the second `--` remain unchanged. Standalone waits receive generated log and lock paths unless explicit paths are supplied. Cancellation and timeout terminate the whole process group.
 
-The service records one process event:
+Normal execution produces `exited`, `timeout`, or `start_failed`; a service restart produces `interrupted` when the result of an already-started program cannot be confirmed. These results retain the exit code and up to 64 KiB each of stdout and stderr. The service does not interpret business status, so agents must read the log and recheck external state.
 
-- `exited` with the program exit code;
-- `timeout` when the watcher deadline expires;
-- `start_failed` when the executable cannot start;
-- `interrupted` when a service restart makes replay unsafe.
-
-Stdout and stderr are each capped at 64 KiB. Cancellation and timeout terminate the program's process group. The service does not interpret business status, so agents must read the log and recheck external state.
+Persistence or finalization errors produce `watcher_failed` with the exception type, representation, and traceback. The service writes the program result before updating the registry. If that update fails, the formal result log remains intact and the registry includes the saved result as `durable_result`.
 
 The generated wake message is:
 
@@ -116,10 +111,10 @@ Commands of the same state type are serialized and limited to 30 seconds. Durabl
 
 ## Restart and recovery
 
-- A registered program that never started may start after daemon recovery. A program that might already have acted is not replayed; it becomes `interrupted`.
-- A durable result resumes notification with the same event ID and deadline. An interrupted, ambiguous delivery becomes `unconfirmed`.
-- Watcher locks are released on terminal state. Goal checks report affected nodes as `orphaned_wait` for root recovery.
-- Duplicate event IDs and duplicate lock ownership are rejected.
-- Recovery never grants authority to retry external mutations.
+Registry, state, and result logs use unique temporary files, fsync, and atomic replacement. A transient `ENOENT` receives up to three bounded attempts. On restart, the service records `recovered_at` and `recovery_action` for each active watcher, then restores it from its durable phase.
+
+A program that never started may still start. A watcher in `running` or `querying` first looks for a result log with the same event ID. When found, finalization and delivery continue with the original event ID and deadline. Without a durable result, the watcher becomes `interrupted`; a program that may already have caused external effects is never replayed. Delivery that started but cannot be confirmed becomes `unconfirmed`.
+
+Terminal watchers release their locks, and duplicate event IDs or lock ownership are rejected. Goal checks report affected nodes as `orphaned_wait` for root recovery. Recovery reconstructs waiting and delivery state only; it never grants authority to retry external mutations.
 
 When migrating from the removed status-matching CLI, first inspect and cancel obsolete watches. Replace `--ready` and `--terminal` with a waiting script that calls `wait_for.poll(query, evaluate)`.

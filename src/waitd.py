@@ -13,10 +13,11 @@ import os
 import signal
 import sys
 import time
+import traceback
 import uuid
+from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
-from collections.abc import Callable
 from typing import Any, TextIO
 
 import wait_loop
@@ -34,6 +35,17 @@ MAX_PROGRAM_OUTPUT_BYTES = 64 * 1024
 PATH_OPTIONS = {"--goal-state", "--loop-state", "--startup-file", "--log-file", "--lock-file"}
 STATE_SCRIPTS = {name: Path(__file__).with_name(f"wait_{name}.py") for name in STATE_COMMANDS}
 STATE_COMMAND_TIMEOUT = 30.0
+
+
+def watcher_failure(exc: BaseException, **context: object) -> dict[str, object]:
+    return {
+        "event": "watcher_failed",
+        **context,
+        "error": str(exc),
+        "exception_type": type(exc).__name__,
+        "exception_repr": repr(exc),
+        "traceback": traceback.format_exc(),
+    }
 
 
 class StateCommandRunner:
@@ -218,7 +230,7 @@ class WaitDaemon:
             return {}
         watchers = value.get("watchers") if isinstance(value, dict) else None
         if not isinstance(watchers, dict):
-            raise ValueError(f"invalid waitd registry: {self.registry_path}")
+            raise TypeError(f"invalid waitd registry: {self.registry_path}")
         self.loops = value.get("loops", {})
         if not isinstance(self.loops, dict) or any(not isinstance(v, str) for v in self.loops.values()):
             raise ValueError("invalid loop registry")
@@ -258,13 +270,45 @@ class WaitDaemon:
         result: dict[str, object],
         **changes: object,
     ) -> None:
-        self._update_record(record, result=result, **changes)
         wait_runtime.persist_result(args.log_file, result)
+        self._update_record(record, result=result, **changes)
+
+    def _record_watcher_failure(
+        self,
+        args: argparse.Namespace,
+        exc: BaseException,
+        **context: object,
+    ) -> dict[str, object]:
+        result = watcher_failure(
+            exc,
+            label=args.label,
+            event_id=args.event_id,
+            log_file=str(args.log_file),
+            **context,
+        )
+        durable = self._recover_result(args)
+        if durable and durable.get("event") != "watcher_failed":
+            result["durable_result"] = durable
+        else:
+            with suppress(OSError):
+                wait_runtime.persist_result(args.log_file, result)
+        return result
 
     async def restore(self) -> None:
+        recovered = False
+        now = time.time()
         for watch_id, record in self.watchers.items():
             if record.get("state") == "active":
+                phase = record.get("phase")
+                record.update(
+                    recovered_at=now,
+                    recovery_action="reconcile_result" if phase in {"running", "querying"} else "resume",
+                    updated_at=now,
+                )
                 self._schedule(watch_id)
+                recovered = True
+        if recovered:
+            self.save()
         await self.reconcile_loops()
 
     async def reconcile_loops(self) -> list[dict[str, object]]:
@@ -481,13 +525,15 @@ class WaitDaemon:
 
     async def _run_watch(self, watch_id: str) -> None:
         record = self.watchers[watch_id]
+        args: argparse.Namespace | None = None
         try:
             args, command = wait_runtime.parse_job_args(record["argv"])
             result, code = await self._watch(args, command, record, self.cancel_events[watch_id])
         except asyncio.CancelledError:
             return
         except (KeyError, OSError, RuntimeError, TypeError, ValueError, SystemExit) as exc:
-            result, code = {"event": "watcher_failed", "error": str(exc)}, 1
+            result = self._record_watcher_failure(args, exc) if args else watcher_failure(exc, event_id=watch_id)
+            code = 1
         if record.get("state") != "active":
             return
         self._update_record(
@@ -548,13 +594,13 @@ class WaitDaemon:
                     self._update_record(record, phase="running")
                     result = await self._execute_program(args, command, record, cancel_event)
                 else:
-                    # An arbitrary program may already have acted before the service stopped.
-                    result = {
+                    result = self._recover_result(args) or {
                         "event": "interrupted",
                         "exit_code": None,
                         "stdout": "",
                         "stderr": "",
                         "error": "service restarted before completion was saved; not replayed",
+                        "recovery_action": record.get("recovery_action", "mark_interrupted"),
                     }
                 if result["event"] == "exited":
                     code = 0
@@ -620,21 +666,21 @@ class WaitDaemon:
             wait_runtime.persist_result(args.log_file, result)
             return result, code
         except (OSError, RuntimeError, TypeError, ValueError, KeyError) as exc:
-            result = {
-                "event": "watcher_failed",
-                "status": None,
-                "label": args.label,
-                "event_id": args.event_id,
-                "error": str(exc),
-            }
-            # A write error must not hide the original failure in the registry.
-            with suppress(OSError):
-                wait_runtime.persist_result(args.log_file, result)
-            return result, 1
+            return self._record_watcher_failure(args, exc, status=None), 1
         finally:
             if lock is not None:
                 lock.close()
                 self._update_record(record, lock_status="released")
+
+    @staticmethod
+    def _recover_result(args: argparse.Namespace) -> dict[str, object] | None:
+        try:
+            result = json.loads(args.log_file.read_text(encoding="utf-8"))
+        except (AttributeError, FileNotFoundError, OSError, json.JSONDecodeError):
+            return None
+        if not isinstance(result, dict) or result.get("event_id") != args.event_id:
+            return None
+        return result
 
     async def _activate_goal_wait(
         self,
@@ -680,6 +726,7 @@ class WaitDaemon:
         remaining = float(record["deadline_at"]) - time.time()
         if remaining <= 0:
             return {"event": "timeout", "exit_code": None, "stdout": "", "stderr": ""}
+
         def started(pid: int) -> None:
             self._update_record(record, phase="querying", query_status="verified", query_pid=pid)
 
