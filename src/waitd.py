@@ -37,6 +37,10 @@ STATE_SCRIPTS = {name: Path(__file__).with_name(f"wait_{name}.py") for name in S
 STATE_COMMAND_TIMEOUT = 30.0
 
 
+class PreDeliveryPersistenceError(OSError):
+    """The notification has not been sent yet."""
+
+
 def watcher_failure(exc: BaseException, **context: object) -> dict[str, object]:
     return {
         "event": "watcher_failed",
@@ -270,8 +274,14 @@ class WaitDaemon:
         result: dict[str, object],
         **changes: object,
     ) -> None:
-        wait_runtime.persist_result(args.log_file, result)
+        self._write_result_log(args, result)
         self._update_record(record, result=result, **changes)
+
+    @staticmethod
+    def _write_result_log(args: argparse.Namespace, result: dict[str, object]) -> None:
+        if result.get("event") == "watcher_failed" and "durable_result" in result:
+            return
+        wait_runtime.persist_result(args.log_file, result)
 
     def _record_watcher_failure(
         self,
@@ -536,12 +546,102 @@ class WaitDaemon:
             code = 1
         if record.get("state") != "active":
             return
+        if result.get("event") == "watcher_failed":
+            if args and args.thread and await self._notify_watcher_failure(
+                args, result, record, self.cancel_events[watch_id]
+            ):
+                return
+            record["phase"] = "finalizing"
         self._update_record(
             record,
             state="completed" if code == 0 else "failed",
             code=code,
             result=result,
         )
+
+    async def _notify_watcher_failure(
+        self,
+        args: argparse.Namespace,
+        result: dict[str, object],
+        record: dict[str, Any],
+        cancel_event: asyncio.Event,
+    ) -> bool:
+        if result.get("notification") not in {None, "pending"}:
+            return False
+        durable = result.get("durable_result")
+        if isinstance(durable, dict) and durable.get("notification_attempts", 0):
+            status = durable.get("notification")
+            if status == "attempting" or str(status).endswith("_retrying"):
+                status = "unconfirmed"
+            result.update(notification=status, notification_attempts=durable["notification_attempts"])
+            return False
+        try:
+            self._update_record(record, phase="notifying", code=1)
+        except OSError as exc:
+            await self._notify_without_persistence(args, result, record, exc)
+            return True
+        try:
+            result.update(notification="pending", notification_attempts=0)
+            await self._deliver(args, result, record, cancel_event)
+        except (OSError, RuntimeError, TypeError, ValueError, KeyError) as exc:
+            if isinstance(exc, PreDeliveryPersistenceError):
+                await self._notify_without_persistence(args, result, record, exc)
+                return True
+            if result.get("notification") in {"queued", "completed", "native_pending"}:
+                result["notification_finalize_error"] = repr(exc)
+            else:
+                result.update(notification="failed", notification_stderr=repr(exc))
+            with suppress(OSError):
+                self._persist_result(args, record, result, code=1)
+        return False
+
+    async def _notify_without_persistence(
+        self,
+        args: argparse.Namespace,
+        result: dict[str, object],
+        record: dict[str, Any],
+        error: OSError,
+    ) -> None:
+        persistence_error = error.__cause__ or error
+        result.update(notification="unconfirmed", persistence_error=repr(persistence_error))
+        if args.client != "claude":
+            result["notification_attempts"] = 1
+            message = wait_runtime.resume_instruction(args) + "; event=watcher_failed; persistence=unavailable"
+            try:
+                command = self._notification_command(args, message)
+                _, timeout = wait_runtime.notification_limits(args)
+                outcome = await run_program(command, timeout, record["cwd"])
+                result.update(
+                    notification_exit_code=outcome.get("exit_code"),
+                    notification_stdout=outcome.get("stdout"),
+                    notification_stderr=outcome.get("stderr") or outcome.get("error"),
+                )
+                if outcome["event"] == "exited" and outcome["exit_code"] == 0:
+                    result["notification"] = wait_runtime.notification_success(args.client)
+                elif outcome["event"] != "timeout":
+                    result["notification"] = "failed"
+            except (OSError, RuntimeError, TypeError, ValueError, KeyError) as exc:
+                result.update(notification="failed", notification_stderr=repr(exc))
+        record.update(state="failed", result=result, code=1, phase="finalizing", updated_at=time.time())
+        print(
+            json.dumps(
+                {
+                    "event": "watcher_failed",
+                    "watch_id": record["watch_id"],
+                    "persistence_error": repr(persistence_error),
+                    "notification": result["notification"],
+                }
+            ),
+            file=sys.stderr,
+            flush=True,
+        )
+        self.changed.set()
+        self.changed = asyncio.Event()
+
+    @staticmethod
+    def _notification_command(args: argparse.Namespace, message: str) -> list[str]:
+        remote = wait_runtime.resolve_codex_remote(args.remote) if args.client == "codex" else args.remote
+        return wait_runtime.notification_command(args.client, args.thread, message, remote, args.resume_args)
 
     async def _watch(
         self,
@@ -663,7 +763,7 @@ class WaitDaemon:
                     else:
                         result["notification"], code = "unconfirmed", wait_runtime.EXIT_NOTIFY_FAILED
                 self._persist_result(args, record, result, phase="finalizing", code=code)
-            wait_runtime.persist_result(args.log_file, result)
+            self._write_result_log(args, result)
             return result, code
         except (OSError, RuntimeError, TypeError, ValueError, KeyError) as exc:
             return self._record_watcher_failure(args, exc, status=None), 1
@@ -751,7 +851,10 @@ class WaitDaemon:
     ) -> int | None:
         if args.client == "claude":
             result.update(notification="native_pending", notification_attempts=0, available_at=time.time())
-            self._persist_result(args, record, result)
+            try:
+                self._persist_result(args, record, result)
+            except OSError as exc:
+                raise PreDeliveryPersistenceError(*exc.args) from exc
             return None
         max_attempts, timeout = wait_runtime.notification_limits(args)
         previous_attempts = int(result.get("notification_attempts", 0))
@@ -760,19 +863,17 @@ class WaitDaemon:
                 result["notification"] = "cancelled"
                 return wait_runtime.EXIT_ACTIVATION_CANCELLED
             result.update(notification="attempting", notification_attempts=attempt)
-            self._persist_result(args, record, result)
-            message = wait_runtime.resume_instruction(args)
             try:
-                remote = args.remote
-                if args.client == "codex":
-                    remote = wait_runtime.resolve_codex_remote(args.remote)
-                command = wait_runtime.notification_command(
-                    args.client,
-                    args.thread,
-                    message,
-                    remote,
-                    args.resume_args,
-                )
+                self._persist_result(args, record, result)
+            except OSError as exc:
+                if attempt == 1:
+                    raise PreDeliveryPersistenceError(*exc.args) from exc
+                raise
+            message = wait_runtime.resume_instruction(args)
+            if result.get("event") == "watcher_failed":
+                message += "; event=watcher_failed"
+            try:
+                command = self._notification_command(args, message)
             except wait_runtime.NotificationUnavailable as exc:
                 result.update(notification="notification_unavailable", notification_stderr=str(exc))
                 self._persist_result(args, record, result)

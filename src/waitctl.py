@@ -83,7 +83,10 @@ def start_daemon() -> dict[str, object]:
     else:
         if service_matches(response):
             return response
-        stop_daemon()
+        raise RuntimeError(
+            "waitd version mismatch; the running service was left untouched. "
+            "Use the matching wait-skill installation, or stop the daemon explicitly after its active watchers finish"
+        )
     RUNTIME_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
     RUNTIME_DIR.chmod(0o700)
     with DAEMON_LOG.open("ab") as log:

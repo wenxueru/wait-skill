@@ -23,7 +23,7 @@ python src/waitctl.py cancel WATCH_ID
 python src/waitctl.py daemon stop
 ```
 
-The Unix control socket is `/tmp/wait-skill-<uid>/waitd.sock`. Its directory uses mode `0700`; the registry uses `0600`. A protocol version and source fingerprint prevent an old daemon from silently serving new code. The registry retains active watches, loop timers awaiting acknowledgement, and the latest 256 other completed records.
+The Unix control socket is `/tmp/wait-skill-<uid>/waitd.sock`. Its directory uses mode `0700`; the registry uses `0600`. On a protocol or source-fingerprint mismatch, the client errors without stopping the running service or its active watches. Stop the daemon explicitly to switch versions only after those watches finish. The registry retains active watches, loop timers awaiting acknowledgement, and the latest 256 other completed records.
 
 ## Starting a watcher
 
@@ -78,7 +78,7 @@ The waiting program runs directly, without an implicit shell. Relative coordinat
 
 Normal execution produces `exited`, `timeout`, or `start_failed`; a service restart produces `interrupted` when the result of an already-started program cannot be confirmed. These results retain the exit code and up to 64 KiB each of stdout and stderr. The service does not interpret business status, so agents must read the log and recheck external state.
 
-Persistence or finalization errors produce `watcher_failed` with the exception type, representation, and traceback. The service writes the program result before updating the registry. If that update fails, the formal result log remains intact and the registry includes the saved result as `durable_result`.
+Persistence or finalization errors produce `watcher_failed` with the exception type, representation, and traceback. The program result is written before the registry is updated. A later watcher failure does not overwrite that log; its failure result includes the saved program result as `durable_result` when available.
 
 The generated wake message is:
 
@@ -86,13 +86,15 @@ The generated wake message is:
 $wait resume {log_file}; event_id={event_id}; event_note="{event_note}"
 ```
 
-Goal and loop variants add their state identifiers. `event_note` comes from the submitting agent, never from program output.
+Goal and loop variants add their state identifiers. A watcher failure adds `event=watcher_failed`. `event_note` comes from the submitting agent, never from program output. On resume, inspect the watcher record and any available result log; either may be stale if persistence failed.
 
 ## Notification states
 
 Codex notification is preflighted before the program starts. A missing or incompatible Unix endpoint returns `notification_unavailable` with `query_status: not_started`; no watcher is created. At delivery, `codex queue` stdout and stderr use the same 64 KiB bounds. Connection and protocol failures become `notification_unavailable` without retrying; other rejections use the configured bounded retry policy.
 
 Claude Code delivery becomes `native_pending` when the result is durable. The owning conversation receives it through `waitctl follow`, as described in [client delivery](clients.md).
+
+Watcher failures use the same delivery channel. If persistence fails before delivery, the daemon records the error in its service log and makes one best-effort wake with `persistence=unavailable` (or wakes a connected Claude `follow`). That wake and its in-memory state are not durable; a restart can repeat it. When durable evidence shows a prior delivery may have succeeded, the daemon does not send it again.
 
 ## Goal and loop operations
 

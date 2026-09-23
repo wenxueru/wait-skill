@@ -23,7 +23,7 @@ python src/waitctl.py cancel WATCH_ID
 python src/waitctl.py daemon stop
 ```
 
-Unix 控制 socket 位于 `/tmp/wait-skill-<uid>/waitd.sock`。目录权限为 `0700`，注册表权限为 `0600`。协议版本和源码指纹用于阻止旧服务静默运行新代码。注册表保留活动 watcher、等待确认的 loop 计时器，以及其他最近完成的 256 条记录。
+Unix 控制 socket 位于 `/tmp/wait-skill-<uid>/waitd.sock`。目录权限为 `0700`，注册表权限为 `0600`。协议版本或源码指纹不匹配时，客户端报错并保留正在运行的服务；不会为了运行新代码而自动停掉活动 watcher。确认这些 watcher 已结束后，才显式执行 `daemon stop` 并启动新版本。注册表保留活动 watcher、等待确认的 loop 计时器，以及其他最近完成的 256 条记录。
 
 ## 启动 watcher
 
@@ -78,7 +78,7 @@ Codex 的 `ready` 表示 Unix app-server 端点已完成 WebSocket 升级；显�
 
 正常执行产生 `exited`、`timeout` 或 `start_failed`；服务重启后无法确认已运行程序的结果时产生 `interrupted`。这些结果保留退出码以及最多各 64 KiB 的 stdout、stderr。服务不解释业务状态，Agent 必须读取日志并重新检查外部状态。
 
-持久化或收尾异常产生 `watcher_failed`，其中包含异常类型、repr 和 traceback。服务先保存程序结果，再更新 registry；如果后一步失败，正式结果日志不会被覆盖，registry 会在 `durable_result` 中携带已保存结果。
+持久化或收尾异常产生 `watcher_failed`，其中包含异常类型、repr 和 traceback。程序结果先于 registry 更新写入；后续 watcher 故障不会覆盖该日志，故障结果在可用时通过 `durable_result` 保留已保存的程序结果。
 
 服务生成的唤醒消息为：
 
@@ -86,13 +86,15 @@ Codex 的 `ready` 表示 Unix app-server 端点已完成 WebSocket 升级；显�
 $wait resume {log_file}; event_id={event_id}; event_note="{event_note}"
 ```
 
-Goal 和 loop 变体还会携带各自的状态标识。`event_note` 来自提交等待的 Agent，不从程序输出生成。
+Goal 和 loop 变体还会携带各自的状态标识；watcher 故障追加 `event=watcher_failed`。`event_note` 来自提交等待的 Agent，不从程序输出生成。恢复时检查 watcher 记录和现有结果日志；持久化失败可能使其中任一方过期。
 
 ## 通知状态
 
 Codex 会在程序启动前预检通知端点。Unix 端点缺失或不兼容时返回 `notification_unavailable` 和 `query_status: not_started`，且不创建 watcher。投递时，`codex queue` 的 stdout 和 stderr 同样各限制为 64 KiB。连接或协议故障直接变为 `notification_unavailable`，不重试；其他拒绝按配置的有界策略重试。
 
 Claude Code 在结果持久化后进入 `native_pending`，所属对话按[客户端投递](clients.zh-CN.md)中的方法通过 `waitctl follow` 接收事件。
+
+watcher 故障沿用同一投递通道。若投递前持久化失败，服务把错误写入服务日志，并尝试一次带 `persistence=unavailable` 的降级唤醒；Claude 的已连接 `follow` 则直接被唤醒。该通知和内存状态并不持久，重启后可能重复。若持久记录表明先前的投递可能已送达，则不再投递。
 
 ## Goal 与 loop
 

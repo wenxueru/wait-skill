@@ -43,11 +43,9 @@ $wait resume {log_file}; event_id={event_id}; event_note="{event_note}"
 
 On receipt:
 
-1. Match the event ID to the saved watch and reject duplicates or stale events.
-2. Read the log and inspect the process event, exit code, stdout, and stderr.
-3. Recheck the external state; process completion is not business success.
-4. Follow the saved `event_note` only within the original task and authorization.
-5. Mark progress complete only after acceptance.
+1. Match the event ID to the saved watch; reject duplicates or stale events. Inspect `waitctl.py show EVENT_ID` and any available result log for the event, exit code, and output. On `watcher_failed`, either record may be stale or missing.
+2. Recheck the external state; process completion is not business success.
+3. Follow the saved `event_note` only within the original task and authorization. Mark progress complete only after acceptance.
 
 Do not create a replacement watcher merely because delivery, the query, or the service failed. Preserve the original log, report `timeout`, `start_failed`, `interrupted`, `notification_unavailable`, or `unconfirmed` accurately, and recover only after checking current state.
 

@@ -43,11 +43,9 @@ $wait resume {log_file}; event_id={event_id}; event_note="{event_note}"
 
 收到后依次执行：
 
-1. 用 event ID 对照原 watcher，拒绝重复或过期事件。
-2. 读取日志，检查进程事件、退出码、stdout 和 stderr。
-3. 重新查询外部状态；程序结束不等于业务成功。
-4. 只在原任务与原授权范围内执行 `event_note` 指向的下一步。
-5. 验收通过后再把进度标为完成。
+1. 用 event ID 对照原 watcher，拒绝重复或过期事件；检查 `waitctl.py show EVENT_ID` 和现有结果日志中的事件、退出码与输出。发生 `watcher_failed` 时，两者可能过期或缺失。
+2. 重新查询外部状态；程序结束不等于业务成功。
+3. 只在原任务与原授权范围内执行 `event_note` 指向的下一步，验收通过后再标记完成。
 
 查询、投递或服务失败时，不要因为失败本身就创建替代 watcher。保留原日志，如实报告 `timeout`、`start_failed`、`interrupted`、`notification_unavailable` 或 `unconfirmed`，核对当前状态后再恢复。
 
