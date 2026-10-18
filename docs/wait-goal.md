@@ -1,285 +1,131 @@
-# `$wait-goal`: Durable, event-driven goals
+# `$wait goal`: durable objectives
 
 English | [简体中文](wait-goal.zh-CN.md)
 
-`wait-goal` turns an objective into a saved task dependency graph. The root assigns work and verifies results; external waits use `wait`. Before ending a turn, the root confirms a wake-up path or reports a genuine blocker.
+The root persists a task dependency graph, accepts each result, and verifies the original objective. Invoke only when requested or resuming a saved goal. Use `$wait goal <objective>`, `resume|status <state-file>`, or user-requested `pause|cancel <state-file>`; slash-command clients use `/wait goal`.
+
+## Workflow
+
+1. `init` saves the objective and returns `state_file`. Add bounded nodes with dependencies, inputs, allowed writes, required artifacts, and acceptance checks. Dependencies must already exist and the graph must remain acyclic.
+2. On start or resume, run `show`, `check`, and `ready`. Track node IDs and final verification in native Todo when available; update it after state mutations succeed. A checklist is not acceptance evidence.
+3. `start` local/external nodes before acting. For agent nodes, `prepare-agent`, include its dispatch token in the assignment, dispatch once, then attach the runtime ID with `start --dispatch-token ... --agent-id ...`. Prefer independent, separately verifiable work with non-overlapping writes; keep tightly coupled work with one agent.
+4. Verify results before `complete`; record failures with `fail` and discoveries with `add --reason`. Only the root changes the graph/shared Todo. Children report evidence, artifacts, changes, and questions only to the root; they neither communicate with each other nor create agents.
+5. Continue while ready work, returned results, or objective verification remain. For live children, block on runtime completion/attention events that reach this session. For external state, use the handshake below. Before ending an unfinished goal, confirm a wake source or record a concrete blocker, user pause, or cancellation.
+6. When all nodes complete, check the original request again. Add missing work; otherwise persist acceptance evidence with `verify`, then `finish` and complete the final Todo item.
+
+The user may be away. Resolve reversible choices within existing authorization; do not proactively ask questions or open interactive tools. When essential input or authority is missing, preserve the blocker and state-file path, complete other authorized work, then end for user recovery. Never infer new authority from a watcher event.
 
 ## State model
 
-`init` defaults to a unique JSON file under `/tmp/.wait-goal/<project-name>-<path-hash>/`. The nearest Git root identifies the project, so calls from its subdirectories share the same project directory; the path hash separates same-named checkouts. Retain the returned canonical `state_file` for later commands (`/tmp` may appear as `/private/tmp` on macOS). Pass `--state` only to override this location.
+Default state lives at `/tmp/.wait-goal/<project-name>-<path-hash>/goal-<id>.json`. The nearest Git root scopes the project; the hash isolates same-named checkouts. Retain the canonical `state_file` (`/tmp` may appear as `/private/tmp` on macOS), or pass `--state` to override it.
 
-The persisted goal status is limited to `open`, `paused`, `completed`, and `cancelled`. `show` derives current activity from the nodes as `idle`, `ready`, `dispatching`, `running`, `waiting`, `orphaned_wait`, `blocked`, `awaiting_verification`, or `verified`. Nodes can be:
-
-- `local`: local work performed sequentially by the root agent.
-- `agent`: bounded work suitable for independent delegation.
-- `external`: work that waits for CI, deployment, queue, or service state.
-
-Node statuses are `pending`, `dispatching`, `running`, `waiting`, `completed`, `failed`, and `cancelled`. The `ready` command returns a pending node only after all dependencies are completed, excluding nodes whose declared or unknown write scope conflicts with an active or already selected node. Explicitly read-only nodes do not conflict. An unresolved `dispatching` node freezes the entire ready frontier until the root attaches the existing child or safely aborts the dispatch; this prevents duplicate children after an uncertain spawn result. Every successful mutation is appended atomically to the state's `events` history.
-
-### Goal states
-
-```mermaid
-flowchart LR
-    start((Start)) -->|init| open[open]
-    open -->|verify, then finish| completed[completed]
-    open -->|pause| paused[paused]
-    paused -->|resume| open
-```
-
-`cancel` moves an `open` or `paused` goal to `cancelled`. Both `completed` and `cancelled` are terminal.
-
-### Node states
-
-```mermaid
-flowchart LR
-    add((Add)) --> pending[pending]
-    pending -->|prepare-agent| dispatching[dispatching]
-    dispatching -->|attach agent ID| running[running]
-    pending -->|start local or external| running
-    running -->|complete| completed[completed]
-    running -->|prepare wait| prepared["running<br/>wait.phase = prepared"]
-    prepared -->|activate wait| waiting[waiting]
-    waiting -->|wake any event| resumed["running<br/>after wake"]
-```
-
-The diagram shows normal execution. Failures and control operations are listed below:
-
-| Operation | Transition | Effect |
-| --- | --- | --- |
-| `fail` | `pending`, `running`, or `waiting` → `failed` | Record the failure summary and clear the wait |
-| `retry` | `failed` → `pending` | Archive the failed attempt and schedule it again |
-| `abort-agent` | `dispatching` → `pending` | Release a prepared dispatch only after confirming no child is live |
-| `abort-wait` | prepared `running` or active `waiting` → `running` | Invalidate an orphaned watcher without recording a node failure |
-| Cancel goal | `pending`, `dispatching`, `running`, or `waiting` → `cancelled` | Completed and failed nodes retain their status; a prepared dispatch retains its token for child reconciliation |
-
-`prepared` and `resumed` make the wait path linear in the diagram; both persist as `running`. After a wake, the root may complete, fail, or prepare another wait. Only `external` nodes can enter `waiting`, and a node must be `running` before it can be completed.
-
-## Execution overview
-
-```mermaid
-flowchart TD
-    goal[Receive objective] --> plan[Build and persist DAG]
-    plan --> schedule[check + ready]
-    schedule -->|Ready nodes| run[Run locally or dispatch child]
-    run --> review[Root verifies result and updates node]
-    review --> schedule
-    schedule -->|Agent still running| agentWait[Block for agent event]
-    agentWait --> review
-    schedule -->|Only external waits remain| suspend[End model turn]
-    suspend -->|Watcher wakes task| recheck[Resume and re-check external state]
-    recheck --> review
-    schedule -->|All nodes complete| verify[Verify original objective]
-    verify -->|Work still missing| addWork[Add or revise nodes]
-    addWork --> schedule
-    verify -->|Objective satisfied| finish[finish]
-```
-
-## Execution protocol
-
-The root alone schedules work and mutates the graph. Child agents are isolated: they return summaries, acceptance evidence, artifacts, changed files, and discovered work only to the root; they do not contact or wait on each other, edit the graph, or create agents.
-
-Run without assuming the user is present: avoid proactive questions and interactive question tools. Resolve reversible choices within the task and authorization using reasonable defaults; children report uncertainty to the root.
-
-Every start or resume follows the same loop:
-
-1. `show` loads and validates state, `check` reports scheduling issues, and `ready` returns the executable frontier. Rebuild the task's Todo from this state using node IDs; include final objective verification and follow the [client progress-tool rules](clients.md#progress-tools).
-2. Start `local` and `external` nodes before acting. For an `agent` node, run `prepare-agent` first, include its stable dispatch token in the child task, dispatch the child, then attach its runtime ID using `start --dispatch-token ... --agent-id ...`. Update Todo after a successful start. Include agent-local step tracking and root reporting in child assignments; a shared list is maintained by the root.
-3. The root verifies the result, then runs `complete` or `fail`. Add discovered work with `add --reason`. Synchronize affected Todo items after these commands succeed; child checklists alone do not complete DAG nodes.
-4. If essential input or authorization is missing, preserve unfinished state, record the blocker in Todo, and continue independent authorized work. If that missing decision prevents further progress, report the blocker and state-file path and end the turn for later user-directed recovery. For execution waits with no ready node, use the derived activity:
-
-| Activity | Action |
+| State | Values / rules |
 | --- | --- |
-| `dispatching` | Reconcile the saved dispatch token with runtime agents; attach the existing child or, only after proving none is live, run `abort-agent` |
-| `running` | Activate a prepared external wait, or block for an agent event |
-| `waiting` | The watcher owns the wait; end the model turn |
-| `orphaned_wait` | Run `check`, then recover the same node with its current watch ID; do not leave it suspended or replace it with a detached node |
-| `blocked` | Report the blocking dependency and required decision; do not retry external work implicitly |
-| `awaiting_verification` | Check the original objective; add missing work or run `verify` |
-| `verified` | Run `finish` |
+| Goal status | `open`, `paused`, `completed`, `cancelled`; the last two are terminal |
+| Node kind | `local` root work, bounded `agent` work, or `external` state |
+| Node status | `pending`, `dispatching`, `running`, `waiting`, `completed`, `failed`, `cancelled` |
+| Derived activity | `idle`, `ready`, `dispatching`, `running`, `waiting`, `orphaned_wait`, `blocked`, `awaiting_verification`, `verified` |
 
-A node should be a bounded, independently verifiable unit. Merge work that shares substantial context, writes the same paths, or requires frequent coordination; `ready` defers write-conflicting nodes to a later frontier.
-
-Mutation commands run under the state-file lock: load, validate, mutate, append an event, then atomically replace the file. Failed commands persist nothing, and an exact duplicate `wake` does not update `updated_at`. `events` is an audit trail; validated current state remains authoritative during recovery.
-
-## Start a goal
-
-After persisting the example graph, create `[test] Run tests`, `[deploy] Wait for deployment readiness`, and `Verify objective` in the native Todo tool, if available. Keep the verification item unfinished until `verify` and `finish` both succeed.
-
-```bash
-python src/waitctl.py goal -- init \
-  --objective "Ship the API and finish after the health check passes" \
-  --client codex \
-  --session "$AGENT_SESSION_ID"
-
-# Set this to the state_file returned by init.
-GOAL_STATE=/tmp/.wait-goal/PROJECT/GOAL.json
-
-python src/waitctl.py goal -- add \
-  --state "$GOAL_STATE" \
-  --id test \
-  --title "Run tests" \
-  --kind local \
-  --write-path tests \
-  --acceptance "The test suite passes" \
-  --expects-artifact test-report
-
-python src/waitctl.py goal -- add \
-  --state "$GOAL_STATE" \
-  --id deploy \
-  --title "Wait for deployment readiness" \
-  --kind external \
-  --read-only \
-  --depends-on test \
-  --input test-result=test \
-  --acceptance "Deployment status is Ready"
+```mermaid
+flowchart LR
+    pending -->|start local/external| running
+    pending -->|prepare-agent| dispatching
+    dispatching -->|attach child ID| running
+    running -->|prepare + activate external wait| waiting
+    waiting -->|wake| running
+    running -->|accept| completed
+    running -->|fail| failed
+    failed -->|retry| pending
 ```
 
-Retain the returned `state_file` as `GOAL_STATE` for every later command. `--input NAME=DEPENDENCY_ID` declares which direct dependency supplies an input. Dependencies must be added before the nodes that depend on them. Declare each node's workspace access with `--read-only` or one or more `--write-path` options. An omitted write scope is treated as unknown and serialized against other work. Path conflict checks are conservatively case-insensitive. List currently actionable, mutually write-safe nodes with:
+`ready` releases nodes only after all dependencies complete. Unknown write scopes serialize against other work; path conflicts are conservatively case-insensitive; explicit read-only nodes do not conflict. An unresolved `dispatching` node freezes the whole frontier until reconciled, preventing duplicate children after uncertain dispatch.
+
+Mutations lock the state, validate, append an event, and atomically replace the file. Failed commands persist nothing; an exact duplicate `wake` does not alter `updated_at`. Current validated state is authoritative; `events` records its history.
+
+## Commands
+
+Examples run from the user's project; replace `/path/to/wait` with the skill installation:
 
 ```bash
-python src/waitctl.py goal -- ready --state "$GOAL_STATE"
+python /path/to/wait/src/waitctl.py goal -- init \
+  --objective "Ship the API after tests and health checks pass" --session "$AGENT_SESSION_ID"
+# Set GOAL_STATE to the returned state_file.
+python /path/to/wait/src/waitctl.py goal -- add --state "$GOAL_STATE" \
+  --id test --title "Run tests" --kind local --write-path tests \
+  --acceptance "The test suite passes" --expects-artifact test-report
+python /path/to/wait/src/waitctl.py goal -- add --state "$GOAL_STATE" \
+  --id deploy --title "Wait for readiness" --kind external --read-only \
+  --depends-on test --input test-result=test --acceptance "Deployment is Ready"
+python /path/to/wait/src/waitctl.py goal -- start --state "$GOAL_STATE" --id test
+# Execute and verify the node before recording its result.
+python /path/to/wait/src/waitctl.py goal -- complete --state "$GOAL_STATE" \
+  --id test --summary "All tests passed" --artifact test-report
 ```
 
-Use `check` to find graph and scheduling problems, and `events` to inspect operation history:
+`--input NAME=DEPENDENCY_ID` binds a named input to a direct dependency. Declare `--read-only` or repeated `--write-path`; omitted scope is unknown. `complete` requires every `--expects-artifact` value to be supplied as `--artifact`. `add --before PENDING_ID --reason TEXT` inserts discovered work before a pending successor.
+
+| Commands | Purpose |
+| --- | --- |
+| `show`, `check`, `ready`, `events` | State/activity, scheduling issues, safe frontier, history |
+| `prepare-agent --id ID` | Reserve dispatch; retain returned token |
+| `start --id ID --dispatch-token TOKEN --agent-id AGENT` | Attach the child already created for that token |
+| `abort-agent --id ID --dispatch-token TOKEN` | Release a reservation only after proving no child is live or terminating it |
+| `fail --id ID --summary TEXT` | Record failure and clear the wait |
+| `retry --id ID` | Archive a failed attempt and reset the original node to pending |
+| `pause`, `resume`, `cancel` | Apply user control; pause/cancel do not forcibly stop external jobs or children |
+
+All commands above take `--state FILE`. Cancellation marks unfinished nodes cancelled, retaining completed/failed nodes and prepared dispatch tokens for reconciliation. Retry changes scheduler state only; it grants no external retry or deployment authority.
+
+## External waits
+
+First start the external node and prepare a [read-only waiting program](wait.md). Write a short `event_note`, then submit and activate:
 
 ```bash
-python src/waitctl.py goal -- check --state "$GOAL_STATE"
-python src/waitctl.py goal -- events --state "$GOAL_STATE"
+python /path/to/wait/src/waitctl.py goal -- wait --state "$GOAL_STATE" \
+  --id deploy --label "deployment api" --event-note "Read log, wake node, then recheck deployment" \
+  --timeout 3500 -- env PYTHONPATH=/path/to/wait/src python /tmp/wait_deploy.py
+# Set WATCH_ID from the response.
+python /path/to/wait/src/waitctl.py goal -- activate-wait \
+  --state "$GOAL_STATE" --id deploy --watch-id "$WATCH_ID"
 ```
 
-## Execute and evolve the DAG
+`wait` generates the identity and coordination paths, submits the watcher, and verifies its startup receipt. Before activation, the node remains `running` with wait phase `prepared`; the service holds the lock without starting the program. `activate-wait` makes it `waiting` and starts execution. The response includes `watch_id`, `log_file`, and `activation_deadline`. Without a program, `wait` only prepares and returns `start_argv` for manual submission.
 
-Mark a node as running before executing it:
+Connect the [client wake path](clients.md) before ending the turn. The generated message is:
 
-```bash
-python src/waitctl.py goal -- start --state "$GOAL_STATE" --id test
+```text
+$wait goal resume {goal_state}; node={goal_node}; event_id={event_id}; log_file={log_file}; event_note="{event_note}"
 ```
 
-For an `agent` node, reserve the node before calling the runtime:
+Read the result, validate its ID, and record the actual event:
 
 ```bash
-python src/waitctl.py goal -- prepare-agent \
-  --state "$GOAL_STATE" \
-  --id review
+python /path/to/wait/src/waitctl.py goal -- wake --state "$GOAL_STATE" \
+  --id deploy --event-id "$WATCH_ID" --event exited
 ```
 
-Include `DISPATCH_TOKEN_FROM_PREPARE` in the child task or deterministic task name. After dispatch returns, attach the runtime ID:
+`wake` returns the node to `running`; it does not declare success. Re-query current state once, then choose `complete`, `fail`, or another wait. Stale IDs are rejected and exact duplicates are no-ops. Watcher locks remain owned until acknowledgement or the configured wake-ack deadline. See CLI `--help` for accepted events, including legacy values.
+
+Long waits requiring health checks can use `loop init --goal-state FILE --goal-node ID`; [Loop](wait-loop.md) describes ownership and cancellation.
+
+## Recovery
+
+- `dispatching`: reconcile the saved token with runtime agents; attach the existing child instead of spawning another. Use guarded `abort-agent` only after resolving the child.
+- `running`: finish local work, activate a prepared external wait, or block for a live child event.
+- `waiting`: confirm watcher ownership and delivery, then suspend. A live process alone does not prove a wake path.
+- `orphaned_wait`: `check` found no watcher holding the recorded lock. Inspect the original watch and run `abort-wait --state FILE --id ID --watch-id CURRENT_ID`, then prepare again on the same node. This also handles failed/interrupted preparation; the ID guard protects newer waits.
+- `blocked`: preserve the dependency and required decision; do not silently retry external work. If retry is authorized, use the failed original node so successors remain connected.
+- `awaiting_verification` / `verified`: verify the original objective / finish it.
+
+An invalidated or cancelled goal watcher exits during ownership checks or before notification retries. Recovery preserves node IDs, dispatch tokens, watch IDs, and evidence; it does not invent permission.
+
+## Finish
 
 ```bash
-python src/waitctl.py goal -- start \
-  --state "$GOAL_STATE" \
-  --id review \
-  --dispatch-token DISPATCH_TOKEN_FROM_PREPARE \
-  --agent-id AGENT_ID_FROM_RUNTIME
-```
-
-If recovery finds a `dispatching` node, first search the runtime for that token and attach the existing child. Do not spawn another child. Only after confirming that no child was created, or after terminating it, release the reservation with `abort-agent --dispatch-token DISPATCH_TOKEN_FROM_PREPARE`.
-
-Record the result after its acceptance criteria pass:
-
-```bash
-python src/waitctl.py goal -- complete \
-  --state "$GOAL_STATE" \
-  --id test \
-  --summary "All tests passed" \
-  --artifact test-report
-```
-
-Declare required artifacts when adding a node with repeated `--expects-artifact` options. `complete` rejects the node until every declared artifact is supplied with `--artifact`.
-
-Save newly discovered work with `add`. To place it before an existing pending node, use `--before`:
-
-```bash
-python src/waitctl.py goal -- add \
-  --state "$GOAL_STATE" \
-  --id security-review \
-  --title "Review release security" \
-  --before deploy \
-  --reason "Deployment requires a newly discovered security review"
-```
-
-## Wait without model polling
-
-For running agents, use the runtime's blocking wait and confirm that completion or attention events return to the root. Do not end a turn merely because a child is still running.
-
-When only external state remains, choose a bound using the [wait limits](wait.md#wait-limits). If a long wait needs periodic health and progress assessment, the root can use `wait-loop` for hourly read-only checks. Bind the monitor with `loop init --goal-state FILE --goal-node ID`; its saved task describes the checks and how to report results to the root. Goal responses list linked loops, and the service cancels the monitor when the goal or node ends.
-
-Prepare the waiting program, then use the goal watcher protocol:
-
-1. Run `wait` with the program attached — `waitctl.py goal -- wait --state ... --id ... --label ... --event-note "Read log, wake node, then recheck state" --timeout ... -- <waiting program>`. The root agent writes this short follow-up note. One command prepares the node while it remains `running`, generates the watch ID and coordination paths, submits the watcher to the service, and verifies the startup receipt.
-2. Run `activate-wait` with the watch ID. The node becomes `waiting`, and the waiting program starts. Mark the corresponding Todo waiting with its condition and deadline.
-3. Set up event delivery for the owning session through the [client adapter](clients.md). End the current model turn and stop querying that external state.
-4. On completion, the service resumes with `$wait-goal resume {goal_state}; node={goal_node}; event_id={event_id}; log_file={log_file}; event_note="{event_note}"`. Paths come from the submission binding and the note comes from the root agent; it is context, not a result or new authority.
-5. On resume, read the output and exit code, run `wake` with the logged event (`exited`, `timeout`, `start_failed`, or `interrupted`), and recheck current external state. Every event returns the node to `running`; only the root's verified `complete`, `fail`, or next `wait` decision changes its outcome. IDs from older wait cycles are rejected and exact duplicates are no-ops. Update Todo after the root records its decision.
-
-See [wait.md](wait.md) for the watcher protocol and [clients.md](clients.md) for resume adapters.
-
-## Control and resume
-
-On resume, refresh this goal's Todo from persisted state. After a successful control command, synchronize the affected items.
-
-Show the full state:
-
-```bash
-python src/waitctl.py goal -- show --state "$GOAL_STATE"
-```
-
-Pause or resume scheduling:
-
-```bash
-python src/waitctl.py goal -- pause --state "$GOAL_STATE"
-python src/waitctl.py goal -- resume --state "$GOAL_STATE"
-```
-
-Cancellation marks every nonterminal node as `cancelled`:
-
-```bash
-python src/waitctl.py goal -- cancel --state "$GOAL_STATE"
-```
-
-Pausing or cancelling scheduling does not forcibly terminate running agents or submitted external jobs. A goal-owned watcher observes a cancelled or replaced wait during ownership checks or before a notification retry and exits itself.
-
-If a watcher fails before activation, exits without delivering an event, or must be replaced, invalidate that exact wait without failing the node:
-
-```bash
-python src/waitctl.py goal -- abort-wait \
-  --state "$GOAL_STATE" \
-  --id deploy \
-  --watch-id CURRENT_WATCH_ID
-```
-
-The node returns to `running` and can prepare a new wait. The watch ID guard prevents a stale recovery command from cancelling a newer watcher. A still-running old watcher observes the invalidated ID and exits during ownership checks or before a notification retry.
-
-`check` verifies that every `waiting` node still has a watcher holding its recorded lock. A missing owner is an `orphaned_wait` error, and `show` exposes `orphaned_wait` as the current activity. Recover the existing node with `abort-wait`; do not create a second node for the same external object.
-
-After deciding that a failed node may be attempted again, archive the failed attempt and reset it to `pending`:
-
-```bash
-python src/waitctl.py goal -- retry --state "$GOAL_STATE" --id deploy
-```
-
-`retry` changes scheduler state only. It does not authorize or perform an external retry, deployment, restart, or other side effect.
-
-When continuing the same logical external operation, retry the failed original node so its existing successors remain connected. Adding an unrelated replacement node does not repair dependencies blocked by the failed node.
-
-## Finish a goal
-
-After every node is complete, verify the result against the original request. If the request is not yet satisfied, add the missing work as nodes and continue. Otherwise persist the verification evidence before finishing:
-
-```bash
-python src/waitctl.py goal -- verify \
-  --state "$GOAL_STATE" \
-  --summary "The original request is satisfied" \
-  --check "all tests passed" \
-  --check "the health endpoint is Ready"
-```
-
-Then finish the goal:
-
-```bash
-python src/waitctl.py goal -- finish \
-  --state "$GOAL_STATE" \
+python /path/to/wait/src/waitctl.py goal -- verify --state "$GOAL_STATE" \
+  --summary "The original request is satisfied" --check "tests passed" --check "health is Ready"
+python /path/to/wait/src/waitctl.py goal -- finish --state "$GOAL_STATE" \
   --summary "Release completed; tests and health checks passed"
 ```
 
-`verify` rejects an empty graph or any non-completed node. `finish` rejects a goal without persisted verification. Completed nodes and goals must retain a non-empty result and completion timestamp. The state file retains the verification evidence and is not deleted automatically.
+`verify` rejects empty graphs or incomplete nodes. `finish` requires saved verification. Completed nodes/goals retain a nonempty result and completion timestamp; the state and verification evidence are not automatically deleted.

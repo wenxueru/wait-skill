@@ -6,8 +6,8 @@
 
 | Client | Delivery path | Invocation |
 | --- | --- | --- |
-| Codex | `codex queue` to an app-server endpoint | `$wait`, `$wait-loop`, `$wait-goal` |
-| Claude Code | Native background Bash running `waitctl.py follow` | `/wait`, `/wait-loop`, `/wait-goal` |
+| Codex | Direct app-server `turn/start` | `$wait`, `$wait loop`, `$wait goal` |
+| Claude Code | Native background Bash running `waitctl.py follow` | `/wait`, `/wait loop`, `/wait goal` |
 
 `--thread` is a compatibility alias for `--session`. `--remote` applies only to Codex. Credentials must not appear in session IDs, arguments, notes, or persisted files.
 
@@ -30,7 +30,7 @@ The Desktop socket at `~/.codex/ipc/ipc.sock` is not an app-server endpoint and 
 Before starting the waiting program, `waitd` resolves the endpoint and checks the notification channel:
 
 - A Unix endpoint must exist and complete a WebSocket upgrade. Success is reported as `notification_channel.status: ready`.
-- A `ws://` or `wss://` endpoint is syntax-checked and reported as `configured`; delivery is the connectivity check.
+- A `ws://` or `wss://` endpoint is reported as `configured`; URL validation and connectivity are checked at delivery.
 - An unavailable or incompatible Unix endpoint returns `notification_unavailable` with `query_status: not_started`. No watcher is created and no retry begins.
 - A wait without a session has notification disabled and can still be followed manually.
 
@@ -38,20 +38,23 @@ This separates query startup from notification readiness, so a healthy status qu
 
 ### Delivery and recovery
 
-When the waiting program finishes, the service runs:
+`waitd` runs `src/wait_codex.py` against the same endpoint and exact thread ID. The helper initializes a JSON-RPC connection, reads runtime thread status, resumes only an unloaded thread, and calls `turn/start` with the generated `$wait resume ...`, `$wait goal resume ...`, or `$wait loop resume ...` instruction. It preserves the thread's model, working directory, instructions, sandbox, and approval settings. It never spawns a second Codex executor or waits for a Desktop queue consumer.
 
-```text
-codex queue --remote ENDPOINT --thread ID --message MESSAGE
-```
+- `notification: started` means `turn/start` returned an actual turn ID. The helper's JSON stdout records that ID. Starting a turn is not business success; the root still validates the event and result.
+- An active thread returns `busy` without steering it. The service retries after a bounded delay; a server-side race can still cause `turn/start` to reach a turn that became active after the status read.
+- A connection failure before `turn/start` retries as `notification_unavailable`; explicit server rejections also use the bounded retry policy. Defaults are 12 attempts and 60 seconds per attempt, with exponential backoff capped at 300 seconds.
+- A lost `turn/start` acknowledgement or delivery timeout is `unconfirmed` and is never automatically replayed. A daemon crash during `attempting` also recovers as `unconfirmed`. Inspect the original thread before recovery.
+- Watcher cancellation and goal/loop ownership are rechecked before each attempt. The same event ID is preserved throughout retries.
 
-`MESSAGE` is the generated `$wait resume ...` instruction. Queue stdout and stderr are saved in the watcher log, each capped at 64 KiB.
+For an authenticated WS/WSS endpoint, export a token in the daemon environment and pass `--resume-arg=--remote-auth-token-env=VARIABLE_NAME` on the watcher. No token value goes into argv or state. Codex resume arguments cannot override thread settings. The helper verifies WSS certificates; Unix and TCP WebSockets validate the upgrade response. The selected endpoint is saved in watcher argv at submission.
 
-- Exit code zero records `notification: queued`. This confirms queue acceptance, not that the root handled the event.
-- Connection, socket, or WebSocket failures record `notification: notification_unavailable` and stop retrying.
-- Other queue rejections follow the bounded notification retry policy: 12 attempts by default, 60 seconds per attempt.
-- A delivery timeout is `unconfirmed`; inspect the target task before retrying because the message may already have been accepted.
+### Desktop closed and remote execution
 
-After delivery, goal `wake` and loop `begin` still run in the resumed root. For goal waits, the service retains ownership until root acknowledgement or the configured wake-ack deadline.
+Run `waitd` on the host that owns the conversation, using its app-server endpoint and thread ID. If that remote app-server remains alive when the Desktop app closes, the wake starts directly on the remote server. Reopening Desktop is unnecessary for execution. An app-server stopped with the app, an offline execution host, expired credentials, required user approval, or Desktop-only tools can still block progress; this skill does not start a replacement server or bypass interaction requirements.
+
+A previously recorded `notification: queued` came from the old queue adapter. It proves only queue acceptance and is retained as legacy state; do not blindly replay it during migration. Reconcile the original conversation and event ID first. Existing goal/loop JSON state paths remain valid. After delivery, goal `wake` and loop `begin` still run in the resumed root; goal watchers retain ownership until acknowledgement or the configured wake-ack deadline.
+
+The protocol follows the [official app-server lifecycle](https://learn.chatgpt.com/docs/app-server).
 
 ## Claude Code
 
@@ -61,7 +64,7 @@ Claude Code does not use a headless `claude --resume` process to notify an open 
 2. In the owning root session, start this command with the client's native background-task feature:
 
    ```bash
-   python /absolute/path/src/waitctl.py follow WATCH_ID --timeout SECONDS
+   python /absolute/path/src/waitctl.py follow WATCH_ID --timeout 3600
    ```
 
 3. Choose a finite follow timeout that covers the remaining watcher deadline, retain the native task ID, and end the turn.

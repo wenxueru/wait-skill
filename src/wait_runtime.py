@@ -6,13 +6,17 @@ import argparse
 import base64
 import errno
 import fcntl
+import hashlib
 import json
 import math
 import os
+import re
 import secrets
 import socket
+import sys
 import tempfile
 import time
+import uuid
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager, suppress
 from pathlib import Path
@@ -27,6 +31,7 @@ class NotificationUnavailable(ValueError):
 
 
 EXIT_NOTIFY_FAILED = 70
+EXIT_NOTIFY_UNCONFIRMED = 71
 EXIT_ALREADY_WATCHING = 75
 EXIT_ACTIVATION_CANCELLED = 76
 EXIT_TIMEOUT = 124
@@ -70,6 +75,27 @@ def canonical_path(path: Path) -> Path:
     return Path(os.path.realpath(absolute_path(path)).casefold())
 
 
+def project_state_path(root: Path, mode: str, start: Path | None = None) -> Path:
+    """Choose a unique state file, scoped to the nearest Git checkout."""
+    project = (start or Path.cwd()).resolve()
+    for candidate in (project, *project.parents):
+        if (candidate / ".git").exists():
+            project = candidate
+            break
+    name = (re.sub(r"[^A-Za-z0-9._-]+", "-", project.name).strip("-.") or "project")[:48]
+    digest = hashlib.sha256(os.fspath(project).encode()).hexdigest()[:12]
+    return root / f"{name}-{digest}" / f"{mode}-{uuid.uuid4().hex[:8]}.json"
+
+
+def load_state_json(path: Path, error_type: type[StateError]) -> object:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise error_type(f"state file not found: {path}") from exc
+    except json.JSONDecodeError as exc:
+        raise error_type(f"invalid state JSON: {exc}") from exc
+
+
 def validate_distinct_paths(
     command_parser: argparse.ArgumentParser,
     **paths: Path | None,
@@ -101,6 +127,19 @@ def validate_job_argv(argv: Sequence[str]) -> None:
         raise ValueError("a waiting program is required after '--'")
 
 
+def validate_codex_resume_args(resume_args: Sequence[str]) -> None:
+    if not resume_args:
+        return
+    option = "--remote-auth-token-env"
+    if len(resume_args) == 1 and resume_args[0].startswith(f"{option}="):
+        return
+    if len(resume_args) == 2 and resume_args[0] == option and not resume_args[1].startswith("-"):
+        return
+    raise ValueError(
+        "Codex wake preserves thread settings; only --remote-auth-token-env is supported as a resume argument"
+    )
+
+
 def notification_command(
     client: str,
     session: str,
@@ -109,9 +148,13 @@ def notification_command(
     resume_args: Sequence[str] = (),
 ) -> list[str]:
     if client == "codex":
+        validate_codex_resume_args(resume_args)
         if not remote:
             raise NotificationUnavailable("notification_unavailable: no Codex app-server endpoint; pass --remote")
-        return ["codex", "queue", "--remote", remote, "--thread", session, *resume_args, "--message", message]
+        return [
+            sys.executable, str(Path(__file__).with_name("wait_codex.py")),
+            "--remote", remote, "--session", session, *resume_args, "--message", message,
+        ]
     if client == "codewiz":
         return ["codewiz", "run", "--session", session, *resume_args, message]
     if client == "cursor":
@@ -124,7 +167,7 @@ def notification_command(
 
 
 def notification_success(client: str) -> str:
-    return "queued" if client == "codex" else "completed"
+    return "started" if client == "codex" else "completed"
 
 
 def codex_control_socket() -> Path:
@@ -197,7 +240,7 @@ CONNECTION_FAILURE_MARKERS = (
 
 
 def notification_failure_is_unavailable(stderr: str) -> bool:
-    """Whether codex queue stderr describes an unreachable endpoint, not a queue rejection."""
+    """Whether adapter stderr describes a connection failure before turn submission."""
     return any(marker in stderr.casefold() for marker in CONNECTION_FAILURE_MARKERS)
 
 
@@ -406,10 +449,10 @@ def add_runtime_arguments(result: argparse.ArgumentParser) -> None:
 def resume_instruction(args: argparse.Namespace) -> str:
     """Build the wake command with its agent-authored note."""
     if args.goal_state:
-        command = f"$wait-goal resume {args.goal_state}"
+        command = f"$wait goal resume {args.goal_state}"
         fields = [f"node={args.goal_node}", f"event_id={args.event_id}", f"log_file={args.log_file}"]
     elif args.loop_state:
-        command = f"$wait-loop resume {args.loop_state}"
+        command = f"$wait loop resume {args.loop_state}"
         fields = [f"event_id={args.event_id}", f"log_file={args.log_file}"]
     else:
         command = f"$wait resume {args.log_file}"
@@ -436,6 +479,11 @@ def parse_job_args(argv: Sequence[str]) -> tuple[argparse.Namespace, list[str]]:
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
     if not command:
         command_parser.error("a waiting program is required after --")
+    if args.client == "codex" and args.resume_args:
+        try:
+            validate_codex_resume_args(args.resume_args)
+        except ValueError as exc:
+            command_parser.error(str(exc))
     paths = {name: getattr(args, name) for name in ("goal_state", "loop_state", "startup_file", "log_file", "lock_file")}
     validate_distinct_paths(command_parser, **paths)
     if args.event_id is not None and (

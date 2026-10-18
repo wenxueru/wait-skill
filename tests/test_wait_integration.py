@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
+import shlex
 import sys
 import tempfile
 import unittest
@@ -9,7 +11,11 @@ from pathlib import Path
 
 SRC = Path(__file__).parents[1] / "src"
 sys.path.insert(0, str(SRC))
-import waitd  # noqa: E402
+import wait_goal
+import wait_loop
+import wait_runtime
+import waitctl
+import waitd
 
 
 class PollServiceTest(unittest.IsolatedAsyncioTestCase):
@@ -45,6 +51,45 @@ class PollServiceTest(unittest.IsolatedAsyncioTestCase):
             finally:
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
+
+
+class DocumentationTest(unittest.TestCase):
+    def setUp(self) -> None:
+        root = SRC.parent
+        self.files = [*root.glob("README*.md"), *root.glob("SKILL*.md"), *root.joinpath("docs").glob("*.md")]
+
+    def test_local_links_and_section_anchors_resolve(self) -> None:
+        for source in self.files:
+            for link in re.findall(r"\]\(([^)]+)\)", source.read_text()):
+                if "://" in link:
+                    continue
+                path, _, anchor = link.partition("#")
+                target = source.parent / path if path else source
+                with self.subTest(source=source.name, link=link):
+                    self.assertTrue(target.is_file(), f"Missing linked file: {target}")
+                    if anchor:
+                        prose = re.sub(r"```.*?```", "", target.read_text(), flags=re.S)
+                        headings = re.findall(r"^#+\s+(.+)$", prose, flags=re.M)
+                        slugs = [re.sub(r"[^\w -]", "", heading.lower()).replace(" ", "-") for heading in headings]
+                        self.assertIn(anchor, slugs)
+
+    def test_shell_examples_match_the_current_command_parsers(self) -> None:
+        checked = 0
+        for source in self.files:
+            for block in re.findall(r"```bash\n(.*?)```", source.read_text(), flags=re.S):
+                for line in block.replace('\\\n', " ").splitlines():
+                    argv = shlex.split(line, comments=True)
+                    if len(argv) < 2 or not argv[1].endswith("/src/waitctl.py"):
+                        continue
+                    with self.subTest(source=source.name, command=line):
+                        args = waitctl.parser().parse_args(argv[2:])
+                        if args.command == "start":
+                            wait_runtime.parse_job_args(waitctl.forwarded_args(args.argv))
+                        elif args.command in {"goal", "loop"}:
+                            parser = wait_goal.parser() if args.command == "goal" else wait_loop.parser()
+                            parser.parse_args(waitctl.forwarded_args(args.argv))
+                        checked += 1
+        self.assertGreater(checked, 0)
 
 
 if __name__ == "__main__":

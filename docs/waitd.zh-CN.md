@@ -1,122 +1,61 @@
-# `waitd` 本地服务
+# `waitd`：服务操作
 
 [English](waitd.md)
 
-`waitd` 是 wait、goal 和 loop 的本地控制面。Agent 定义只读等待程序并决定如何处理结果；服务负责进程、截止时间、锁、持久日志和唤醒投递。
-
-```text
-Agent -> waitctl -> waitd -> 等待程序
-                         -> 结果日志
-                         -> 客户端通知
-```
+`waitctl` 连接一个本地 `waitd`，后者管理 watcher 进程、期限、锁、日志和投递。Goal、Loop 状态命令也走同一服务，同类命令串行，单条限时 30 秒。Agent 负责查询逻辑与验收。
 
 ## 服务生命周期
 
-`waitctl start`、`waitctl goal` 和 `waitctl loop` 会按需启动服务。手动管理命令如下：
+`start`、`goal`、`loop` 按需启动服务，也可手动管理：
 
 ```bash
-python src/waitctl.py daemon start
-python src/waitctl.py daemon status
-python src/waitctl.py list
-python src/waitctl.py show WATCH_ID
-python src/waitctl.py cancel WATCH_ID
-python src/waitctl.py daemon stop
+python /path/to/wait/src/waitctl.py daemon start
+python /path/to/wait/src/waitctl.py daemon status
+python /path/to/wait/src/waitctl.py list
+python /path/to/wait/src/waitctl.py show WATCH_ID
+python /path/to/wait/src/waitctl.py cancel WATCH_ID
+python /path/to/wait/src/waitctl.py daemon stop
 ```
 
-Unix 控制 socket 位于 `/tmp/wait-skill-<uid>/waitd.sock`。目录权限为 `0700`，注册表权限为 `0600`。协议版本或源码指纹不匹配时，客户端报错并保留正在运行的服务；不会为了运行新代码而自动停掉活动 watcher。确认这些 watcher 已结束后，才显式执行 `daemon stop` 并启动新版本。注册表保留活动 watcher、等待确认的 loop 计时器，以及其他最近完成的 256 条记录。
+Unix socket 是 `/tmp/wait-skill-<uid>/waitd.sock`，目录权限 `0700`、registry 权限 `0600`。协议／源码指纹不匹配时返回错误，不停止现有 daemon；切换版本前应等活动 watcher 结束，再显式停止。Registry 保留活动 watcher、等待确认的 Loop 计时器和最近 256 个其他终态记录。
 
-## 启动 watcher
-
-`waitctl start` 有两层参数边界：
+## 提交 watcher
 
 ```text
-waitctl.py start -- <waitd 参数> -- <等待程序及其参数>
+waitctl.py start -- <watcher 参数> -- <等待程序及参数>
 ```
 
-第一个 `--` 结束 `waitctl` 参数解析，第二个把 watcher 参数与等待程序分开。`--ready`、`--terminal` 等旧状态匹配参数不属于 watcher；应把判断逻辑写入等待程序，通常使用 `wait_for.poll`。
+客户端返回成功前验证记录可查、活动 watcher 已持锁、程序已启动、投递状态明确且期限有限。五秒内无法验证启动会取消；很快的程序可能在响应前结束。无法创建程序时保留终态记录和诊断日志，并释放锁。完整提交示例见 [Wait 流程](wait.zh-CN.md#流程)。
 
-可直接复制的 Codex 示例：
+| 响应字段 | 含义 |
+| --- | --- |
+| `watch_id`、`log_file`、`lock_file` | 持久标识与证据；普通 wait 未覆盖时自动生成 |
+| `watcher` | Watcher 当前生命周期状态 |
+| `query: verified` | 已观察到程序启动 |
+| `delivery` | 客户端投递就绪状态，不代表业务验收，见[客户端](clients.zh-CN.md) |
+| `session`、`deadline` | 所属会话与有限程序截止时间 |
 
-```bash
-python src/waitctl.py start -- \
-  --label "deployment api" \
-  --event-note "复查部署；成功则检查健康，失败则报告原因" \
-  --client codex \
-  --session "$CODEX_THREAD_ID" \
-  --remote "unix:///path/to/app-server-control.sock" \
-  --timeout 3600 \
-  -- env PYTHONPATH="$PWD/src" python /tmp/wait_deploy.py
-```
+协调路径以提交者目录解析；内层 `--` 后的 argv 原样直接执行，不隐式调用 shell。超时／取消会终止整个进程组。旧 `--ready` / `--terminal` 状态匹配应写在[等待程序](wait.zh-CN.md#等待程序约定)里，不再作为 watcher 参数。
 
-返回成功前，`waitctl` 会确认：
+## 持久化与恢复
 
-- 服务已接收 watcher，且可以通过 `show` 查询；
-- 活动 watcher 正持有 lock；
-- 等待程序已经成功启动；
-- 通知通道具有明确状态；
-- watcher 具有有限截止时间。
+状态、registry 和结果均用唯一临时文件、fsync 和原子替换写入；瞬时 `ENOENT` 最多重试三次。程序结果先于 registry 落盘，后续 watcher 故障保留该日志，并在可能时通过 `durable_result` 引用。事件含义与输出上限见[结果约定](wait.zh-CN.md#结果)。
 
-成功响应分别展示这些状态：
+重启时活动记录增加 `recovered_at`、`recovery_action`，按保存的阶段恢复：
 
-```json
-{
-  "watcher": "active",
-  "query": "verified",
-  "delivery": "ready",
-  "session": "<thread-id>",
-  "deadline": 1700000000.0
-}
-```
+| 证据 | 动作 |
+| --- | --- |
+| 程序未启动 | 可在原期限内启动一次 |
+| `running` / `querying` 且结果日志匹配 | 用原 event ID 继续收尾／投递 |
+| 已启动但没有持久结果 | 记录 `interrupted`，不重放不确定执行 |
+| 投递处于 `attempting` | 记录 `unconfirmed`，重试前检查原会话 |
+| 投递已接受 | 继续收尾／确认，不再次发送 |
+| Loop 状态已提交但缺少计时器注册 | 用保存的 watch ID 恢复计时器，不重跑迭代 |
 
-Codex 的 `ready` 表示 Unix app-server 端点已完成 WebSocket 升级；显式 WebSocket 端点显示为 `configured`。Claude Code 的 `native_required` 表示 Root 仍需挂接原生后台 `follow` 任务。不绑定会话时自动投递为 `disabled`。
+终态 watcher 释放锁，重复 event ID 和锁冲突会被拒绝。Goal `check` 将失去 watcher 所有权报告为 `orphaned_wait`，应恢复[原节点](wait-goal.zh-CN.md#恢复)。恢复只重建调度与投递，不增加外部修改权限。
 
-如果五秒内无法验证启动，`waitctl` 会取消 watcher 并以非零码退出。程序无法启动时同样返回非零。诊断日志和终态注册记录会保留，lock 会释放；这样既保留失败证据，也不会留下仍处于活动状态的半启动 watcher。
+## Watcher 故障
 
-## 程序与结果契约
+`watcher_failed` 使用普通[客户端投递](clients.zh-CN.md)。投递前持久化失效时，daemon 记录服务日志，再尝试一次带 `event=watcher_failed; persistence=unavailable` 的唤醒，或通知已连接的 Claude `follow`。该唤醒及内存状态不持久，重启后可能重复；持久证据显示可能已投递成功时不会再次发送。
 
-等待程序直接执行，不隐式调用 shell。协调路径相对提交目录解析，第二个 `--` 后的程序参数保持原样。独立 wait 默认生成日志和锁路径，也可以显式指定。取消或超时会终止整个程序进程组。
-
-正常执行产生 `exited`、`timeout` 或 `start_failed`；服务重启后无法确认已运行程序的结果时产生 `interrupted`。这些结果保留退出码以及最多各 64 KiB 的 stdout、stderr。服务不解释业务状态，Agent 必须读取日志并重新检查外部状态。
-
-持久化或收尾异常产生 `watcher_failed`，其中包含异常类型、repr 和 traceback。程序结果先于 registry 更新写入；后续 watcher 故障不会覆盖该日志，故障结果在可用时通过 `durable_result` 保留已保存的程序结果。
-
-服务生成的唤醒消息为：
-
-```text
-$wait resume {log_file}; event_id={event_id}; event_note="{event_note}"
-```
-
-Goal 和 loop 变体还会携带各自的状态标识；watcher 故障追加 `event=watcher_failed`。`event_note` 来自提交等待的 Agent，不从程序输出生成。恢复时检查 watcher 记录和现有结果日志；持久化失败可能使其中任一方过期。
-
-## 通知状态
-
-Codex 会在程序启动前预检通知端点。Unix 端点缺失或不兼容时返回 `notification_unavailable` 和 `query_status: not_started`，且不创建 watcher。投递时，`codex queue` 的 stdout 和 stderr 同样各限制为 64 KiB。连接或协议故障直接变为 `notification_unavailable`，不重试；其他拒绝按配置的有界策略重试。
-
-Claude Code 在结果持久化后进入 `native_pending`，所属对话按[客户端投递](clients.zh-CN.md)中的方法通过 `waitctl follow` 接收事件。
-
-watcher 故障沿用同一投递通道。若投递前持久化失败，服务把错误写入服务日志，并尝试一次带 `persistence=unavailable` 的降级唤醒；Claude 的已连接 `follow` 则直接被唤醒。该通知和内存状态并不持久，重启后可能重复。若持久记录表明先前的投递可能已送达，则不再投递。
-
-## Goal 与 loop
-
-状态命令通过同一个服务执行：
-
-```bash
-python src/waitctl.py goal -- init --objective "CI 通过后发布" --session "$SESSION_ID"
-python src/waitctl.py goal -- check --state "$GOAL_STATE"
-python src/waitctl.py loop -- init \
-  --task "检查队列" --interval 600 --duration 3600 \
-  --event-note "读取计时事件并开始下一轮检查" \
-  --session "$SESSION_ID"
-```
-
-同类状态命令串行执行，每条最长 30 秒；持久状态文件始终是事实来源。服务在执行 loop 计时器前记录注册意图，因此重启恢复可以补齐遗漏的注册，而不会重复迭代。
-
-## 重启与恢复
-
-Registry、状态和结果日志都通过唯一临时文件、fsync 和原子替换写入；瞬时 `ENOENT` 会做三次有界尝试。服务重启时为每个活动 watcher 记录 `recovered_at` 和 `recovery_action`，然后按已持久化的阶段恢复。
-
-尚未启动的程序可以继续启动。处于 `running` 或 `querying` 的 watcher 会先查找 event ID 匹配的结果日志：找到后沿用原 event ID 和截止时间继续收尾与投递，找不到才标记为 `interrupted`，不会重放可能已经产生外部影响的程序。投递曾开始但无法确认结果时标记为 `unconfirmed`。
-
-watcher 进入终态后释放 lock；重复 event ID 和重复 lock 所有权都会被拒绝。Goal 检查把受影响节点报告为 `orphaned_wait`，交由 Root 恢复。恢复流程只重建等待和投递状态，不授予重试外部修改的权限。
-
-从已移除的状态匹配 CLI 迁移时，先检查并取消废弃 watcher，再把 `--ready` 和 `--terminal` 改写成调用 `wait_for.poll(query, evaluate)` 的等待脚本。
+唤醒消息引用结果日志、event ID 和 Agent 编写的 `event_note`，从不嵌入原始程序输出。持久化失败后日志与 registry 均可能过期，决定恢复方式前先检查证据。

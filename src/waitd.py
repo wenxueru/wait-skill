@@ -35,10 +35,17 @@ MAX_PROGRAM_OUTPUT_BYTES = 64 * 1024
 PATH_OPTIONS = {"--goal-state", "--loop-state", "--startup-file", "--log-file", "--lock-file"}
 STATE_SCRIPTS = {name: Path(__file__).with_name(f"wait_{name}.py") for name in STATE_COMMANDS}
 STATE_COMMAND_TIMEOUT = 30.0
+DELIVERED_NOTIFICATIONS = {"started", "queued", "completed", "native_pending"}
 
 
 class PreDeliveryPersistenceError(OSError):
     """The notification has not been sent yet."""
+
+
+def notification_is_unconfirmed(client: str, outcome: dict[str, object]) -> bool:
+    return outcome["event"] == "timeout" or (
+        client == "codex" and outcome["exit_code"] == wait_runtime.EXIT_NOTIFY_UNCONFIRMED
+    )
 
 
 def watcher_failure(exc: BaseException, **context: object) -> dict[str, object]:
@@ -405,6 +412,8 @@ class WaitDaemon:
                     },
                 )
                 raise ValueError(str(exc)) from exc
+            boundary = resolved_argv.index("--")
+            resolved_argv[boundary:boundary] = ["--remote", remote]
             notification_channel = {
                 "status": "ready" if remote.startswith("unix://") else "configured",
                 "remote": remote,
@@ -587,7 +596,7 @@ class WaitDaemon:
             if isinstance(exc, PreDeliveryPersistenceError):
                 await self._notify_without_persistence(args, result, record, exc)
                 return True
-            if result.get("notification") in {"queued", "completed", "native_pending"}:
+            if result.get("notification") in DELIVERED_NOTIFICATIONS:
                 result["notification_finalize_error"] = repr(exc)
             else:
                 result.update(notification="failed", notification_stderr=repr(exc))
@@ -618,7 +627,7 @@ class WaitDaemon:
                 )
                 if outcome["event"] == "exited" and outcome["exit_code"] == 0:
                     result["notification"] = wait_runtime.notification_success(args.client)
-                elif outcome["event"] != "timeout":
+                elif not notification_is_unconfirmed(args.client, outcome):
                     result["notification"] = "failed"
             except (OSError, RuntimeError, TypeError, ValueError, KeyError) as exc:
                 result.update(notification="failed", notification_stderr=repr(exc))
@@ -732,7 +741,7 @@ class WaitDaemon:
                 self._persist_result(args, record, result, phase=phase, code=code)
 
             if phase == "notifying":
-                if result.get("notification") in {"queued", "native_pending", "completed"}:
+                if result.get("notification") in DELIVERED_NOTIFICATIONS:
                     delivery_code = None
                 else:
                     delivery_code = await self._deliver(args, result, record, cancel_event)
@@ -890,16 +899,24 @@ class WaitDaemon:
             )
             if outcome.get("output_truncated"):
                 result["notification_output_truncated"] = True
+            if args.client == "codex" and notification_is_unconfirmed(args.client, outcome):
+                # turn/start may have been accepted: never replay an ambiguous wake.
+                result["notification"] = "unconfirmed"
+                self._persist_result(args, record, result)
+                return wait_runtime.EXIT_NOTIFY_FAILED
             if outcome["event"] == "timeout":
                 failed = "unconfirmed"
             elif outcome["exit_code"] == 0:
                 result.update(notification=wait_runtime.notification_success(args.client), delivered_at=time.time())
                 self._persist_result(args, record, result)
                 return None
-            elif args.client == "codex" and await self._codex_channel_lost(args, outcome["stderr"]):
-                result["notification"] = "notification_unavailable"
-                self._persist_result(args, record, result)
-                return wait_runtime.EXIT_NOTIFY_FAILED
+            elif args.client == "codex" and (
+                outcome["exit_code"] == wait_runtime.EXIT_NOTIFY_FAILED
+                or wait_runtime.notification_failure_is_unavailable(outcome["stderr"])
+            ):
+                failed = "notification_unavailable"
+            elif args.client == "codex" and outcome["exit_code"] == 75:
+                failed = "busy"
             else:
                 failed = "failed"
             exhausted = attempt == max_attempts
@@ -910,16 +927,6 @@ class WaitDaemon:
             delay = min(args.notification_retry_interval * 2 ** min(attempt - 1, 10), 300.0)
             await wait_for_cancel(cancel_event, delay)
         return wait_runtime.EXIT_NOTIFY_FAILED
-
-    async def _codex_channel_lost(self, args: argparse.Namespace, stderr: str) -> bool:
-        """A dead endpoint must not be retried; re-check it when stderr is inconclusive."""
-        if wait_runtime.notification_failure_is_unavailable(stderr):
-            return True
-        try:
-            await asyncio.to_thread(wait_runtime.preflight_codex_remote, args.remote)
-        except wait_runtime.NotificationUnavailable:
-            return True
-        return False
 
     async def _await_goal_wake(
         self,

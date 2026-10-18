@@ -99,7 +99,7 @@ class WaitDaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response["result"]["exit_code"], 2)
         self.assertEqual(
             response["resume_message"],
-            f"$wait-goal resume {state}; node=deploy; event_id={watch_id}; log_file={log}; "
+            f"$wait goal resume {state}; node=deploy; event_id={watch_id}; log_file={log}; "
             'event_note="Recheck deployment and continue"',
         )
         self.assertEqual(json.loads(state.read_text())["nodes"]["deploy"]["status"], "waiting")
@@ -197,7 +197,7 @@ class WaitDaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["exception_repr"], "KeyError(2)")
         self.assertIn("KeyError: 2", result["traceback"])
 
-    async def test_watcher_failure_queues_a_codex_wake(self) -> None:
+    async def test_watcher_failure_starts_a_codex_wake(self) -> None:
         outcome = {"event": "exited", "exit_code": 0, "stdout": "", "stderr": ""}
         with (
             patch.object(self.daemon, "_execute_program", new=AsyncMock(side_effect=KeyError(2))),
@@ -211,8 +211,8 @@ class WaitDaemonTest(unittest.IsolatedAsyncioTestCase):
         record = self.daemon.watchers[submitted["watch_id"]]
         self.assertEqual(record["state"], "failed")
         self.assertEqual(record["result"]["event"], "watcher_failed")
-        self.assertEqual(record["result"]["notification"], "queued")
-        self.assertEqual(json.loads(Path(submitted["log_file"]).read_text())["notification"], "queued")
+        self.assertEqual(record["result"]["notification"], "started")
+        self.assertEqual(json.loads(Path(submitted["log_file"]).read_text())["notification"], "started")
         self.assertIn("event=watcher_failed", queue.await_args.args[0][-1])
 
     async def test_watcher_failure_preserves_program_log_and_notifies(self) -> None:
@@ -236,7 +236,7 @@ class WaitDaemonTest(unittest.IsolatedAsyncioTestCase):
             await self.daemon.tasks[submitted["watch_id"]]
         result = self.daemon.watchers[submitted["watch_id"]]["result"]
         self.assertEqual(result["event"], "watcher_failed")
-        self.assertEqual(result["notification"], "queued")
+        self.assertEqual(result["notification"], "started")
         self.assertEqual(result["durable_result"]["stdout"], "Ready\n")
         self.assertEqual(json.loads((self.root / "watch.json").read_text())["event"], "exited")
         self.assertIn("event=watcher_failed", queue.await_args.args[0][-1])
@@ -273,7 +273,7 @@ class WaitDaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.daemon.watchers[submitted["watch_id"]]["state"], "failed")
         self.assertEqual(result["event"], "watcher_failed")
         self.assertEqual(result["exception_repr"], "KeyError(2)")
-        self.assertEqual(result["notification"], "queued")
+        self.assertEqual(result["notification"], "started")
         self.assertIn("registry unavailable", result["persistence_error"])
         self.assertFalse(Path(submitted["log_file"]).exists())
 
@@ -319,7 +319,7 @@ class WaitDaemonTest(unittest.IsolatedAsyncioTestCase):
         ):
             await task
         queue.assert_awaited_once()
-        self.assertEqual(self.daemon.watchers[submitted["watch_id"]]["result"]["notification"], "queued")
+        self.assertEqual(self.daemon.watchers[submitted["watch_id"]]["result"]["notification"], "started")
 
     async def test_multiple_querying_watches_recover_as_interrupted(self) -> None:
         with patch.object(self.daemon, "_schedule"):
@@ -342,7 +342,7 @@ class WaitDaemonTest(unittest.IsolatedAsyncioTestCase):
         for item in submitted:
             record = restored.watchers[item["watch_id"]]
             self.assertEqual(record["result"]["event"], "interrupted")
-            self.assertEqual(record["result"]["notification"], "queued")
+            self.assertEqual(record["result"]["notification"], "started")
             self.assertEqual(json.loads(Path(item["log_file"]).read_text())["event"], "interrupted")
 
     def test_version_mismatch_does_not_stop_active_service(self) -> None:
@@ -710,10 +710,12 @@ class WaitDaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["notification"], "notification_unavailable")
         self.assertFalse(self.daemon.tasks)
 
-    async def test_codex_delivery_preserves_stderr_and_stops_retrying(self) -> None:
+    async def test_codex_delivery_retries_a_disconnected_server(self) -> None:
         args, _ = waitd.wait_runtime.parse_job_args(self.watcher_argv("Ready"))
         args.thread = "session"
         args.remote = "unix:///missing.sock"
+        args.max_notification_attempts = 2
+        args.notification_retry_interval = 0.001
         result = {"event_id": "delivery", "event": "exited", "status": "Ready"}
         record = {"watch_id": "delivery", "cwd": str(self.root), "state": "active"}
         command = [
@@ -725,7 +727,7 @@ class WaitDaemonTest(unittest.IsolatedAsyncioTestCase):
             code = await self.daemon._deliver(args, result, record, asyncio.Event())
         self.assertEqual(code, waitd.wait_runtime.EXIT_NOTIFY_FAILED)
         self.assertEqual(result["notification"], "notification_unavailable")
-        self.assertEqual(result["notification_attempts"], 1)
+        self.assertEqual(result["notification_attempts"], 2)
         self.assertIn("failed to connect", result["notification_stderr"])
 
     async def test_codex_submit_reports_preflighted_channel(self) -> None:
@@ -739,11 +741,11 @@ class WaitDaemonTest(unittest.IsolatedAsyncioTestCase):
             {"status": "ready", "remote": "unix:///test.sock"},
         )
         args, _ = waitd.wait_runtime.parse_job_args(self.daemon.watchers[submitted["watch_id"]]["argv"])
-        self.assertIsNone(args.remote)  # Delivery resolves the endpoint again.
+        self.assertEqual(args.remote, "unix:///test.sock")  # Submission pins the endpoint.
         self.daemon.cancel(submitted["watch_id"])
         await self.daemon.tasks[submitted["watch_id"]]
 
-    async def test_codex_queue_rejection_exhausts_retries(self) -> None:
+    async def test_codex_rpc_rejection_exhausts_retries(self) -> None:
         args, _ = waitd.wait_runtime.parse_job_args(self.watcher_argv("Ready"))
         args.thread = "session"
         args.remote = "unix:///test.sock"
@@ -759,22 +761,35 @@ class WaitDaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["notification_attempts"], 2)
         self.assertIn("thread not found", result["notification_stderr"])
 
-    async def test_codex_endpoint_loss_during_wait_is_not_retried(self) -> None:
+    async def test_codex_busy_retries_then_starts_once(self) -> None:
         args, _ = waitd.wait_runtime.parse_job_args(self.watcher_argv("Ready"))
         args.thread = "session"
-        args.remote = "unix:///gone.sock"
-        result = {"event_id": "delivery", "event": "exited", "status": "Ready"}
+        args.max_notification_attempts = 2
+        args.notification_retry_interval = 0.001
+        result = {"event_id": "delivery", "event": "exited"}
         record = {"watch_id": "delivery", "cwd": str(self.root), "state": "active"}
-        command = [sys.executable, "-c", "import sys; print('queue rejected', file=sys.stderr); raise SystemExit(1)"]
-        unavailable = waitd.wait_runtime.NotificationUnavailable("notification_unavailable: endpoint gone")
-        with (
-            patch.object(waitd.wait_runtime, "notification_command", return_value=command),
-            patch.object(waitd.wait_runtime, "preflight_codex_remote", side_effect=unavailable),
-        ):
+        outcomes = [
+            {"event": "exited", "exit_code": 75, "stdout": '{"status":"busy"}', "stderr": ""},
+            {"event": "exited", "exit_code": 0, "stdout": '{"status":"started","turn_id":"turn-1"}', "stderr": ""},
+        ]
+        with patch.object(waitd, "run_program", new=AsyncMock(side_effect=outcomes)) as deliver:
             code = await self.daemon._deliver(args, result, record, asyncio.Event())
-        self.assertEqual(code, waitd.wait_runtime.EXIT_NOTIFY_FAILED)
-        self.assertEqual(result["notification"], "notification_unavailable")
-        self.assertEqual(result["notification_attempts"], 1)
+        self.assertIsNone(code)
+        self.assertEqual(result["notification"], "started")
+        self.assertEqual(deliver.await_count, 2)
+
+    async def test_codex_ambiguous_start_is_never_retried(self) -> None:
+        for event, exit_code in (("timeout", None), ("exited", 71)):
+            args, _ = waitd.wait_runtime.parse_job_args(self.watcher_argv("Ready"))
+            args.thread = "session"
+            result = {"event_id": "delivery", "event": "exited"}
+            record = {"watch_id": "delivery", "cwd": str(self.root), "state": "active"}
+            outcome = {"event": event, "exit_code": exit_code, "stdout": "", "stderr": "acknowledgement lost"}
+            with patch.object(waitd, "run_program", new=AsyncMock(return_value=outcome)) as deliver:
+                code = await self.daemon._deliver(args, result, record, asyncio.Event())
+            self.assertEqual(code, 70)
+            self.assertEqual(result["notification"], "unconfirmed")
+            deliver.assert_awaited_once()
 
     def test_resume_instruction_matches_mode(self) -> None:
         for mode in ("wait", "wait-loop", "wait-goal"):
@@ -809,13 +824,13 @@ class WaitDaemonTest(unittest.IsolatedAsyncioTestCase):
                 elif mode == "wait-loop":
                     self.assertEqual(
                         message,
-                        f"$wait-loop resume {args.loop_state}; event_id={args.event_id}; "
+                        f"$wait loop resume {args.loop_state}; event_id={args.event_id}; "
                         f'log_file={args.log_file}; event_note="Read the log and continue"',
                     )
                 else:
                     self.assertEqual(
                         message,
-                        f"$wait-goal resume {args.goal_state}; node={args.goal_node}; "
+                        f"$wait goal resume {args.goal_state}; node={args.goal_node}; "
                         f"event_id={args.event_id}; log_file={args.log_file}; "
                         'event_note="Read the log and continue"',
                     )
@@ -915,7 +930,7 @@ class WaitDaemonTest(unittest.IsolatedAsyncioTestCase):
             args, _ = waitd.wait_runtime.parse_job_args(self.daemon.watchers[watch_id]["argv"])
             self.assertEqual(
                 waitd.wait_runtime.resume_instruction(args),
-                f"$wait-loop resume {path.resolve()}; event_id={args.event_id}; "
+                f"$wait loop resume {path.resolve()}; event_id={args.event_id}; "
                 f'log_file={args.log_file}; event_note="Inspect again"',
             )
             deliver.assert_awaited_once()

@@ -1,4 +1,4 @@
 interface:
   display_name: "Wait"
-  short_description: "Passively wait for one external state change"
-  default_prompt: "Use $wait to monitor this external state without active model polling."
+  short_description: "External waits, bounded loops, and durable goals"
+  default_prompt: "Use $wait for external state, $wait loop for bounded repetition, or $wait goal for a requested durable objective."

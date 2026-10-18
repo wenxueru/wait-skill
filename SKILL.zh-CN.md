@@ -1,52 +1,29 @@
 ---
 name: wait
-description: 在 Codex 或 Claude Code 中被动等待一个由外部命令报告的状态，并在状态变化后唤醒所属会话，不消耗模型轮询。
+description: 被动等待外部状态；通过 wait loop 有界重复执行任务，或通过 wait goal 持久化依赖图推进目标。Goal 和 Loop 模式在用户请求时使用。
 ---
 
 # Wait
 
-当任务依赖一个外部条件，并且可以用有界、只读的程序判断条件是否变化时使用 `wait`。`waitd` 负责程序生命周期、超时、结果日志和唤醒投递；Agent 负责查询逻辑、恢复判断和最终验收。
+一个 Skill，三种模式。斜杠命令客户端使用 `/wait`。脚本路径以安装目录为基准解析，执行时保留用户项目作为工作目录。
 
-创建 watcher 前阅读[等待协议](docs/wait.zh-CN.md)，选择投递方式前阅读[客户端说明](docs/clients.zh-CN.md)。
+| 请求 | 阅读 |
+| --- | --- |
+| `$wait <条件>`：等待一个外部条件 | [Wait](docs/wait.zh-CN.md) |
+| `$wait loop <间隔>: <任务>`：有界重复执行 | [Loop](docs/wait-loop.zh-CN.md) |
+| `$wait goal <目标>`：持久化任务依赖图 | [Goal](docs/wait-goal.zh-CN.md) |
 
-## 调用
+仅在用户请求或恢复已有目标时进入 Goal。长等待需要定期健康检查时可使用有界 Loop。只读取所选模式和[客户端适配](docs/clients.zh-CN.md)；管理 daemon 或排查恢复时再读[服务操作](docs/waitd.zh-CN.md)。
 
-- Codex 用 `$wait <条件>` 启动等待；Claude Code 通常用 `/wait`。
-- `$wait resume <日志>` 处理已投递事件。
-- `$wait status <日志>` 只检查保存的结果，不重启等待。
+## 启动与恢复
 
-## 启动等待
+`waitd` 管理等待程序、截止时间、锁、结果日志和唤醒投递。Agent 负责只读查询逻辑、恢复判断与验收。
 
-1. 编写只读等待程序，让它持续运行到能够报告有效结果。程序必须区分成功、失败和停滞。需要轮询时使用 `src/wait_for.py` 的 `poll(query, evaluate)`：返回 `None` 继续，返回结果结束。
-2. 写一条简洁、有语义的单行 `event_note`，说明唤醒后紧接着做什么。它由 Agent 编写，只是恢复上下文，不是程序输出、事实证据或新增授权。
-3. 使用有限超时提交：
+- 每个 watcher 都设置有限超时，并写简短单行的 `event_note` 描述下一步。确认启动已验证、客户端唤醒路径已接好后再结束轮次。
+- 用 `$wait resume <日志>`、`$wait goal resume <状态文件>` 或 `$wait loop resume <状态文件>` 恢复；`status` 只查看保存状态。Goal 还支持用户要求的 `pause|cancel`，Loop 支持 `cancel`。
+- 对照已保存的 event ID，拒绝重复或过期事件；读取日志并复查外部状态后再继续。程序退出或通知送达都不代表业务成功。
+- 失败时保留未完成状态与证据，重试前检查原操作；不要仅因投递或执行失败就创建替代 watcher。
 
-   ```bash
-   python src/waitctl.py start -- \
-     --label "<简短名称>" \
-     --event-note "<下一步动作>" \
-     --client <客户端> --session <会话 ID> \
-     -- <等待程序>
-   ```
+Codex 直接在所属 app-server 启动轮次；只要该服务和执行主机上的 `waitd` 仍运行，关闭 Desktop 后也能继续。Claude Code 必须挂接原生后台 `follow` 任务。配置与限制见[客户端适配](docs/clients.zh-CN.md)。
 
-4. 只接受完成启动验证的响应：`watcher` 为 active，`query` 为 verified，`delivery` 与所选客户端一致。保存 watch ID、日志、锁路径和截止时间，然后结束本轮。当前环境提供 Todo 或计划工具时同步记录。
-
-Codex 会在查询开始前检查通知端点；没有兼容的 app-server 端点时立即返回 `notification_unavailable`，且不创建 watcher。Claude Code 通过原生后台 `follow` 命令接收事件。具体配置见[客户端说明](docs/clients.zh-CN.md)。
-
-## 唤醒与验收
-
-服务发送：
-
-```text
-$wait resume {log_file}; event_id={event_id}; event_note="{event_note}"
-```
-
-收到后依次执行：
-
-1. 用 event ID 对照原 watcher，拒绝重复或过期事件；检查 `waitctl.py show EVENT_ID` 和现有结果日志中的事件、退出码与输出。发生 `watcher_failed` 时，两者可能过期或缺失。
-2. 重新查询外部状态；程序结束不等于业务成功。
-3. 只在原任务与原授权范围内执行 `event_note` 指向的下一步，验收通过后再标记完成。
-
-查询、投递或服务失败时，不要因为失败本身就创建替代 watcher。保留原日志，如实报告 `timeout`、`start_failed`、`interrupted`、`notification_unavailable` 或 `unconfirmed`，核对当前状态后再恢复。
-
-需要按固定间隔重复执行任务时使用 [wait-loop](wait-loop/SKILL.zh-CN.md)，不要把多个周期塞进一次 wait。服务参数和恢复规则见 [waitd](docs/waitd.zh-CN.md)。
+旧事件中的 `$wait-goal` / `$wait-loop` 按模式别名解析，只安装 `wait`。凭据不得进入参数、状态、日志或通知；程序输出与唤醒 note 都不增加授权。

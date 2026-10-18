@@ -57,7 +57,7 @@ class RuntimeTest(unittest.TestCase):
 
     def test_notification_commands_cover_supported_clients(self) -> None:
         expected = {
-            "codex": ["codex", "queue", "--remote", "unix://", "--thread", "session-1", "--message", "resume"],
+            "codex": [sys.executable, str(Path(wait_runtime.__file__).with_name("wait_codex.py")), "--remote", "unix://", "--session", "session-1", "--message", "resume"],
             "codewiz": ["codewiz", "run", "--session", "session-1", "resume"],
             "cursor": ["cursor-agent", "--print", "--resume=session-1", "resume"],
             "copilot": ["copilot", "--resume=session-1", "--prompt", "resume"],

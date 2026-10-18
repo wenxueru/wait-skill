@@ -6,14 +6,13 @@ from __future__ import annotations
 import argparse
 import copy
 import fcntl
-import hashlib
 import json
 import math
 import os
 import re
 import time
 import uuid
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -31,7 +30,7 @@ NODE_STATUSES = {"pending", "dispatching", "running", "waiting", "completed", "f
 GOAL_STATUSES = {"open", "paused", "completed", "cancelled"}
 WAIT_EVENTS = {"exited", "start_failed", "interrupted", "ready", "terminal", "timeout", "query_failed"}
 WAIT_PHASES = {"prepared", "active"}
-CLIENTS = {"claude", "codewiz", "codex", "copilot", "cursor"}
+CLIENTS = wait_runtime.CLIENTS
 DEFAULT_STATE_ROOT = Path("/tmp/.wait-goal")
 
 # Persisted-state schema (TypedDicts mirroring the JSON on disk) and errors
@@ -158,14 +157,7 @@ def absolute_path(value: str | Path) -> str:
 
 
 def default_state_path(start: Path | None = None) -> Path:
-    project = (start or Path.cwd()).resolve()
-    for candidate in (project, *project.parents):
-        if (candidate / ".git").exists():
-            project = candidate
-            break
-    project_name = (re.sub(r"[^A-Za-z0-9._-]+", "-", project.name).strip("-.") or "project")[:48]
-    project_hash = hashlib.sha256(os.fspath(project).encode()).hexdigest()[:12]
-    return DEFAULT_STATE_ROOT / f"{project_name}-{project_hash}" / f"goal-{uuid.uuid4().hex[:8]}.json"
+    return wait_runtime.project_state_path(DEFAULT_STATE_ROOT, "goal", start)
 
 
 def canonical_path(value: str | Path) -> str:
@@ -207,6 +199,19 @@ def require_string_map(value: object, label: str) -> None:
         for key, item in value.items()
     ):
         raise GoalError(f"{label} must be an object of non-empty strings")
+
+
+def validate_watch_event(event: object, label: str) -> None:
+    if event is None:
+        return
+    if not isinstance(event, dict):
+        raise GoalError(f"{label} has invalid last_event")
+    event_name = event.get("event")
+    if not isinstance(event_name, str) or event_name not in WAIT_EVENTS:
+        raise GoalError(f"{label} has invalid last_event")
+    require_string(event.get("event_id"), f"{label} last_event.event_id")
+    require_string(event.get("at"), f"{label} last_event.at")
+    require_string(event.get("status"), f"{label} last_event.status", allow_none=True)
 
 
 def paths_overlap(first: str, second: str) -> bool:
@@ -360,17 +365,7 @@ class GoalGraph:
         elif node["status"] == "waiting":
             raise GoalError(f"waiting node {node_id!r} must contain wait metadata")
 
-        event = node.get("last_event")
-        if event is None:
-            return
-        if not isinstance(event, dict):
-            raise GoalError(f"node {node_id!r} has invalid last_event")
-        event_name = event.get("event")
-        if not isinstance(event_name, str) or event_name not in WAIT_EVENTS:
-            raise GoalError(f"node {node_id!r} has invalid last_event")
-        require_string(event.get("event_id"), f"node {node_id!r} last_event.event_id")
-        require_string(event.get("at"), f"node {node_id!r} last_event.at")
-        require_string(event.get("status"), f"node {node_id!r} last_event.status", allow_none=True)
+        validate_watch_event(node.get("last_event"), f"node {node_id!r}")
 
     def validate_verification(self) -> None:
         verification = self.state.get("verification")
@@ -485,6 +480,22 @@ class GoalGraph:
         require_string_list(node.get("expected_artifacts"), f"node {node_id!r} expected_artifacts")
         require_string_list(node.get("artifacts"), f"node {node_id!r} artifacts")
         require_string(node.get("result"), f"node {node_id!r} result", allow_none=True)
+        self._validate_node_lifecycle(node_id, node)
+        self._validate_node_assignment(node_id, node)
+        attempts = node.get("attempts")
+        if not isinstance(attempts, list):
+            raise GoalError(f"node {node_id!r} attempts must be a list")
+        for index, attempt in enumerate(attempts):
+            self._validate_attempt(node_id, index, attempt)
+        missing = [item for item in node["depends_on"] if item not in nodes]
+        if missing:
+            raise GoalError(f"node {node_id!r} has missing dependencies: {missing}")
+        invalid_inputs = {name: source for name, source in node["inputs"].items() if source not in node["depends_on"]}
+        if invalid_inputs:
+            raise GoalError(f"node {node_id!r} inputs must reference direct dependencies: {invalid_inputs}")
+        self.validate_wait(node_id, node)
+
+    def _validate_node_lifecycle(self, node_id: str, node: GoalNode) -> None:
         for field in ("started_at", "completed_at", "failed_at"):
             if field in node:
                 require_string(node[field], f"node {node_id!r} {field}")
@@ -513,6 +524,8 @@ class GoalGraph:
         if status != "failed" and "failed_at" in node:
             raise GoalError(f"only a failed node may contain failed_at: {node_id!r}")
 
+    @staticmethod
+    def _validate_node_assignment(node_id: str, node: GoalNode) -> None:
         assignment = node.get("assignment")
         assignment_phase = None
         if assignment is not None:
@@ -540,18 +553,6 @@ class GoalGraph:
                 expected_phase = None
             if assignment_phase != expected_phase:
                 raise GoalError(f"agent node {node_id!r} assignment does not match its status")
-        attempts = node.get("attempts")
-        if not isinstance(attempts, list):
-            raise GoalError(f"node {node_id!r} attempts must be a list")
-        for index, attempt in enumerate(attempts):
-            self._validate_attempt(node_id, index, attempt)
-        missing = [item for item in node["depends_on"] if item not in nodes]
-        if missing:
-            raise GoalError(f"node {node_id!r} has missing dependencies: {missing}")
-        invalid_inputs = {name: source for name, source in node["inputs"].items() if source not in node["depends_on"]}
-        if invalid_inputs:
-            raise GoalError(f"node {node_id!r} inputs must reference direct dependencies: {invalid_inputs}")
-        self.validate_wait(node_id, node)
 
     def _validate_events(self) -> None:
         first_event = self.events[0] if self.events else None
@@ -589,16 +590,7 @@ class GoalGraph:
                 raise GoalError(f"{label} assignment must be an object")
             require_string(assignment.get("agent_id"), f"{label} assignment.agent_id")
             require_string(assignment.get("assigned_at"), f"{label} assignment.assigned_at")
-        event = attempt.get("last_event")
-        if event is not None:
-            if not isinstance(event, dict):
-                raise GoalError(f"{label} has invalid last_event")
-            event_name = event.get("event")
-            if not isinstance(event_name, str) or event_name not in WAIT_EVENTS:
-                raise GoalError(f"{label} has invalid last_event")
-            require_string(event.get("event_id"), f"{label} last_event.event_id")
-            require_string(event.get("at"), f"{label} last_event.at")
-            require_string(event.get("status"), f"{label} last_event.status", allow_none=True)
+        validate_watch_event(attempt.get("last_event"), label)
 
     def _validate_acyclic(self) -> None:
         visiting: set[str] = set()
@@ -1115,12 +1107,7 @@ class GoalStore:
         self.path = Path(os.path.realpath(absolute_path(path)))
 
     def load(self) -> GoalGraph:
-        try:
-            state = json.loads(self.path.read_text(encoding="utf-8"))
-        except FileNotFoundError as exc:
-            raise GoalError(f"state file not found: {self.path}") from exc
-        except json.JSONDecodeError as exc:
-            raise GoalError(f"invalid state JSON: {exc}") from exc
+        state = wait_runtime.load_state_json(self.path, GoalError)
         graph = GoalGraph(state)
         graph.validate()
         return graph
@@ -1230,6 +1217,21 @@ def command_abort_agent(args: argparse.Namespace) -> None:
     print_json({"id": args.id, "status": "pending", "dispatch_token": args.dispatch_token})
 
 
+def prepared_wait_argv(wait: WaitMetadata, state: str, node_id: str) -> list[str]:
+    return [
+        "--label", wait["label"],
+        "--event-note", wait["event_note"],
+        "--client", wait["client"],
+        "--session", wait["thread"],
+        "--event-id", wait["watch_id"],
+        "--goal-state", state,
+        "--goal-node", node_id,
+        "--log-file", wait["log_file"],
+        "--lock-file", wait["lock_file"],
+        "--startup-file", wait["startup_file"],
+    ]
+
+
 def submit_prepared_wait(
     args: argparse.Namespace,
     wait: WaitMetadata,
@@ -1248,35 +1250,10 @@ def submit_prepared_wait(
             outcome = f"rollback failed: {exc}"
         return GoalError(f"{reason}; {outcome}")
 
-    timeout = args.timeout
-    remote = args.remote
-    submit_argv = [
-        "--label",
-        wait["label"],
-        "--event-note",
-        wait["event_note"],
-        "--client",
-        wait["client"],
-        "--session",
-        wait["thread"],
-        "--event-id",
-        wait["watch_id"],
-        "--goal-state",
-        state,
-        "--goal-node",
-        args.id,
-        "--log-file",
-        wait["log_file"],
-        "--lock-file",
-        wait["lock_file"],
-        "--startup-file",
-        wait["startup_file"],
-        "--timeout",
-        str(timeout),
-        *(["--remote", remote] if remote else []),
-        "--",
-        *program,
-    ]
+    submit_argv = [*prepared_wait_argv(wait, state, args.id), "--timeout", str(args.timeout)]
+    if args.remote:
+        submit_argv.extend(["--remote", args.remote])
+    submit_argv.extend(["--", *program])
     socket_path = Path(os.environ.get("WAITD_SOCKET", SOCKET_PATH))
     try:
         response = waitctl.request(
@@ -1344,28 +1321,7 @@ def command_wait(args: argparse.Namespace) -> None:
         result["receipt"] = "verified"
         result["activation_deadline"] = submit_prepared_wait(args, wait, state, program)
     else:
-        result["start_argv"] = [
-            "--label",
-            wait["label"],
-            "--event-note",
-            wait["event_note"],
-            "--client",
-            wait["client"],
-            "--session",
-            wait["thread"],
-            "--event-id",
-            watch_id,
-            "--goal-state",
-            state,
-            "--goal-node",
-            args.id,
-            "--log-file",
-            wait["log_file"],
-            "--lock-file",
-            wait["lock_file"],
-            "--startup-file",
-            wait["startup_file"],
-        ]
+        result["start_argv"] = prepared_wait_argv(wait, state, args.id)
     print_json(result)
 
 
@@ -1453,8 +1409,20 @@ def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     commands = result.add_subparsers(dest="command", required=True)
 
-    init = commands.add_parser("init", help="Create a new goal state")
-    add_state_argument(init, required=False)
+    def state_command(
+        name: str,
+        handler: Callable[[argparse.Namespace], None],
+        *,
+        help: str | None = None,
+        state_required: bool = True,
+    ) -> argparse.ArgumentParser:
+        options = {"help": help} if help is not None else {}
+        command = commands.add_parser(name, **options)
+        add_state_argument(command, required=state_required)
+        command.set_defaults(handler=handler)
+        return command
+
+    init = state_command("init", command_init, help="Create a new goal state", state_required=False)
     init.add_argument("--objective", required=True)
     init.add_argument("--client", choices=sorted(CLIENTS), default="codex")
     init.add_argument(
@@ -1463,10 +1431,8 @@ def parser() -> argparse.ArgumentParser:
         dest="thread",
         help="Agent session ID used by external watchers; --thread is a compatibility alias",
     )
-    init.set_defaults(handler=command_init)
 
-    add = commands.add_parser("add", help="Add a node and optionally insert it before a pending node")
-    add_state_argument(add)
+    add = state_command("add", command_add, help="Add a node and optionally insert it before a pending node")
     add.add_argument("--id", required=True)
     add.add_argument("--title", required=True)
     add.add_argument("--kind", choices=sorted(NODE_KINDS), default="local")
@@ -1489,40 +1455,26 @@ def parser() -> argparse.ArgumentParser:
     )
     add.add_argument("--expects-artifact", action="append", default=[])
     add.add_argument("--reason", help="Why this node was added to the graph")
-    add.set_defaults(handler=command_add)
 
-    ready = commands.add_parser("ready", help="List nodes whose dependencies are complete")
-    add_state_argument(ready)
-    ready.set_defaults(handler=command_ready)
+    state_command("ready", command_ready, help="List nodes whose dependencies are complete")
 
-    check = commands.add_parser("check", help="Report graph and scheduling issues")
-    add_state_argument(check)
-    check.set_defaults(handler=command_check)
+    state_command("check", command_check, help="Report graph and scheduling issues")
 
-    events = commands.add_parser("events", help="Print the append-only event history")
-    add_state_argument(events)
-    events.set_defaults(handler=command_events)
+    state_command("events", command_events, help="Print the append-only event history")
 
-    prepare_agent = commands.add_parser("prepare-agent", help="Reserve an agent node before dispatch")
-    add_state_argument(prepare_agent)
+    prepare_agent = state_command("prepare-agent", command_prepare_agent, help="Reserve an agent node before dispatch")
     prepare_agent.add_argument("--id", required=True)
-    prepare_agent.set_defaults(handler=command_prepare_agent)
 
-    abort_agent = commands.add_parser("abort-agent", help="Release an unassigned agent dispatch")
-    add_state_argument(abort_agent)
+    abort_agent = state_command("abort-agent", command_abort_agent, help="Release an unassigned agent dispatch")
     abort_agent.add_argument("--id", required=True)
     abort_agent.add_argument("--dispatch-token", required=True)
-    abort_agent.set_defaults(handler=command_abort_agent)
 
-    start = commands.add_parser("start", help="Mark a local/external node running or attach a prepared agent")
-    add_state_argument(start)
+    start = state_command("start", command_start, help="Mark a local/external node running or attach a prepared agent")
     start.add_argument("--id", required=True)
     start.add_argument("--agent-id", help="Runtime child-agent ID; required for agent nodes")
     start.add_argument("--dispatch-token", help="Token returned by prepare-agent; required for agent nodes")
-    start.set_defaults(handler=command_start)
 
-    wait = commands.add_parser("wait", help="Prepare an external wait before watcher startup")
-    add_state_argument(wait)
+    wait = state_command("wait", command_wait, help="Prepare an external wait before watcher startup")
     wait.add_argument("--id", required=True)
     wait.add_argument("--label", required=True)
     wait.add_argument("--event-note", type=wait_runtime.concise_event_note, required=True)
@@ -1537,69 +1489,48 @@ def parser() -> argparse.ArgumentParser:
         metavar="ARGV",
         help="Waiting program after --; submit the watcher to waitd automatically",
     )
-    wait.set_defaults(handler=command_wait)
 
-    activate_wait = commands.add_parser("activate-wait", help="Activate a prepared wait after watcher startup")
-    add_state_argument(activate_wait)
+    activate_wait = state_command("activate-wait", command_activate_wait, help="Activate a prepared wait after watcher startup")
     activate_wait.add_argument("--id", required=True)
     activate_wait.add_argument("--watch-id", required=True)
-    activate_wait.set_defaults(handler=command_activate_wait)
 
-    abort_wait = commands.add_parser("abort-wait", help="Invalidate a prepared or active external wait")
-    add_state_argument(abort_wait)
+    abort_wait = state_command("abort-wait", command_abort_wait, help="Invalidate a prepared or active external wait")
     abort_wait.add_argument("--id", required=True)
     abort_wait.add_argument("--watch-id", required=True)
-    abort_wait.set_defaults(handler=command_abort_wait)
 
-    wake = commands.add_parser("wake", help="Record an idempotent watcher event")
-    add_state_argument(wake)
+    wake = state_command("wake", command_wake, help="Record an idempotent watcher event")
     wake.add_argument("--id", required=True)
     wake.add_argument("--event-id", required=True)
     wake.add_argument("--event", choices=sorted(WAIT_EVENTS), required=True)
     wake.add_argument("--external-status")
-    wake.set_defaults(handler=command_wake)
 
-    complete = commands.add_parser("complete", help="Complete a verified running node")
-    add_state_argument(complete)
+    complete = state_command("complete", command_complete, help="Complete a verified running node")
     complete.add_argument("--id", required=True)
     complete.add_argument("--summary", required=True)
     complete.add_argument("--artifact", action="append", default=[])
-    complete.set_defaults(handler=command_complete)
 
-    fail = commands.add_parser("fail", help="Fail a node")
-    add_state_argument(fail)
+    fail = state_command("fail", command_fail, help="Fail a node")
     fail.add_argument("--id", required=True)
     fail.add_argument("--summary", required=True)
-    fail.set_defaults(handler=command_fail)
 
-    retry = commands.add_parser("retry", help="Reset a failed node and archive its attempt")
-    add_state_argument(retry)
+    retry = state_command("retry", command_retry, help="Reset a failed node and archive its attempt")
     retry.add_argument("--id", required=True)
-    retry.set_defaults(handler=command_retry)
 
-    verify = commands.add_parser("verify", help="Record objective-level verification")
-    add_state_argument(verify)
+    verify = state_command("verify", command_verify, help="Record objective-level verification")
     verify.add_argument("--summary", required=True)
     verify.add_argument("--check", action="append", required=True)
-    verify.set_defaults(handler=command_verify)
 
     for name, handler in (
         ("pause", command_pause),
         ("resume", command_resume),
         ("cancel", command_cancel),
     ):
-        operation = commands.add_parser(name)
-        add_state_argument(operation)
-        operation.set_defaults(handler=handler)
+        state_command(name, handler)
 
-    finish = commands.add_parser("finish", help="Complete an objectively verified goal")
-    add_state_argument(finish)
+    finish = state_command("finish", command_finish, help="Complete an objectively verified goal")
     finish.add_argument("--summary", required=True)
-    finish.set_defaults(handler=command_finish)
 
-    show = commands.add_parser("show", help="Print state with derived activity")
-    add_state_argument(show)
-    show.set_defaults(handler=command_show)
+    state_command("show", command_show, help="Print state with derived activity")
     return result
 
 

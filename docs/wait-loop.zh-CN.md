@@ -1,8 +1,8 @@
-# `wait-loop`：事件驱动 Loop 模式
+# `$wait loop`：事件驱动 Loop 模式
 
 [English](wait-loop.md) | 简体中文
 
-根 Agent 做完一轮任务，再由 `wait` 计时等待下一轮。同一时间只运行一轮，两轮之间模型不用轮询。
+通过 `$wait loop <间隔>: <任务>` 启动，`resume|status|cancel <状态文件>` 恢复或控制；斜杠客户端用 `/wait loop`。根 Agent 做完一轮任务，再由 `wait` 计时等待下一轮。同一时间只运行一轮，两轮之间模型不用轮询。
 
 ## 生命周期
 
@@ -26,7 +26,7 @@ flowchart LR
 每十分钟检查一次队列，最多四轮，并且总时长不超过一小时：
 
 ```bash
-python src/waitctl.py loop -- init \
+python /path/to/wait/src/waitctl.py loop -- init \
   --task "检查队列并报告需要处理的变化" \
   --event-note "读取计时日志，Ready 则开始下一轮，Expired 则结束" \
   --interval 600 \
@@ -40,7 +40,7 @@ python src/waitctl.py loop -- init \
 LOOP_STATE=/tmp/.wait-loop/PROJECT/LOOP.json
 
 # 完成第一轮任务后：
-python src/waitctl.py loop -- complete \
+python /path/to/wait/src/waitctl.py loop -- complete \
   --state "$LOOP_STATE" \
   --summary "已检查队列，没有需要处理的变化"
 
@@ -52,10 +52,10 @@ WATCH_ID=WATCH_ID_FROM_COMPLETE
 
 每次注册计时器后，使用保存的 watch ID，按[客户端适配](clients.zh-CN.md)接好事件投递通道，再结束轮次。
 
-每次计时结束，服务用 `$wait-loop resume {state_file}; event_id={event_id}; log_file={log_file}; event_note="{event_note}"` 唤醒。状态路径由 loop 生成，简短的 note 由 Agent 初始化 loop 时写入。日志报告 `event: exited`、`exit_code: 0`，且 stdout 为 `Ready` 时，先记录本次唤醒，再执行任务：
+每次计时结束，服务用 `$wait loop resume {state_file}; event_id={event_id}; log_file={log_file}; event_note="{event_note}"` 唤醒。状态路径由 loop 生成，简短的 note 由 Agent 初始化 loop 时写入。日志报告 `event: exited`、`exit_code: 0`，且 stdout 为 `Ready` 时，先记录本次唤醒，再执行任务：
 
 ```bash
-python src/waitctl.py loop -- begin \
+python /path/to/wait/src/waitctl.py loop -- begin \
   --state "$LOOP_STATE" \
   --event-id "$WATCH_ID"
 ```
@@ -63,7 +63,7 @@ python src/waitctl.py loop -- begin \
 `begin` 返回 `duplicate: true` 时跳过重复事件；返回 `completed` 时说明已过截止时间，直接停止。其他情况执行一轮任务，再调用 `complete`。计时程序的 stdout 为 `Expired` 时运行：
 
 ```bash
-python src/waitctl.py loop -- expire \
+python /path/to/wait/src/waitctl.py loop -- expire \
   --state "$LOOP_STATE" \
   --event-id "$WATCH_ID"
 ```

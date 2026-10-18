@@ -1,8 +1,8 @@
-# `wait-loop`: Event-driven Loop mode
+# `$wait loop`: Event-driven Loop mode
 
 English | [简体中文](wait-loop.zh-CN.md)
 
-The root runs the task once, then `wait` handles the timer until the next run. Only one iteration runs at a time; the model stays idle between runs.
+Invoke `$wait loop <interval>: <task>`; use `resume|status|cancel <state-file>` for recovery or control. Slash-command clients use `/wait loop`. The root runs the task once, then `wait` handles the timer until the next run. Only one iteration runs at a time; the model stays idle between runs.
 
 ## Lifecycle
 
@@ -26,7 +26,7 @@ The user may be away during any iteration. Avoid proactive questions and interac
 Run a queue check every ten minutes, at most four times and for no longer than one hour:
 
 ```bash
-python src/waitctl.py loop -- init \
+python /path/to/wait/src/waitctl.py loop -- init \
   --task "Inspect the queue and report actionable changes" \
   --event-note "Read timer log; begin on Ready or stop on Expired" \
   --interval 600 \
@@ -40,7 +40,7 @@ python src/waitctl.py loop -- init \
 LOOP_STATE=/tmp/.wait-loop/PROJECT/LOOP.json
 
 # After performing iteration 1:
-python src/waitctl.py loop -- complete \
+python /path/to/wait/src/waitctl.py loop -- complete \
   --state "$LOOP_STATE" \
   --summary "Queue inspected; no actionable change"
 
@@ -52,10 +52,10 @@ WATCH_ID=WATCH_ID_FROM_COMPLETE
 
 After each timer registration, set up event delivery using the saved watch ID and the [client adapter](clients.md), then end the turn.
 
-On each timer, the service resumes with `$wait-loop resume {state_file}; event_id={event_id}; log_file={log_file}; event_note="{event_note}"`. The loop supplies the state path and preserves the short note authored by the agent at initialization. When the log reports `event: exited`, `exit_code: 0`, and stdout `Ready`, consume the event before executing the task:
+On each timer, the service resumes with `$wait loop resume {state_file}; event_id={event_id}; log_file={log_file}; event_note="{event_note}"`. The loop supplies the state path and preserves the short note authored by the agent at initialization. When the log reports `event: exited`, `exit_code: 0`, and stdout `Ready`, consume the event before executing the task:
 
 ```bash
-python src/waitctl.py loop -- begin \
+python /path/to/wait/src/waitctl.py loop -- begin \
   --state "$LOOP_STATE" \
   --event-id "$WATCH_ID"
 ```
@@ -63,7 +63,7 @@ python src/waitctl.py loop -- begin \
 After `begin`, skip duplicate events and stop if the returned status is `completed` (the deadline has passed). Otherwise run the task once and call `complete`. If the timer's stdout is `Expired`, run:
 
 ```bash
-python src/waitctl.py loop -- expire \
+python /path/to/wait/src/waitctl.py loop -- expire \
   --state "$LOOP_STATE" \
   --event-id "$WATCH_ID"
 ```
@@ -76,6 +76,7 @@ Use `waitctl loop` to manage the loop through `waitd`; `wait_loop.py` also works
 
 - `--duration` limits the complete loop and defaults to 24 hours.
 - `--max-iterations` optionally limits successful iterations.
+- `--remote` selects the Codex endpoint saved for each timer; omission uses the default control socket.
 - `--remote` is optional and Codex-only. An explicit value is passed to every timer watcher; omission uses the default app-server control socket.
 
 After `complete`, the service registers `wait_loop.py due --wait` with a deadline of `next_run_at` plus 60 seconds. Loop state saves its path and remote endpoint before registration, so daemon recovery can restore a missing timer without repeating the iteration. Every timer receives the same notification preflight as a standalone wait. Its log is stored beside loop state and named with the watch ID.

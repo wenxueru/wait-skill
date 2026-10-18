@@ -4,11 +4,9 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import math
 import os
-import re
 import sys
 import time
 import uuid
@@ -19,7 +17,7 @@ from pathlib import Path
 
 import wait_runtime
 
-CLIENTS = {"claude", "codewiz", "codex", "copilot", "cursor"}
+CLIENTS = wait_runtime.CLIENTS
 DEFAULT_DURATION = 86400.0
 DEFAULT_STATE_ROOT = Path("/tmp/.wait-loop")
 STATUSES = {"active", "completed", "cancelled"}
@@ -55,22 +53,10 @@ def positive_number(value: str) -> float:
     return number
 
 
-def positive_int(value: str) -> int:
-    number = int(value)
-    if number <= 0:
-        raise argparse.ArgumentTypeError("must be positive")
-    return number
-
+positive_int = wait_runtime.positive_int
 
 def default_state_path(start: Path | None = None) -> Path:
-    project = (start or Path.cwd()).resolve()
-    for candidate in (project, *project.parents):
-        if (candidate / ".git").exists():
-            project = candidate
-            break
-    project_name = (re.sub(r"[^A-Za-z0-9._-]+", "-", project.name).strip("-.") or "project")[:48]
-    project_hash = hashlib.sha256(os.fspath(project).encode()).hexdigest()[:12]
-    return DEFAULT_STATE_ROOT / f"{project_name}-{project_hash}" / f"loop-{uuid.uuid4().hex[:8]}.json"
+    return wait_runtime.project_state_path(DEFAULT_STATE_ROOT, "loop", start)
 
 
 def validate(state: object) -> dict[str, object]:
@@ -250,12 +236,7 @@ class LoopStore:
         self.path = Path(os.path.realpath(os.path.abspath(os.path.expanduser(path))))
 
     def load(self) -> LoopState:
-        try:
-            return LoopState(json.loads(self.path.read_text(encoding="utf-8")))
-        except FileNotFoundError as exc:
-            raise LoopError(f"state file not found: {self.path}") from exc
-        except json.JSONDecodeError as exc:
-            raise LoopError(f"invalid state JSON: {exc}") from exc
+        return LoopState(wait_runtime.load_state_json(self.path, LoopError))
 
     def write(self, state: LoopState) -> None:
         validate(state.data)

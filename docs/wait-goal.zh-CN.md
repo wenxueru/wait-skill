@@ -1,285 +1,131 @@
-# `$wait-goal`：事件驱动的持久目标
+# `$wait goal`：持久目标
 
 [English](wait-goal.md) | 简体中文
 
-`wait-goal` 把目标拆成任务依赖图并保存下来。根 Agent 安排工作、验收结果，外部等待交给 `wait`。结束轮次前，要确认谁会唤醒自己，或者说明确实无法继续的原因。
+根 Agent 保存任务依赖图、验收各项结果并验证原始目标。仅在用户请求或恢复已有目标时进入。用 `$wait goal <目标>`、`resume|status <状态文件>`，以及用户要求的 `pause|cancel <状态文件>`；斜杠客户端对应 `/wait goal`。
+
+## 流程
+
+1. `init` 保存目标并返回 `state_file`。节点应是有界任务，写清依赖、输入、允许修改的范围、必需产物和验收条件。依赖先于节点存在，图必须无环。
+2. 每次启动或恢复运行 `show`、`check`、`ready`。有原生 Todo 时按节点 ID 和最终验收跟踪，状态变更成功后再同步；清单不等于验收证据。
+3. local/external 节点先 `start` 再执行；agent 节点先 `prepare-agent`，把 dispatch token 带进任务，只派发一次，再用 `start --dispatch-token ... --agent-id ...` 关联实例。独立、可分别验收且写入不冲突的工作可并发，紧密耦合的工作交给一个 Agent。
+4. 验证结果后 `complete`；失败用 `fail`，新发现用 `add --reason`。只有根 Agent 修改图和共享 Todo；子 Agent 只向根汇报证据、产物、改动和疑问，不互相联系，也不创建 Agent。
+5. 还有就绪任务、返回结果或目标待验收时继续推进。等存活子 Agent 时使用能将完成／异常事件送回当前会话的运行时阻塞等待；等外部状态时用下面的握手。结束未完成目标前，必须确认唤醒来源，或记录具体阻塞、用户暂停或取消。
+6. 节点全部完成后重新核对原始请求，缺工作就补节点；达成后用 `verify` 保存证据，再 `finish` 并完成最终 Todo。
+
+用户可能不在场。已有授权内的可逆选择自行判断，不主动提问或打开交互工具；缺少关键输入或权限时保留原因与状态路径，先做其他已授权工作，再结束等待用户恢复。watcher 事件不增加授权。
 
 ## 状态模型
 
-`init` 默认在 `/tmp/.wait-goal/<项目名>-<路径哈希>/` 下创建唯一 JSON 文件。项目由最近的 Git 根目录识别，因此从不同子目录调用仍使用同一项目目录；路径哈希会隔离同名 checkout。后续命令使用返回的规范化 `state_file`（macOS 可能显示为 `/private/tmp`）；只有需要覆盖默认位置时才传 `--state`。
+默认状态位于 `/tmp/.wait-goal/<项目名>-<路径哈希>/goal-<ID>.json`。最近的 Git 根目录确定项目，哈希隔离同名 checkout。保留规范化 `state_file`（macOS 的 `/tmp` 可能显示为 `/private/tmp`），或用 `--state` 覆盖。
 
-持久化的目标状态只有 `open`、`paused`、`completed` 和 `cancelled`。`show` 根据节点动态计算活动状态：`idle`、`ready`、`dispatching`、`running`、`waiting`、`orphaned_wait`、`blocked`、`awaiting_verification` 或 `verified`。节点可以是：
-
-- `local`：由根 Agent 顺序完成的本地工作。
-- `agent`：适合独立委派的有界工作。
-- `external`：需要等待 CI、部署、队列或服务状态的工作。
-
-节点状态为 `pending`、`dispatching`、`running`、`waiting`、`completed`、`failed` 或 `cancelled`。只有所有依赖均为 `completed` 的 `pending` 节点才会由 `ready` 返回；与运行中节点或本批已选节点写入范围冲突的节点会被排除，未声明范围按未知写入处理，显式只读节点不冲突。存在未决的 `dispatching` 节点时，整个 ready frontier 都会冻结，直到根 Agent 关联已有子 Agent 或安全撤销本次派发，以避免派发结果不确定时创建重复子 Agent。每次成功修改都会原子追加到状态文件的 `events` 历史。
-
-### 目标状态
-
-```mermaid
-flowchart LR
-    start((开始)) -->|init| open[open]
-    open -->|verify 后 finish| completed[completed]
-    open -->|pause| paused[paused]
-    paused -->|resume| open
-```
-
-在 `open` 或 `paused` 状态执行 `cancel`，目标进入 `cancelled`。`completed` 和 `cancelled` 都是终态。
-
-### 节点状态
-
-```mermaid
-flowchart LR
-    add((新增)) --> pending[pending]
-    pending -->|prepare-agent| dispatching[dispatching]
-    dispatching -->|关联 Agent ID| running[running]
-    pending -->|启动 local 或 external| running
-    running -->|complete| completed[completed]
-    running -->|准备 wait| prepared["running<br/>wait.phase = prepared"]
-    prepared -->|激活 wait| waiting[waiting]
-    waiting -->|任意事件 wake| resumed["running<br/>已唤醒"]
-```
-
-图中展示正常执行过程；失败和控制操作见下表：
-
-| 操作 | 转换 | 说明 |
-| --- | --- | --- |
-| `fail` | `pending`、`running` 或 `waiting` → `failed` | 记录失败摘要并清除 wait |
-| `retry` | `failed` → `pending` | 归档本次失败后重新调度 |
-| `abort-agent` | `dispatching` → `pending` | 只有确认没有存活子 Agent 后才释放派发预留 |
-| `abort-wait` | prepared `running` 或 active `waiting` → `running` | 使孤儿 watcher 失效，但不把节点记录为失败 |
-| `cancel` 目标 | `pending`、`dispatching`、`running` 或 `waiting` → `cancelled` | 已完成和已失败节点保持原状态；prepared dispatch 保留 token 以便核对子 Agent |
-
-`prepared` 和 `resumed` 只是为了把等待过程画成直线；两者的持久化节点状态都是 `running`。唤醒后，根 Agent 可以 `complete`、`fail` 或准备下一轮 wait。只有 `external` 节点可以进入 `waiting`；节点必须处于 `running` 才能执行 `complete`。
-
-## 运行流程总览
-
-```mermaid
-flowchart TD
-    goal[接收目标] --> plan[构建并持久化 DAG]
-    plan --> schedule[check + ready]
-    schedule -->|有 ready 节点| run[本地执行或派发子 Agent]
-    run --> review[根 Agent 验收并更新节点]
-    review --> schedule
-    schedule -->|Agent 仍在运行| agentWait[阻塞等待 Agent 事件]
-    agentWait --> review
-    schedule -->|只剩外部等待| suspend[结束模型轮次]
-    suspend -->|watcher 唤醒| recheck[恢复并重新检查外部状态]
-    recheck --> review
-    schedule -->|全部节点完成| verify[验证原始目标]
-    verify -->|仍缺工作| addWork[补充或调整节点]
-    addWork --> schedule
-    verify -->|目标满足| finish[finish]
-```
-
-## 执行协议
-
-根 Agent 独占调度和图修改权限。子 Agent 彼此隔离，只向根 Agent 返回节点摘要、验收证据、产物、变更文件和新发现工作；不得相互通信、等待、改图或创建 Agent。
-
-执行时不假设用户在场：避免主动提问和交互式提问工具。任务与授权范围内的可逆选择采用合理默认值；子 Agent 向根 Agent 汇报不确定事项。
-
-每次启动或恢复都执行相同循环：
-
-1. 恢复计划。 `show` 加载并验证状态，`check` 输出调度诊断，`ready` 返回本轮可执行节点。按[客户端进度工具规则](clients.zh-CN.md#进度工具)，使用节点 ID 从该状态重建当前任务的 Todo，并包含最终目标验收。
-2. 执行和派发。 `local`、`external` 节点先 `start` 再执行。对于 `agent` 节点，先执行 `prepare-agent`，把稳定的 dispatch token 写入子任务，派发后再使用 `start --dispatch-token ... --agent-id ...` 关联运行时 ID。`start` 成功后更新 Todo。子任务说明中包含内部步骤跟踪和向根 Agent 汇报；共享列表由根 Agent 维护。
-3. 验收和调整。 根 Agent 验收结果后执行 `complete` 或 `fail`；新工作使用 `add --reason` 入图。命令成功后同步受影响的 Todo；子清单完成不能直接完成 DAG 节点。
-4. 缺少关键输入或授权时，保留未完成状态，在 Todo 记录阻塞原因，继续独立且已获授权的工作。若缺少的决定阻止了后续推进，报告原因和状态文件路径并结束轮次，待用户给出方向后恢复。执行中没有 ready 节点而需要等待时，根据活动状态决定下一步：
-
-| 活动状态 | 动作 |
+| 状态 | 取值／规则 |
 | --- | --- |
-| `dispatching` | 使用保存的 dispatch token 对照运行时 Agent；关联已有子 Agent，或仅在确认没有存活实例后执行 `abort-agent` |
-| `running` | 激活已准备的 external wait，或阻塞等待 Agent 事件 |
-| `waiting` | watcher 已接管，结束当前模型轮次 |
-| `orphaned_wait` | 运行 `check`，再使用当前 watch ID 恢复同一节点；不得让它继续停滞，也不得用断开依赖链的新节点替代 |
-| `blocked` | 报告阻断依赖和所需决定，不自行重试外部操作 |
-| `awaiting_verification` | 对照原始目标；缺工作则加节点，否则 `verify` |
-| `verified` | `finish` |
+| Goal 状态 | `open`、`paused`、`completed`、`cancelled`；后两者是终态 |
+| 节点类型 | 根执行的 `local`、有界委派的 `agent`、外部状态 `external` |
+| 节点状态 | `pending`、`dispatching`、`running`、`waiting`、`completed`、`failed`、`cancelled` |
+| 派生活动 | `idle`、`ready`、`dispatching`、`running`、`waiting`、`orphaned_wait`、`blocked`、`awaiting_verification`、`verified` |
 
-节点应是可独立验收的有界工作单元。共享大量上下文、写同一路径或需要频繁协调的工作应合并；`ready` 会把有写入冲突的节点留到下一轮。
-
-所有修改命令都在状态文件锁内执行“加载 → 验证 → 修改 → 追加事件 → 原子替换”。命令失败时不保存状态或事件；完全重复的 `wake` 不修改 `updated_at`。`events` 是审计记录，不替代当前状态，恢复时仍以通过验证的状态文件为准。
-
-## 开始目标
-
-持久化下例的图后，有原生 Todo 工具时建立 `[test] 运行测试`、`[deploy] 等待部署就绪` 和“最终目标验收”。验收条目在 `verify` 与 `finish` 都成功后完成。
-
-```bash
-python src/waitctl.py goal -- init \
-  --objective "发布 API，并在健康检查通过后结束" \
-  --client codex \
-  --session "$AGENT_SESSION_ID"
-
-# 设置为 init 返回的 state_file。
-GOAL_STATE=/tmp/.wait-goal/PROJECT/GOAL.json
-
-python src/waitctl.py goal -- add \
-  --state "$GOAL_STATE" \
-  --id test \
-  --title "运行测试" \
-  --kind local \
-  --write-path tests \
-  --acceptance "测试套件通过" \
-  --expects-artifact test-report
-
-python src/waitctl.py goal -- add \
-  --state "$GOAL_STATE" \
-  --id deploy \
-  --title "等待部署就绪" \
-  --kind external \
-  --read-only \
-  --depends-on test \
-  --input test-result=test \
-  --acceptance "部署状态为 Ready"
+```mermaid
+flowchart LR
+    pending -->|start local/external| running
+    pending -->|prepare-agent| dispatching
+    dispatching -->|关联子 Agent ID| running
+    running -->|准备并激活外部等待| waiting
+    waiting -->|wake| running
+    running -->|验收| completed
+    running -->|fail| failed
+    failed -->|retry| pending
 ```
 
-将返回的 `state_file` 保存为 `GOAL_STATE`，供所有后续命令使用。`--input 名称=依赖节点ID` 声明输入由哪个直接依赖提供。依赖必须先于依赖它的节点加入。每个节点应使用 `--read-only` 或一个以上 `--write-path` 明确工作区访问范围；未声明的写入范围按未知处理，会与其他任务串行，路径冲突采用保守的大小写不敏感比较。运行以下命令获取当前可执行且写入互不冲突的节点：
+`ready` 只释放依赖全部完成的节点。未知写入范围与其他工作串行，路径冲突保守地忽略大小写，显式只读节点不冲突。未解决的 `dispatching` 会冻结整个就绪队列，避免派发结果不确定后重复创建子 Agent。
+
+状态修改在锁内校验、追加事件并原子替换文件。失败命令不落盘；完全重复的 `wake` 不修改 `updated_at`。当前有效状态是恢复依据，`events` 保留其历史。
+
+## 命令
+
+在用户项目中执行，`/path/to/wait` 替换为 Skill 安装目录：
 
 ```bash
-python src/waitctl.py goal -- ready --state "$GOAL_STATE"
+python /path/to/wait/src/waitctl.py goal -- init \
+  --objective "发布 API，并通过测试与健康检查" --session "$AGENT_SESSION_ID"
+# GOAL_STATE 使用返回的 state_file。
+python /path/to/wait/src/waitctl.py goal -- add --state "$GOAL_STATE" \
+  --id test --title "运行测试" --kind local --write-path tests \
+  --acceptance "测试通过" --expects-artifact test-report
+python /path/to/wait/src/waitctl.py goal -- add --state "$GOAL_STATE" \
+  --id deploy --title "等待部署就绪" --kind external --read-only \
+  --depends-on test --input test-result=test --acceptance "部署为 Ready"
+python /path/to/wait/src/waitctl.py goal -- start --state "$GOAL_STATE" --id test
+# 执行并验收节点后，再记录结果。
+python /path/to/wait/src/waitctl.py goal -- complete --state "$GOAL_STATE" \
+  --id test --summary "全部测试通过" --artifact test-report
 ```
 
-用 `check` 检查依赖和调度问题，用 `events` 查看操作历史：
+`--input NAME=DEPENDENCY_ID` 将具名输入绑定到直接依赖。声明 `--read-only` 或多个 `--write-path`，省略时视为未知范围。每个 `--expects-artifact` 都必须由 `complete --artifact` 提供。`add --before PENDING_ID --reason TEXT` 可把新发现的工作插入待执行后继之前。
+
+| 命令 | 用途 |
+| --- | --- |
+| `show`、`check`、`ready`、`events` | 状态／活动、调度问题、安全就绪队列、历史 |
+| `prepare-agent --id ID` | 预留派发，保留返回的 token |
+| `start --id ID --dispatch-token TOKEN --agent-id AGENT` | 关联该 token 已创建的子 Agent |
+| `abort-agent --id ID --dispatch-token TOKEN` | 仅在确认没有存活子 Agent 或已终止后释放预留 |
+| `fail --id ID --summary TEXT` | 记录失败并清除等待 |
+| `retry --id ID` | 归档失败尝试，将原节点重置为 pending |
+| `pause`、`resume`、`cancel` | 应用用户控制；暂停／取消不强行停止外部任务或子 Agent |
+
+上述命令均接收 `--state FILE`。取消会把未完成节点标为 cancelled，保留 completed/failed 节点及派发中的 token 供核对。Retry 只改调度状态，不授予外部重试或部署权限。
+
+## 外部等待
+
+先启动 external 节点并准备[只读等待程序](wait.zh-CN.md)。写简短 `event_note`，再提交和激活：
 
 ```bash
-python src/waitctl.py goal -- check --state "$GOAL_STATE"
-python src/waitctl.py goal -- events --state "$GOAL_STATE"
+python /path/to/wait/src/waitctl.py goal -- wait --state "$GOAL_STATE" \
+  --id deploy --label "deployment api" --event-note "读取日志，wake 节点，再复查部署" \
+  --timeout 3500 -- env PYTHONPATH=/path/to/wait/src python /tmp/wait_deploy.py
+# WATCH_ID 使用响应返回值。
+python /path/to/wait/src/waitctl.py goal -- activate-wait \
+  --state "$GOAL_STATE" --id deploy --watch-id "$WATCH_ID"
 ```
 
-## 执行与演化 DAG
+`wait` 生成标识与协调路径、提交 watcher 并验证启动回执。激活前节点仍为 `running`、wait phase 为 `prepared`；服务持锁但不启动程序。`activate-wait` 将其变成 `waiting` 并启动程序。响应含 `watch_id`、`log_file` 和 `activation_deadline`。不附程序时，`wait` 只准备，并返回手动提交用的 `start_argv`。
 
-执行节点前先标记为运行：
+结束轮次前按[客户端适配](clients.zh-CN.md)接好唤醒。生成的消息为：
+
+```text
+$wait goal resume {goal_state}; node={goal_node}; event_id={event_id}; log_file={log_file}; event_note="{event_note}"
+```
+
+读取结果、校验 ID，再记录实际事件：
 
 ```bash
-python src/waitctl.py goal -- start --state "$GOAL_STATE" --id test
+python /path/to/wait/src/waitctl.py goal -- wake --state "$GOAL_STATE" \
+  --id deploy --event-id "$WATCH_ID" --event exited
 ```
 
-对于 `agent` 节点，调用运行时前先预留节点：
+`wake` 只让节点回到 `running`，不宣告成功。只读复查一次当前状态，再决定 `complete`、`fail` 或继续等待。旧 ID 被拒绝，完全重复事件为空操作。Watcher 锁保留到确认或配置的 wake-ack 截止时间。可接受事件（含旧版值）见 CLI `--help`。
+
+长等待需要健康检查时可用 `loop init --goal-state FILE --goal-node ID`；所有权与取消规则见 [Loop](wait-loop.zh-CN.md)。
+
+## 恢复
+
+- `dispatching`：用保存的 token 核对运行时，关联已创建的子 Agent，不再派发；解决子 Agent 后才能使用带 token 的 `abort-agent`。
+- `running`：完成本地工作、激活准备好的外部等待，或阻塞等待存活子 Agent 的事件。
+- `waiting`：确认 watcher 所有权与投递路径，再休眠；仅有存活进程不证明能唤醒。
+- `orphaned_wait`：`check` 发现没有 watcher 持有记录的锁。检查原 watch，运行 `abort-wait --state FILE --id ID --watch-id CURRENT_ID`，再在原节点准备。准备失败／中断也用此流程；ID 校验防止取消较新的等待。
+- `blocked`：保留阻塞依赖与所需决定，不静默重试外部操作。获得重试授权后用原失败节点，保留后继依赖。
+- `awaiting_verification` / `verified`：验证原始目标／完成目标。
+
+等待失效或 Goal 被取消时，原 watcher 会在所有权检查或通知重试前退出。恢复保留节点 ID、dispatch token、watch ID 和证据，不猜测权限。
+
+## 完成
 
 ```bash
-python src/waitctl.py goal -- prepare-agent \
-  --state "$GOAL_STATE" \
-  --id review
+python /path/to/wait/src/waitctl.py goal -- verify --state "$GOAL_STATE" \
+  --summary "原始请求已满足" --check "测试通过" --check "健康状态为 Ready"
+python /path/to/wait/src/waitctl.py goal -- finish --state "$GOAL_STATE" \
+  --summary "发布完成，测试与健康检查通过"
 ```
 
-把 `DISPATCH_TOKEN_FROM_PREPARE` 写入子任务或确定性的任务名。派发返回后关联运行时 ID：
-
-```bash
-python src/waitctl.py goal -- start \
-  --state "$GOAL_STATE" \
-  --id review \
-  --dispatch-token DISPATCH_TOKEN_FROM_PREPARE \
-  --agent-id AGENT_ID_FROM_RUNTIME
-```
-
-恢复时如果发现 `dispatching` 节点，先在运行时中查找该 token 并关联已有子 Agent，不得重新派发。只有确认子 Agent 未被创建，或已经终止它之后，才能执行 `abort-agent --dispatch-token DISPATCH_TOKEN_FROM_PREPARE` 释放预留。
-
-验收条件通过后记录结果：
-
-```bash
-python src/waitctl.py goal -- complete \
-  --state "$GOAL_STATE" \
-  --id test \
-  --summary "全部测试通过" \
-  --artifact test-report
-```
-
-添加节点时可重复使用 `--expects-artifact` 声明必需产物。只有通过 `--artifact` 提供全部必需产物后，`complete` 才会成功。
-
-发现新工作就用 `add` 保存；如果必须先于某个现有 `pending` 节点完成，用 `--before` 插入：
-
-```bash
-python src/waitctl.py goal -- add \
-  --state "$GOAL_STATE" \
-  --id security-review \
-  --title "执行发布安全检查" \
-  --before deploy \
-  --reason "执行中发现部署前还需要安全检查"
-```
-
-## 等待而不消耗模型轮询
-
-等待子 Agent 时，使用运行时的阻塞等待，并确认完成或异常事件能回到根会话。不能只因为子 Agent 还在运行就直接结束轮次。
-
-如果只剩外部状态，按[等待时限](wait.zh-CN.md#等待时限)选择上限。长等待需要定期评估健康与进展时，根 Agent 可使用 `wait-loop` 每小时执行只读检查。通过 `loop init --goal-state FILE --goal-node ID` 绑定监控；保存的任务说明检查内容及向根 Agent 汇报结果的方式。goal 响应会列出关联 loop，服务在目标或节点结束时取消监控。
-
-准备好等待程序，再执行 goal watcher 协议：
-
-1. 带上等待程序运行 `wait`——`waitctl.py goal -- wait --state ... --id ... --label ... --event-note "读取日志，wake 节点，再复查状态" --timeout ... -- <等待程序>`。`event_note` 由根 Agent 简短说明恢复后的下一步。一条命令完成：准备节点（暂时保持 `running`）、生成 watch ID 和协调路径、向服务提交 watcher、校验启动回执。保留返回的 `watch_id` 和 `log_file`；任何参数都不在命令之间复制。
-2. 用 watch ID 运行 `activate-wait`。节点进入 `waiting`，等待程序才启动；此时在对应 Todo 中标记等待条件和截止时间。
-3. 按[客户端适配](clients.zh-CN.md)接好所属会话的事件投递通道。结束当前模型轮次，不再查询该外部状态。
-4. 完成后服务用 `$wait-goal resume {goal_state}; node={goal_node}; event_id={event_id}; log_file={log_file}; event_note="{event_note}"` 唤醒。路径来自提交绑定，note 来自根 Agent；它只恢复上下文，不代表结果或新增授权。
-5. 恢复后读取输出和退出码，按日志事件（`exited`、`timeout`、`start_failed` 或 `interrupted`）执行 `wake`，再复查外部状态。所有事件都先让节点回到 `running`；根 Agent 验证后执行 `complete`、`fail` 或下一轮 `wait`，再将结果同步到 Todo。旧等待 ID 会被拒绝，同一事件重复到达时为空操作。
-
-watcher 协议见 [wait.zh-CN.md](wait.zh-CN.md)，会话恢复适配见 [clients.zh-CN.md](clients.zh-CN.md)。
-
-## 控制和恢复
-
-恢复时从持久状态刷新当前目标的 Todo；控制命令成功后同步受影响的条目。
-
-查看完整状态：
-
-```bash
-python src/waitctl.py goal -- show --state "$GOAL_STATE"
-```
-
-暂停或恢复调度：
-
-```bash
-python src/waitctl.py goal -- pause --state "$GOAL_STATE"
-python src/waitctl.py goal -- resume --state "$GOAL_STATE"
-```
-
-取消会把尚未结束的节点标记为 `cancelled`：
-
-```bash
-python src/waitctl.py goal -- cancel --state "$GOAL_STATE"
-```
-
-暂停或取消调度不会强制终止正在运行的 Agent 或已经提交的外部作业。goal 自己启动的 watcher 会在所有权检查或通知重试前发现 wait 已取消或替换，并自行退出。
-
-如果 watcher 在激活前失败、没有投递事件便退出，或必须被替换，可以在不判定节点失败的情况下使本轮 wait 失效：
-
-```bash
-python src/waitctl.py goal -- abort-wait \
-  --state "$GOAL_STATE" \
-  --id deploy \
-  --watch-id CURRENT_WATCH_ID
-```
-
-节点会回到 `running`，随后可以准备新的 wait。watch ID 校验可以防止旧恢复命令误伤更新的 watcher；仍存活的旧 watcher 会在所有权检查或通知重试前发现 ID 已失效并退出。
-
-`check` 会确认每个 `waiting` 节点仍有 watcher 持有已记录的 lock。所有权消失时会报告 `orphaned_wait` 错误，`show` 的 activity 也会变为 `orphaned_wait`。应对原节点执行 `abort-wait`；不得为同一个外部对象新建第二个节点。
-
-确认失败节点允许再次尝试后，可归档失败记录并将它恢复为 `pending`：
-
-```bash
-python src/waitctl.py goal -- retry --state "$GOAL_STATE" --id deploy
-```
-
-`retry` 只修改调度状态，不会授权或执行外部重试、部署、重启等副作用。
-
-继续同一个外部逻辑任务时，应 retry 失败的原节点，这样后续任务的依赖才不会断。另建替代节点不能解除原节点造成的阻塞。
-
-## 完成目标
-
-所有节点完成后，再检查用户原本要的结果是否达成。还缺工作就加节点继续做；确实完成后，先保存验收证据：
-
-```bash
-python src/waitctl.py goal -- verify \
-  --state "$GOAL_STATE" \
-  --summary "原始需求已经满足" \
-  --check "全部测试通过" \
-  --check "健康检查状态为 Ready"
-```
-
-然后结束目标：
-
-```bash
-python src/waitctl.py goal -- finish \
-  --state "$GOAL_STATE" \
-  --summary "发布完成，测试与健康检查均通过"
-```
-
-`verify` 会拒绝空图或任何未完成节点，`finish` 会拒绝没有持久化验收记录的目标。已完成节点和目标必须保留非空结果与完成时间。状态文件会保留验收证据，不应在完成时自动删除。
+`verify` 拒绝空图或未完成节点，`finish` 要求已保存验证。完成节点／目标必须保留非空结果与完成时间；状态和验证证据不会自动删除。
