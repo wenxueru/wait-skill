@@ -2,7 +2,7 @@
 
 English | [简体中文](wait-goal.zh-CN.md)
 
-The root persists a task dependency graph, accepts each result, and verifies the original objective. Invoke only when requested or resuming a saved goal. Use `$wait goal <objective>`, `resume|status <state-file>`, or user-requested `pause|cancel <state-file>`; slash-command clients use `/wait goal`.
+The root persists a task dependency graph, accepts each result, and verifies the original objective. Invoke only when requested or resuming a saved goal. Use `$wait goal <objective>`, `status <state-file>`, or user-requested `pause|cancel <state-file>`; slash-command clients use `/wait goal`.
 
 ## Workflow
 
@@ -78,7 +78,7 @@ All commands above take `--state FILE`. Cancellation marks unfinished nodes canc
 
 ## External waits
 
-First start the external node and prepare a [read-only waiting program](wait.md). Write a short `event_note`, then submit and activate:
+First start the external node and prepare a [read-only waiting program](wait.md). Write an `event_note` describing the next action, then submit and activate:
 
 ```bash
 python /path/to/wait/src/waitctl.py goal -- wait --state "$GOAL_STATE" \
@@ -94,8 +94,10 @@ python /path/to/wait/src/waitctl.py goal -- activate-wait \
 Connect the [client wake path](clients.md) before ending the turn. The generated message is:
 
 ```text
-$wait goal resume {goal_state}; node={goal_node}; event_id={event_id}; log_file={log_file}; event_note="{event_note}"
+$wait goal resume {short_id} — {event_note}
 ```
+
+Resolve the short ID using the [resume protocol](../SKILL.md#resume-messages).
 
 Read the result, validate its ID, and record the actual event:
 

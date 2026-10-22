@@ -2,7 +2,7 @@
 
 [English](wait-loop.md) | 简体中文
 
-通过 `$wait loop <间隔>: <任务>` 启动，`resume|status|cancel <状态文件>` 恢复或控制；斜杠客户端用 `/wait loop`。根 Agent 做完一轮任务，再由 `wait` 计时等待下一轮。同一时间只运行一轮，两轮之间模型不用轮询。
+通过 `$wait loop <间隔>: <任务>` 启动，`status|cancel <状态文件>` 查看或控制；斜杠客户端用 `/wait loop`。根 Agent 做完一轮任务，再由 `wait` 计时等待下一轮。同一时间只运行一轮，两轮之间模型不用轮询。
 
 ## 生命周期
 
@@ -52,7 +52,9 @@ WATCH_ID=WATCH_ID_FROM_COMPLETE
 
 每次注册计时器后，使用保存的 watch ID，按[客户端适配](clients.zh-CN.md)接好事件投递通道，再结束轮次。
 
-每次计时结束，服务用 `$wait loop resume {state_file}; event_id={event_id}; log_file={log_file}; event_note="{event_note}"` 唤醒。状态路径由 loop 生成，简短的 note 由 Agent 初始化 loop 时写入。日志报告 `event: exited`、`exit_code: 0`，且 stdout 为 `Ready` 时，先记录本次唤醒，再执行任务：
+每次计时结束，服务用 `$wait loop resume {short_id} — {event_note}` 唤醒。状态路径由 loop 生成，完整 note 由 Agent 初始化 loop 时写入。日志报告 `event: exited`、`exit_code: 0`，且 stdout 为 `Ready` 时，先记录本次唤醒，再执行任务：
+
+先按[唤醒恢复协议](../SKILL.zh-CN.md#唤醒消息)解析短 ID，再执行本模式的恢复步骤。
 
 ```bash
 python /path/to/wait/src/waitctl.py loop -- begin \

@@ -353,7 +353,7 @@ class GoalGraph:
             event_note = wait.get("event_note")
             if event_note is not None:
                 try:
-                    wait_runtime.concise_event_note(event_note)
+                    wait_runtime.single_line_note(event_note)
                 except (argparse.ArgumentTypeError, AttributeError) as exc:
                     raise GoalError(f"node {node_id!r} has invalid wait event_note") from exc
             phase = wait.get("phase")
@@ -1219,16 +1219,26 @@ def command_abort_agent(args: argparse.Namespace) -> None:
 
 def prepared_wait_argv(wait: WaitMetadata, state: str, node_id: str) -> list[str]:
     return [
-        "--label", wait["label"],
-        "--event-note", wait["event_note"],
-        "--client", wait["client"],
-        "--session", wait["thread"],
-        "--event-id", wait["watch_id"],
-        "--goal-state", state,
-        "--goal-node", node_id,
-        "--log-file", wait["log_file"],
-        "--lock-file", wait["lock_file"],
-        "--startup-file", wait["startup_file"],
+        "--label",
+        wait["label"],
+        "--event-note",
+        wait["event_note"],
+        "--client",
+        wait["client"],
+        "--session",
+        wait["thread"],
+        "--event-id",
+        wait["watch_id"],
+        "--goal-state",
+        state,
+        "--goal-node",
+        node_id,
+        "--log-file",
+        wait["log_file"],
+        "--lock-file",
+        wait["lock_file"],
+        "--startup-file",
+        wait["startup_file"],
     ]
 
 
@@ -1477,7 +1487,7 @@ def parser() -> argparse.ArgumentParser:
     wait = state_command("wait", command_wait, help="Prepare an external wait before watcher startup")
     wait.add_argument("--id", required=True)
     wait.add_argument("--label", required=True)
-    wait.add_argument("--event-note", type=wait_runtime.concise_event_note, required=True)
+    wait.add_argument("--event-note", type=wait_runtime.single_line_note, required=True)
     wait.add_argument("--log-file", help="Override the generated watcher log path")
     wait.add_argument("--lock-file", help="Override the generated watcher lock path")
     wait.add_argument("--startup-file", help="Override the generated startup receipt path")

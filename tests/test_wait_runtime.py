@@ -38,11 +38,13 @@ class RuntimeTest(unittest.TestCase):
             self.assertEqual(attempts, 2)
             sleep.assert_called_once()
 
-    def test_event_note_must_be_concise_and_single_line(self) -> None:
-        self.assertEqual(wait_runtime.concise_event_note("  Recheck deployment  "), "Recheck deployment")
-        for value in ("", "line one\nline two", "x" * 241):
-            with self.subTest(value=value[:20]), self.assertRaises(ArgumentTypeError):
-                wait_runtime.concise_event_note(value)
+    def test_event_note_preserves_full_single_line(self) -> None:
+        for note in ("  Recheck deployment  ", "完整恢复说明 " * 100):
+            with self.subTest(note=note[:20]):
+                self.assertEqual(wait_runtime.single_line_note(note), note)
+        for note in ("", "   ", "line one\nline two", "line one\rline two"):
+            with self.subTest(note=note), self.assertRaises(ArgumentTypeError):
+                wait_runtime.single_line_note(note)
 
     def test_notification_limits_preserve_defaults_and_overrides(self) -> None:
         for client in sorted(wait_runtime.CLIENTS):

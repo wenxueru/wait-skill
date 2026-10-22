@@ -19,7 +19,9 @@ A read-only program waits for useful external evidence; `waitd` runs it once, sa
    The first `--` ends `waitctl` parsing; the second begins the program argv. No shell is implied. Log paths, lock paths, and event IDs are generated unless overridden.
 3. Require `query: verified` and an explicit `delivery` state; keep `watch_id`, `log_file`, `lock_file`, and `deadline`. An active watcher must hold its lock. A fast program may already have finished. If startup is unverified after five seconds, the client cancels the watcher and exits nonzero.
 4. Set up the [client wake path](clients.md), then end the model turn. Automatic locks prevent duplicate watches for the same project, client/session/endpoint, label, and program.
-5. The service emits `$wait resume {log_file}; event_id={event_id}; event_note="{event_note}"`. Inspect `waitctl.py show EVENT_ID` and the log, validate the event, recheck current external state, then perform the saved next action within the original authorization. Update the task's native Todo after accepting the result, if available.
+5. The service emits `$wait resume {short_id} — {event_note}`. Inspect `waitctl.py show SHORT_ID` and the log, validate the event, recheck current external state, then perform the saved next action within the original authorization. Update the task's native Todo after accepting the result, if available.
+
+Resolve the short ID using the [resume protocol](../SKILL.md#resume-messages).
 
 Without `--session`, results are saved without automatic delivery. Goal-owned waits use the [Goal handshake](wait-goal.md#external-waits).
 
@@ -32,13 +34,11 @@ import json
 from pathlib import Path
 from wait_for import poll
 
-
 def query():
     return {
         "failed": Path("/tmp/deploy.failed").exists(),
         "done": Path("/tmp/deploy.done").exists(),
     }
-
 
 def evaluate(data):
     if data["failed"]:
@@ -46,7 +46,6 @@ def evaluate(data):
     if data["done"]:
         return {"ok": True, "next": "Check service health"}
     return None
-
 
 print(json.dumps(poll(query, evaluate, interval=5, timeout=3500)))
 ```

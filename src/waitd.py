@@ -43,9 +43,7 @@ class PreDeliveryPersistenceError(OSError):
 
 
 def notification_is_unconfirmed(client: str, outcome: dict[str, object]) -> bool:
-    return outcome["event"] == "timeout" or (
-        client == "codex" and outcome["exit_code"] == wait_runtime.EXIT_NOTIFY_UNCONFIRMED
-    )
+    return outcome["event"] == "timeout" or (client == "codex" and outcome["exit_code"] == wait_runtime.EXIT_NOTIFY_UNCONFIRMED)
 
 
 def watcher_failure(exc: BaseException, **context: object) -> dict[str, object]:
@@ -453,6 +451,28 @@ class WaitDaemon:
             "deadline": deadline_at,
         }
 
+    def show(self, token: str) -> dict[str, object]:
+        """Resolve a watch prefix and expose the saved recovery context."""
+        matches = [key for key in self.watchers if token and key.startswith(token)]
+        if not matches:
+            raise ValueError(f"unknown watch: {token}")
+        if len(matches) != 1:
+            raise ValueError(f"ambiguous watch prefix: {token}; use a longer ID from list")
+        watch_id = matches[0]
+        record = self.watchers[watch_id]
+        args, _ = wait_runtime.parse_job_args(record["argv"])
+        return {
+            **record,
+            "resume": {
+                "event_id": watch_id,
+                "log_file": str(args.log_file),
+                "goal_state": str(args.goal_state) if args.goal_state else None,
+                "goal_node": args.goal_node,
+                "loop_state": str(args.loop_state) if args.loop_state else None,
+                "event_note": args.event_note,
+            },
+        }
+
     def cancel(self, watch_id: str) -> dict[str, object]:
         record = self.watchers.get(watch_id)
         if record is None:
@@ -484,10 +504,7 @@ class WaitDaemon:
         if operation == "list":
             return {"watchers": list(self.watchers.values())}
         if operation == "show":
-            watch_id = str(request.get("watch_id", ""))
-            if watch_id not in self.watchers:
-                raise ValueError(f"unknown watch: {watch_id}")
-            return self.watchers[watch_id]
+            return self.show(str(request.get("watch_id", "")))
         if operation == "cancel":
             return self.cancel(str(request.get("watch_id", "")))
         if operation == "follow":
@@ -556,9 +573,7 @@ class WaitDaemon:
         if record.get("state") != "active":
             return
         if result.get("event") == "watcher_failed":
-            if args and args.thread and await self._notify_watcher_failure(
-                args, result, record, self.cancel_events[watch_id]
-            ):
+            if args and args.thread and await self._notify_watcher_failure(args, result, record, self.cancel_events[watch_id]):
                 return
             record["phase"] = "finalizing"
         self._update_record(
@@ -633,14 +648,12 @@ class WaitDaemon:
                 result.update(notification="failed", notification_stderr=repr(exc))
         record.update(state="failed", result=result, code=1, phase="finalizing", updated_at=time.time())
         print(
-            json.dumps(
-                {
-                    "event": "watcher_failed",
-                    "watch_id": record["watch_id"],
-                    "persistence_error": repr(persistence_error),
-                    "notification": result["notification"],
-                }
-            ),
+            json.dumps({
+                "event": "watcher_failed",
+                "watch_id": record["watch_id"],
+                "persistence_error": repr(persistence_error),
+                "notification": result["notification"],
+            }),
             file=sys.stderr,
             flush=True,
         )

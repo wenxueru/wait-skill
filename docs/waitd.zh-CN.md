@@ -58,4 +58,6 @@ waitctl.py start -- <watcher 参数> -- <等待程序及参数>
 
 `watcher_failed` 使用普通[客户端投递](clients.zh-CN.md)。投递前持久化失效时，daemon 记录服务日志，再尝试一次带 `event=watcher_failed; persistence=unavailable` 的唤醒，或通知已连接的 Claude `follow`。该唤醒及内存状态不持久，重启后可能重复；持久证据显示可能已投递成功时不会再次发送。
 
-唤醒消息引用结果日志、event ID 和 Agent 编写的 `event_note`，从不嵌入原始程序输出。持久化失败后日志与 registry 均可能过期，决定恢复方式前先检查证据。
+唤醒消息显示短 event ID 和 Agent 编写的完整 `event_note`，路径通过 `show SHORT_ID` 读取，从不嵌入原始程序输出。持久化失败后日志与 registry 均可能过期，决定恢复方式前先检查证据。
+
+先按[唤醒恢复协议](../SKILL.zh-CN.md#唤醒消息)解析短 ID，再执行本模式的恢复步骤。

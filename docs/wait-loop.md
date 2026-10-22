@@ -2,7 +2,7 @@
 
 English | [简体中文](wait-loop.zh-CN.md)
 
-Invoke `$wait loop <interval>: <task>`; use `resume|status|cancel <state-file>` for recovery or control. Slash-command clients use `/wait loop`. The root runs the task once, then `wait` handles the timer until the next run. Only one iteration runs at a time; the model stays idle between runs.
+Invoke `$wait loop <interval>: <task>`; use `status|cancel <state-file>` for inspection or control. Slash-command clients use `/wait loop`. The root runs the task once, then `wait` handles the timer until the next run. Only one iteration runs at a time; the model stays idle between runs.
 
 ## Lifecycle
 
@@ -52,7 +52,9 @@ WATCH_ID=WATCH_ID_FROM_COMPLETE
 
 After each timer registration, set up event delivery using the saved watch ID and the [client adapter](clients.md), then end the turn.
 
-On each timer, the service resumes with `$wait loop resume {state_file}; event_id={event_id}; log_file={log_file}; event_note="{event_note}"`. The loop supplies the state path and preserves the short note authored by the agent at initialization. When the log reports `event: exited`, `exit_code: 0`, and stdout `Ready`, consume the event before executing the task:
+On each timer, the service resumes with `$wait loop resume {short_id} — {event_note}`. The loop supplies the state path and preserves the full note authored by the agent at initialization. When the log reports `event: exited`, `exit_code: 0`, and stdout `Ready`, consume the event before executing the task:
+
+Resolve the short ID using the [resume protocol](../SKILL.md#resume-messages).
 
 ```bash
 python /path/to/wait/src/waitctl.py loop -- begin \

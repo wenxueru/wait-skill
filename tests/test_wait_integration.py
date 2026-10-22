@@ -47,7 +47,7 @@ class PollServiceTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(response["result"]["event"], "exited")
                 self.assertEqual(response["result"]["exit_code"], 0)
                 self.assertEqual(json.loads(response["result"]["stdout"]), {"workers": 8})
-                self.assertIn(submitted["log_file"], response["resume_message"])
+                self.assertIn(submitted["watch_id"][:8], response["resume_message"])
             finally:
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)

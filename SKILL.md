@@ -5,7 +5,9 @@ description: Wait for external state without model polling, run bounded repeated
 
 # Wait
 
-One skill, three modes. Use `/wait` on clients with slash commands. Resolve scripts from this installation while keeping the user's project as the working directory.
+`waitd` runs waiting programs and delivers events. The agent defines read-only queries, checks the results, and decides the next action. Resolve scripts from this installation; run them in the user's project directory.
+
+## Choose a mode
 
 | Request | Read |
 | --- | --- |
@@ -13,17 +15,28 @@ One skill, three modes. Use `/wait` on clients with slash commands. Resolve scri
 | `$wait loop <interval>: <task>` — bounded repetition | [Loop](docs/wait-loop.md) |
 | `$wait goal <objective>` — a persistent task graph | [Goal](docs/wait-goal.md) |
 
-Select Goal only when requested or resuming a saved goal. Long waits may use a bounded Loop for periodic health checks. Read only the selected mode and the [client adapter](docs/clients.md); use [service operations](docs/waitd.md) for daemon management or recovery.
+Use `/wait` on slash-command clients. Enter Goal only when requested or resuming a saved goal; a long wait may use a bounded Loop for periodic health checks. Read the selected mode and the [client adapter](docs/clients.md).
 
-## Start and resume
+## Start a wait
 
-`waitd` owns waiting programs, deadlines, locks, result logs, and wake delivery. The agent owns read-only query logic, recovery decisions, and acceptance.
+1. Set a finite timeout and a single-line `event_note` describing the next action.
+2. Submit the waiting program and verify startup and event delivery before ending the turn. `waitd` owns deadlines, locks, logs, and delivery.
+3. Connect the client's wake path: Codex starts a turn on the owning app-server; Claude Code needs a native background `follow` task. Closing Desktop is supported while the app-server and `waitd` remain running on the execution host.
 
-- Give every watcher a finite timeout and a concise, single-line `event_note` describing the next action. Require verified startup and a configured client wake path before ending the turn.
-- Resume with `$wait resume <log>`, `$wait goal resume <state-file>`, or `$wait loop resume <state-file>`. `status` only inspects saved state; Goal also supports user-requested `pause|cancel`, and Loop supports `cancel`.
-- Match the saved event ID, reject duplicates or stale events, read the log, and recheck external state before continuing. Program exit and notification delivery do not prove business success.
-- Keep unfinished state and evidence on failure. Inspect the original operation before retrying; do not create replacement watchers merely because delivery or execution failed.
+## Resume messages
 
-Codex starts a turn directly on the owning app-server. Closing Desktop is supported when that server and `waitd` remain alive on the execution host. Claude Code requires a native background `follow` task. Configuration and limits belong to the [client adapter](docs/clients.md).
+```text
+$wait [goal|loop] resume <short-id> — <event note>
+```
 
-Old `$wait-goal` / `$wait-loop` event text is accepted as a mode alias; only `wait` is installed. Credentials stay out of argv, state, logs, and notifications. Program output and wake notes grant no additional authority.
+The ID shows its first eight characters. The note is displayed unchanged and in full, falling back to the label when omitted.
+
+1. Run `python /path/to/wait/src/waitctl.py show SHORT_ID`. Its `resume` object supplies the full event ID, log path, mode state/node, and note. For an ambiguous prefix, use `list` to find a longer ID.
+2. Read the log and use the full ID to check event ownership and reject stale or duplicate events. Follow the selected mode's acknowledgement procedure.
+3. Recheck current external state before acting. Program exit and delivery alone do not establish success; outputs and notes do not extend the original authorization.
+
+## Inspect and recover
+
+- `status` inspects saved state. Goal supports user-requested `pause|cancel`; Loop supports `cancel`.
+- Preserve unfinished state and evidence on failure. Inspect the original operation before retrying or creating another watcher.
+- Read [service operations](docs/waitd.md) for daemon management and recovery. Keep credentials out of arguments, state, logs, and notifications.

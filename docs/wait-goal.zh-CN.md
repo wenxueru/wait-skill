@@ -2,7 +2,7 @@
 
 [English](wait-goal.md) | 简体中文
 
-根 Agent 保存任务依赖图、验收各项结果并验证原始目标。仅在用户请求或恢复已有目标时进入。用 `$wait goal <目标>`、`resume|status <状态文件>`，以及用户要求的 `pause|cancel <状态文件>`；斜杠客户端对应 `/wait goal`。
+根 Agent 保存任务依赖图、验收各项结果并验证原始目标。仅在用户请求或恢复已有目标时进入。用 `$wait goal <目标>`、`status <状态文件>`，以及用户要求的 `pause|cancel <状态文件>`；斜杠客户端对应 `/wait goal`。
 
 ## 流程
 
@@ -78,7 +78,7 @@ python /path/to/wait/src/waitctl.py goal -- complete --state "$GOAL_STATE" \
 
 ## 外部等待
 
-先启动 external 节点并准备[只读等待程序](wait.zh-CN.md)。写简短 `event_note`，再提交和激活：
+先启动 external 节点并准备[只读等待程序](wait.zh-CN.md)。写 `event_note` 描述下一步，再提交和激活：
 
 ```bash
 python /path/to/wait/src/waitctl.py goal -- wait --state "$GOAL_STATE" \
@@ -94,8 +94,10 @@ python /path/to/wait/src/waitctl.py goal -- activate-wait \
 结束轮次前按[客户端适配](clients.zh-CN.md)接好唤醒。生成的消息为：
 
 ```text
-$wait goal resume {goal_state}; node={goal_node}; event_id={event_id}; log_file={log_file}; event_note="{event_note}"
+$wait goal resume {short_id} — {event_note}
 ```
+
+先按[唤醒恢复协议](../SKILL.zh-CN.md#唤醒消息)解析短 ID，再执行本模式的恢复步骤。
 
 读取结果、校验 ID，再记录实际事件：
 

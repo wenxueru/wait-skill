@@ -55,6 +55,7 @@ def positive_number(value: str) -> float:
 
 positive_int = wait_runtime.positive_int
 
+
 def default_state_path(start: Path | None = None) -> Path:
     return wait_runtime.project_state_path(DEFAULT_STATE_ROOT, "loop", start)
 
@@ -92,7 +93,7 @@ def validate(state: object) -> dict[str, object]:
         raise LoopError("task must be a non-empty string")
     if "event_note" in state:
         try:
-            wait_runtime.concise_event_note(state["event_note"])
+            wait_runtime.single_line_note(state["event_note"])
         except (argparse.ArgumentTypeError, AttributeError) as exc:
             raise LoopError("event_note must be a concise single-line string") from exc
     if state["client"] not in CLIENTS:
@@ -402,7 +403,7 @@ def parser() -> argparse.ArgumentParser:
     init = commands.add_parser("init")
     add_state(init, required=False)
     init.add_argument("--task", required=True)
-    init.add_argument("--event-note", type=wait_runtime.concise_event_note, required=True)
+    init.add_argument("--event-note", type=wait_runtime.single_line_note, required=True)
     init.add_argument("--interval", type=positive_number, required=True)
     init.add_argument("--duration", type=positive_number, default=DEFAULT_DURATION)
     init.add_argument("--max-iterations", type=positive_int)

@@ -19,7 +19,9 @@
    第一个 `--` 结束 `waitctl` 参数，第二个开始程序 argv；不隐式调用 shell。日志、锁路径和 event ID 默认自动生成，可显式覆盖。
 3. 要求 `query: verified` 和明确的 `delivery` 状态，保留 `watch_id`、`log_file`、`lock_file`、`deadline`。活动 watcher 必须持锁；很快的程序可能已结束。五秒内无法验证启动时，客户端会取消 watcher 并返回非零退出码。
 4. 按[客户端适配](clients.zh-CN.md)接好唤醒，再结束模型轮次。同一项目、客户端／会话／端点、标签和程序使用自动锁防止重复等待。
-5. 服务发送 `$wait resume {log_file}; event_id={event_id}; event_note="{event_note}"`。读取 `waitctl.py show EVENT_ID` 和日志，校验事件、复查外部当前状态，再在原授权内执行保存的下一步。有原生 Todo 时在验收后更新。
+5. 服务发送 `$wait resume {short_id} — {event_note}`。读取 `waitctl.py show SHORT_ID` 和日志，校验事件、复查外部当前状态，再在原授权内执行保存的下一步。有原生 Todo 时在验收后更新。
+
+先按[唤醒恢复协议](../SKILL.zh-CN.md#唤醒消息)解析短 ID，再执行本模式的恢复步骤。
 
 不传 `--session` 时只保存结果，不自动投递。Goal 所属的等待使用 [Goal 握手](wait-goal.zh-CN.md#外部等待)。
 
@@ -32,13 +34,11 @@ import json
 from pathlib import Path
 from wait_for import poll
 
-
 def query():
     return {
         "failed": Path("/tmp/deploy.failed").exists(),
         "done": Path("/tmp/deploy.done").exists(),
     }
-
 
 def evaluate(data):
     if data["failed"]:
@@ -46,7 +46,6 @@ def evaluate(data):
     if data["done"]:
         return {"ok": True, "next": "检查服务健康"}
     return None
-
 
 print(json.dumps(poll(query, evaluate, interval=5, timeout=3500)))
 ```

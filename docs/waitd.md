@@ -58,4 +58,6 @@ Terminal watchers release locks. Duplicate event IDs and conflicting locks are r
 
 `watcher_failed` uses the ordinary [client delivery](clients.md). If persistence fails before delivery, the daemon logs the error and makes one best-effort wake with `event=watcher_failed; persistence=unavailable`, or wakes a connected Claude `follow`. This wake and its in-memory state are not durable; restart can repeat it. Durable evidence that delivery may already have succeeded prevents another send.
 
-Wake messages reference the result log and event ID, with an agent-authored `event_note`; raw program output is never embedded. Both log and registry may be stale after a persistence failure. Inspect them before making a recovery decision.
+Wake messages display the short event ID and full agent-authored `event_note`; paths are retrieved through `show SHORT_ID`, and raw program output is never embedded. Both log and registry may be stale after a persistence failure. Inspect them before making a recovery decision.
+
+Resolve the short ID using the [resume protocol](../SKILL.md#resume-messages).

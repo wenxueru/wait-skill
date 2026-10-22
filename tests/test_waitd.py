@@ -99,8 +99,7 @@ class WaitDaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response["result"]["exit_code"], 2)
         self.assertEqual(
             response["resume_message"],
-            f"$wait goal resume {state}; node=deploy; event_id={watch_id}; log_file={log}; "
-            'event_note="Recheck deployment and continue"',
+            f"$wait goal resume {watch_id[:8]} — Recheck deployment and continue",
         )
         self.assertEqual(json.loads(state.read_text())["nodes"]["deploy"]["status"], "waiting")
         with lock.open("a") as handle, self.assertRaises(BlockingIOError):
@@ -145,7 +144,7 @@ class WaitDaemonTest(unittest.IsolatedAsyncioTestCase):
         response = await self.daemon.follow(submitted["watch_id"])
         await task
         self.assertEqual(response["result"]["event"], "start_failed")
-        self.assertIn(submitted["log_file"], response["resume_message"])
+        self.assertIn(submitted["watch_id"][:8], response["resume_message"])
 
     async def test_restart_does_not_repeat_an_unconfirmed_program(self) -> None:
         argv = self.watcher_argv("Ready")
@@ -471,7 +470,7 @@ class WaitDaemonTest(unittest.IsolatedAsyncioTestCase):
         response = await asyncio.wait_for(self.daemon.follow(submitted["watch_id"]), 2)
         await task
         self.assertEqual(response["result"]["event"], "exited")
-        self.assertIn(f"$wait resume {submitted['log_file']};", response["resume_message"])
+        self.assertIn(f"$wait resume {submitted['watch_id'][:8]} —", response["resume_message"])
         self.assertTrue(await asyncio.to_thread(Path(submitted["log_file"]).is_file))
         self.assertTrue(await asyncio.to_thread(Path(submitted["lock_file"]).is_file))
         record = self.daemon.watchers[submitted["watch_id"]]
@@ -502,7 +501,7 @@ class WaitDaemonTest(unittest.IsolatedAsyncioTestCase):
         for acknowledge in (False, True):
             with self.subTest(acknowledge=acknowledge):
                 argv = self.watcher_argv("Ready")
-                argv[:0] = ["--client", "claude", "--session", "native-test"]
+                argv[:0] = ["--client", "claude", "--session", "native-test", "--event-id", "native"]
                 args, command = waitd.wait_runtime.parse_job_args(argv)
                 args.goal_state = self.root / "goal.json"
                 args.wake_ack_timeout = 0.001
@@ -568,7 +567,7 @@ class WaitDaemonTest(unittest.IsolatedAsyncioTestCase):
             await task
         self.assertEqual(response["result"]["event"], "exited")
         self.assertEqual(response["result"]["notification"], "native_pending")
-        self.assertIn(submitted["watch_id"], response["resume_message"])
+        self.assertIn(submitted["watch_id"][:8], response["resume_message"])
         self.assertEqual(json.loads((self.root / "watch.json").read_text())["notification"], "native_pending")
         repeated = await self.daemon.follow(submitted["watch_id"])
         self.assertEqual(repeated["result"], response["result"])
@@ -669,6 +668,7 @@ class WaitDaemonTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_delivery_launch_failure_is_persisted(self) -> None:
         args, _ = waitd.wait_runtime.parse_job_args(self.watcher_argv("Ready"))
+        args.event_id = "delivery"
         args.thread = "session"
         args.remote = "unix:///test.sock"
         result = {"event_id": "delivery", "event": "exited", "status": "Ready"}
@@ -712,6 +712,7 @@ class WaitDaemonTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_codex_delivery_retries_a_disconnected_server(self) -> None:
         args, _ = waitd.wait_runtime.parse_job_args(self.watcher_argv("Ready"))
+        args.event_id = "delivery"
         args.thread = "session"
         args.remote = "unix:///missing.sock"
         args.max_notification_attempts = 2
@@ -747,6 +748,7 @@ class WaitDaemonTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_codex_rpc_rejection_exhausts_retries(self) -> None:
         args, _ = waitd.wait_runtime.parse_job_args(self.watcher_argv("Ready"))
+        args.event_id = "delivery"
         args.thread = "session"
         args.remote = "unix:///test.sock"
         args.max_notification_attempts = 2
@@ -763,6 +765,7 @@ class WaitDaemonTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_codex_busy_retries_then_starts_once(self) -> None:
         args, _ = waitd.wait_runtime.parse_job_args(self.watcher_argv("Ready"))
+        args.event_id = "delivery"
         args.thread = "session"
         args.max_notification_attempts = 2
         args.notification_retry_interval = 0.001
@@ -781,6 +784,7 @@ class WaitDaemonTest(unittest.IsolatedAsyncioTestCase):
     async def test_codex_ambiguous_start_is_never_retried(self) -> None:
         for event, exit_code in (("timeout", None), ("exited", 71)):
             args, _ = waitd.wait_runtime.parse_job_args(self.watcher_argv("Ready"))
+            args.event_id = "delivery"
             args.thread = "session"
             result = {"event_id": "delivery", "event": "exited"}
             record = {"watch_id": "delivery", "cwd": str(self.root), "state": "active"}
@@ -792,48 +796,41 @@ class WaitDaemonTest(unittest.IsolatedAsyncioTestCase):
             deliver.assert_awaited_once()
 
     def test_resume_instruction_matches_mode(self) -> None:
-        for mode in ("wait", "wait-loop", "wait-goal"):
+        note = "Read the log and continue; 保留完整说明 " * 20
+        for mode, mode_text in (("wait", ""), ("wait-loop", " loop"), ("wait-goal", " goal")):
             with self.subTest(mode=mode):
-                target = "log.json" if mode == "wait" else "state.json"
-                argv = [
-                    "--label",
-                    "x",
-                    "--event-note",
-                    "Read the log and continue",
-                    "--log-file",
-                    "log.json",
-                    "--lock-file",
-                    "lock",
-                    "--session",
-                    "session",
-                    "--event-id",
-                    "event",
-                ]
-                if mode != "wait":
-                    argv += ["--loop-state" if mode == "wait-loop" else "--goal-state", target]
-                if mode == "wait-goal":
-                    argv += ["--goal-node", "n", "--startup-file", "started.json"]
-                argv += ["--", "true"]
-                args, _ = waitd.wait_runtime.parse_job_args(waitd.absolute_wait_argv(argv, self.root))
-                message = waitd.wait_runtime.resume_instruction(args)
-                if mode == "wait":
-                    self.assertEqual(
-                        message,
-                        f'$wait resume {args.log_file}; event_id={args.event_id}; event_note="Read the log and continue"',
-                    )
-                elif mode == "wait-loop":
-                    self.assertEqual(
-                        message,
-                        f"$wait loop resume {args.loop_state}; event_id={args.event_id}; "
-                        f'log_file={args.log_file}; event_note="Read the log and continue"',
-                    )
-                else:
-                    self.assertEqual(
-                        message,
-                        f"$wait goal resume {args.goal_state}; node={args.goal_node}; "
-                        f"event_id={args.event_id}; log_file={args.log_file}; "
-                        'event_note="Read the log and continue"',
-                    )
+                args = argparse.Namespace(
+                    event_id="8934d9b399999999",
+                    event_note=note,
+                    label="demo",
+                    loop_state="state.json" if mode == "wait-loop" else None,
+                    goal_state="state.json" if mode == "wait-goal" else None,
+                )
+                self.assertEqual(
+                    waitd.wait_runtime.resume_instruction(args),
+                    f"$wait{mode_text} resume 8934d9b3 — {note}",
+                )
+
+    async def test_short_wake_resolves_complete_recovery_record(self) -> None:
+        argv = self.watcher_argv("Ready")
+        note = "Full recovery instructions 保留完整说明 " * 5
+        argv[argv.index("--event-note") + 1] = note
+        argv[:0] = ["--event-id", "8934d9b399999999"]
+        submitted = self.daemon.submit(argv, str(self.root))
+        await self.daemon.tasks[submitted["watch_id"]]
+        record = await self.daemon.dispatch({"operation": "show", "watch_id": "8934d9b3"})
+        self.assertEqual(record["resume"]["event_id"], submitted["watch_id"])
+        self.assertEqual(record["resume"]["log_file"], submitted["log_file"])
+        self.assertEqual(record["resume"]["event_note"], note)
+        restarted = waitd.WaitDaemon(self.daemon.registry_path)
+        self.assertEqual(await restarted.dispatch({"operation": "show", "watch_id": "8934d9b3"}), record)
+        self.daemon.watchers["8934d9b300000000"] = record
+        with self.assertRaisesRegex(ValueError, "ambiguous"):
+            await self.daemon.dispatch({"operation": "show", "watch_id": "8934d9b3"})
+        with self.assertRaisesRegex(ValueError, "unknown"):
+            await self.daemon.dispatch({"operation": "show", "watch_id": "missing"})
+        full = await self.daemon.dispatch({"operation": "show", "watch_id": submitted["watch_id"]})
+        self.assertEqual(full, record)
 
     async def test_loop_restart_repairs_missing_timer_registration(self) -> None:
         path = self.root / "loop.json"
@@ -930,8 +927,7 @@ class WaitDaemonTest(unittest.IsolatedAsyncioTestCase):
             args, _ = waitd.wait_runtime.parse_job_args(self.daemon.watchers[watch_id]["argv"])
             self.assertEqual(
                 waitd.wait_runtime.resume_instruction(args),
-                f"$wait loop resume {path.resolve()}; event_id={args.event_id}; "
-                f'log_file={args.log_file}; event_note="Inspect again"',
+                f"$wait loop resume {args.event_id[:8]} — Inspect again",
             )
             deliver.assert_awaited_once()
 

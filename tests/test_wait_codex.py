@@ -123,7 +123,7 @@ class CodexDeliveryTest(unittest.IsolatedAsyncioTestCase):
         process = await asyncio.create_subprocess_exec(
             sys.executable, str(SRC / "wait_codex.py"),
             "--remote", remote or f"unix://{self.socket}", "--session", "session",
-            "--timeout", "2", *extra, "--message", "$wait resume /tmp/result.json; event_id=event-1",
+            "--timeout", "2", *extra, "--message", "$wait resume event-1 — Recheck state",
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env,
         )
         stdout, stderr = await asyncio.wait_for(process.communicate(), 5)
@@ -134,7 +134,7 @@ class CodexDeliveryTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(code, 0, stderr)
         self.assertEqual(json.loads(stdout)["turn_id"], "turn-1")
         self.assertEqual(len(self.starts), 1)
-        self.assertEqual(self.starts[0], {"threadId": "session", "input": [{"type": "text", "text": "$wait resume /tmp/result.json; event_id=event-1"}]})
+        self.assertEqual(self.starts[0], {"threadId": "session", "input": [{"type": "text", "text": "$wait resume event-1 — Recheck state"}]})
         self.assertNotIn("thread/resume", [call["method"] for call in self.calls])
 
     async def test_unloaded_thread_resumed_without_setting_overrides(self):
@@ -208,4 +208,4 @@ class CodexDeliveryTest(unittest.IsolatedAsyncioTestCase):
             result = daemon.watchers[submitted["watch_id"]]["result"]
             self.assertEqual(result["notification"], "started")
             self.assertEqual(result["stdout"], "Ready\n")
-            self.assertIn(submitted["watch_id"], self.starts[0]["input"][0]["text"])
+            self.assertIn(submitted["watch_id"][:8], self.starts[0]["input"][0]["text"])

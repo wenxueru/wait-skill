@@ -37,7 +37,6 @@ EXIT_ACTIVATION_CANCELLED = 76
 EXIT_TIMEOUT = 124
 CLIENTS = {"claude", "codewiz", "codex", "copilot", "cursor"}
 DEFAULT_WAIT_TIMEOUT = 3600.0
-MAX_EVENT_NOTE_LENGTH = 240
 ATOMIC_WRITE_ATTEMPTS = 3
 LEGACY_QUERY_OPTIONS = {"--ready", "--terminal", "--interval", "--query-timeout"}
 
@@ -56,15 +55,12 @@ def positive_int(value: str) -> int:
     return number
 
 
-def concise_event_note(value: str) -> str:
-    note = value.strip()
-    if not note:
+def single_line_note(value: str) -> str:
+    if not value.strip():
         raise argparse.ArgumentTypeError("must not be blank")
-    if len(note) > MAX_EVENT_NOTE_LENGTH:
-        raise argparse.ArgumentTypeError(f"must be at most {MAX_EVENT_NOTE_LENGTH} characters")
-    if "\r" in note or "\n" in note:
+    if "\r" in value or "\n" in value:
         raise argparse.ArgumentTypeError("must be a single line")
-    return note
+    return value
 
 
 def absolute_path(path: Path) -> Path:
@@ -135,9 +131,7 @@ def validate_codex_resume_args(resume_args: Sequence[str]) -> None:
         return
     if len(resume_args) == 2 and resume_args[0] == option and not resume_args[1].startswith("-"):
         return
-    raise ValueError(
-        "Codex wake preserves thread settings; only --remote-auth-token-env is supported as a resume argument"
-    )
+    raise ValueError("Codex wake preserves thread settings; only --remote-auth-token-env is supported as a resume argument")
 
 
 def notification_command(
@@ -152,8 +146,15 @@ def notification_command(
         if not remote:
             raise NotificationUnavailable("notification_unavailable: no Codex app-server endpoint; pass --remote")
         return [
-            sys.executable, str(Path(__file__).with_name("wait_codex.py")),
-            "--remote", remote, "--session", session, *resume_args, "--message", message,
+            sys.executable,
+            str(Path(__file__).with_name("wait_codex.py")),
+            "--remote",
+            remote,
+            "--session",
+            session,
+            *resume_args,
+            "--message",
+            message,
         ]
     if client == "codewiz":
         return ["codewiz", "run", "--session", session, *resume_args, message]
@@ -183,9 +184,7 @@ def resolve_codex_remote(remote: str | None) -> str:
     if remote.startswith("unix://"):
         path = Path(remote.removeprefix("unix://")).expanduser()
         if not path.is_absolute():
-            raise NotificationUnavailable(
-                f"notification_unavailable: unix socket path must be absolute: {remote}"
-            )
+            raise NotificationUnavailable(f"notification_unavailable: unix socket path must be absolute: {remote}")
         return f"unix://{path}"
     if remote.startswith(("ws://", "wss://")):
         return remote
@@ -225,9 +224,7 @@ def preflight_codex_remote(remote: str | None, timeout: float = 1.0) -> str:
     status = response.split(b"\r\n", 1)[0]
     if b" 101 " not in status:
         detail = status.decode("utf-8", errors="replace").strip() or "no HTTP response"
-        raise NotificationUnavailable(
-            f"notification_unavailable: {path} is not a Codex app-server endpoint ({detail})"
-        )
+        raise NotificationUnavailable(f"notification_unavailable: {path} is not a Codex app-server endpoint ({detail})")
     return endpoint
 
 
@@ -408,8 +405,8 @@ def add_runtime_arguments(result: argparse.ArgumentParser) -> None:
     )
     result.add_argument(
         "--event-note",
-        type=concise_event_note,
-        help="Short agent-authored instruction for what to do after the event",
+        type=single_line_note,
+        help="Agent-authored instruction for what to do after the event",
     )
     result.add_argument("--goal-state", type=Path, help="Goal state used for startup activation")
     result.add_argument("--goal-node", help="External goal node used for startup activation")
@@ -447,19 +444,10 @@ def add_runtime_arguments(result: argparse.ArgumentParser) -> None:
 
 
 def resume_instruction(args: argparse.Namespace) -> str:
-    """Build the wake command with its agent-authored note."""
-    if args.goal_state:
-        command = f"$wait goal resume {args.goal_state}"
-        fields = [f"node={args.goal_node}", f"event_id={args.event_id}", f"log_file={args.log_file}"]
-    elif args.loop_state:
-        command = f"$wait loop resume {args.loop_state}"
-        fields = [f"event_id={args.event_id}", f"log_file={args.log_file}"]
-    else:
-        command = f"$wait resume {args.log_file}"
-        fields = [f"event_id={args.event_id}"]
-    if note := getattr(args, "event_note", None):
-        fields.append(f"event_note={json.dumps(note, ensure_ascii=False)}")
-    return "; ".join([command, *fields])
+    """Keep wake text readable; resolve full recovery data through waitctl show."""
+    mode = " goal" if args.goal_state else " loop" if args.loop_state else ""
+    note = args.event_note or args.label
+    return f"$wait{mode} resume {args.event_id[:8]} — {note}"
 
 
 def job_parser() -> argparse.ArgumentParser:
