@@ -10,12 +10,12 @@ import tempfile
 import threading
 import time
 import unittest
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
-from wait_codex import AppServer, wake
+from codex import AppServer, wake
 
 requests = []
 
@@ -50,9 +50,7 @@ class Stub(http.server.BaseHTTPRequestHandler):
             {"type": "response.output_item.done", "output_index": 0, "item": message},
             {"type": "response.completed", "response": response},
         ]
-        payload = "".join(
-            f"event: {event['type']}\ndata: {json.dumps(event)}\n\n" for event in events
-        ).encode()
+        payload = "".join(f"event: {event['type']}\ndata: {json.dumps(event)}\n\n" for event in events).encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Content-Length", str(len(payload)))
@@ -61,22 +59,37 @@ class Stub(http.server.BaseHTTPRequestHandler):
 
 
 @contextmanager
-def running_codex(root: Path, endpoint: str, model_port: int) -> Iterator[None]:
+def running_codex(root: Path, endpoint: str, model_port: int) -> Generator[None, None, None]:
     env = {**os.environ, "CODEX_HOME": str(root / "home")}
     env.pop("OPENAI_API_KEY", None)
     args = [
-        "codex", "app-server", "--listen", endpoint,
-        "-c", 'model_provider="wait_smoke"',
-        "-c", 'model="wait-smoke"',
-        "-c", 'model_providers.wait_smoke.name="Wait isolated stub"',
-        "-c", f'model_providers.wait_smoke.base_url="http://127.0.0.1:{model_port}/v1"',
-        "-c", 'model_providers.wait_smoke.wire_api="responses"',
-        "-c", "model_providers.wait_smoke.requires_openai_auth=false",
-        "-c", "model_providers.wait_smoke.supports_websockets=false",
+        "codex",
+        "app-server",
+        "--listen",
+        endpoint,
+        "-c",
+        'model_provider="wait_smoke"',
+        "-c",
+        'model="wait-smoke"',
+        "-c",
+        'model_providers.wait_smoke.name="Wait isolated stub"',
+        "-c",
+        f'model_providers.wait_smoke.base_url="http://127.0.0.1:{model_port}/v1"',
+        "-c",
+        'model_providers.wait_smoke.wire_api="responses"',
+        "-c",
+        "model_providers.wait_smoke.requires_openai_auth=false",
+        "-c",
+        "model_providers.wait_smoke.supports_websockets=false",
     ]
     with (root / "server.log").open("w+") as log:
         server = subprocess.Popen(
-            args, cwd=root, env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+            args,
+            cwd=root,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=log,
         )
         try:
             for _ in range(100):
@@ -113,28 +126,41 @@ class RealAppServerTest(unittest.TestCase):
                 endpoint = f"unix://{root / 'server.sock'}"
                 with running_codex(root, endpoint, stub.server_port):
                     with AppServer(endpoint, 10) as rpc:
-                        thread = rpc.call("thread/start", {
-                            "cwd": temp, "model": "wait-smoke",
-                            "approvalPolicy": "never", "sandbox": "read-only",
-                        })["thread"]
+                        thread = rpc.call(
+                            "thread/start",
+                            {
+                                "cwd": temp,
+                                "model": "wait-smoke",
+                                "approvalPolicy": "never",
+                                "sandbox": "read-only",
+                            },
+                        )["thread"]
                     # No client remains attached; wake independently, then disconnect as well.
                     result, code = wake(endpoint, thread["id"], "Verify the background continuation.", 10)
                     self.assertEqual(code, 0, result)
                     self.assertEqual(result["status"], "started", result)
                     for _ in range(100):
                         with AppServer(endpoint, 5) as rpc:
-                            read = rpc.call("thread/read", {
-                                "threadId": thread["id"], "includeTurns": False,
-                            })["thread"]
+                            read = rpc.call(
+                                "thread/read",
+                                {
+                                    "threadId": thread["id"],
+                                    "includeTurns": False,
+                                },
+                            )["thread"]
                         if requests and read["status"]["type"] == "idle":
                             break
                         time.sleep(0.05)
                     self.assertEqual(read["status"]["type"], "idle", read)
                     self.assertTrue(requests, "model backend was never called")
-                    self.assertTrue(any(
-                        b"Headless wake verified" in file.read_bytes()
-                        for file in (root / "home").rglob("*") if file.is_file()
-                    ), "completion not persisted")
+                    self.assertTrue(
+                        any(
+                            b"Headless wake verified" in file.read_bytes()
+                            for file in (root / "home").rglob("*")
+                            if file.is_file()
+                        ),
+                        "completion not persisted",
+                    )
         finally:
             stub.shutdown()
             stub.server_close()

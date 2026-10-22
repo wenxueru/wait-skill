@@ -9,7 +9,7 @@ import struct
 import sys
 import tempfile
 import unittest
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -73,10 +73,12 @@ class CodexDeliveryTest(unittest.IsolatedAsyncioTestCase):
             accept = base64.b64encode(digest).decode()
             if self.bad_handshake:
                 accept = "wrong"
-            writer.write((
-                "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n"
-                f"Connection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n"
-            ).encode())
+            writer.write(
+                (
+                    "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n"
+                    f"Connection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n"
+                ).encode()
+            )
             await writer.drain()
             while True:
                 first, second = await reader.readexactly(2)
@@ -121,10 +123,20 @@ class CodexDeliveryTest(unittest.IsolatedAsyncioTestCase):
 
     async def invoke(self, *extra, remote=None, env=None):
         process = await asyncio.create_subprocess_exec(
-            sys.executable, str(SRC / "wait_codex.py"),
-            "--remote", remote or f"unix://{self.socket}", "--session", "session",
-            "--timeout", "2", *extra, "--message", "$wait resume event-1 — Recheck state",
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env,
+            sys.executable,
+            str(SRC / "codex.py"),
+            "--remote",
+            remote or f"unix://{self.socket}",
+            "--session",
+            "session",
+            "--timeout",
+            "2",
+            *extra,
+            "--message",
+            "$wait resume event-1 — Recheck state",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env,
         )
         stdout, stderr = await asyncio.wait_for(process.communicate(), 5)
         return process.returncode, stdout.decode(), stderr.decode()
@@ -134,7 +146,9 @@ class CodexDeliveryTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(code, 0, stderr)
         self.assertEqual(json.loads(stdout)["turn_id"], "turn-1")
         self.assertEqual(len(self.starts), 1)
-        self.assertEqual(self.starts[0], {"threadId": "session", "input": [{"type": "text", "text": "$wait resume event-1 — Recheck state"}]})
+        self.assertEqual(
+            self.starts[0], {"threadId": "session", "input": [{"type": "text", "text": "$wait resume event-1 — Recheck state"}]}
+        )
         self.assertNotIn("thread/resume", [call["method"] for call in self.calls])
 
     async def test_unloaded_thread_resumed_without_setting_overrides(self):
@@ -178,7 +192,7 @@ class CodexDeliveryTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.starts)
 
     @asynccontextmanager
-    async def tcp_endpoint(self) -> AsyncIterator[str]:
+    async def tcp_endpoint(self) -> AsyncGenerator[str, None]:
         server = await asyncio.start_server(self.serve, host="127.0.0.1", port=0)
         try:
             port = server.sockets[0].getsockname()[1]
@@ -190,8 +204,10 @@ class CodexDeliveryTest(unittest.IsolatedAsyncioTestCase):
     async def test_tcp_websocket_and_token_from_environment(self) -> None:
         async with self.tcp_endpoint() as remote:
             code, stdout, stderr = await self.invoke(
-                "--remote-auth-token-env", "WAIT_TEST_TOKEN",
-                remote=remote, env={**os.environ, "WAIT_TEST_TOKEN": "test-secret"},
+                "--remote-auth-token-env",
+                "WAIT_TEST_TOKEN",
+                remote=remote,
+                env={**os.environ, "WAIT_TEST_TOKEN": "test-secret"},
             )
             self.assertEqual(code, 0, stderr)
             self.assertIn("Authorization: Bearer test-secret", self.headers[-1])
@@ -200,10 +216,23 @@ class CodexDeliveryTest(unittest.IsolatedAsyncioTestCase):
     async def test_waitd_runs_query_and_directly_starts_wake_turn(self) -> None:
         daemon = waitd.WaitDaemon(self.root / "registry.json")
         async with self.tcp_endpoint() as remote:
-            submitted = daemon.submit([
-                "--label", "headless", "--session", "session", "--event-note", "Recheck the saved state",
-                "--remote", remote, "--", sys.executable, "-c", "print('Ready')",
-            ], str(self.root))
+            submitted = daemon.submit(
+                [
+                    "--label",
+                    "headless",
+                    "--session",
+                    "session",
+                    "--event-note",
+                    "Recheck the saved state",
+                    "--remote",
+                    remote,
+                    "--",
+                    sys.executable,
+                    "-c",
+                    "print('Ready')",
+                ],
+                str(self.root),
+            )
             await asyncio.wait_for(daemon.tasks[submitted["watch_id"]], 5)
             result = daemon.watchers[submitted["watch_id"]]["result"]
             self.assertEqual(result["notification"], "started")

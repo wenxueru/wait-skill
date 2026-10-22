@@ -1,6 +1,6 @@
 # `$wait loop`: Event-driven Loop mode
 
-English | [简体中文](wait-loop.zh-CN.md)
+English | [简体中文](loop.zh-CN.md)
 
 Invoke `$wait loop <interval>: <task>`; use `status|cancel <state-file>` for inspection or control. Slash-command clients use `/wait loop`. The root runs the task once, then `wait` handles the timer until the next run. Only one iteration runs at a time; the model stays idle between runs.
 
@@ -74,14 +74,14 @@ python /path/to/wait/src/waitctl.py loop -- expire \
 
 Without `--state`, `init` creates `/tmp/.wait-loop/<project-name>-<path-hash>/loop-<id>.json` and returns its canonical path. The closest Git root identifies the project. On macOS, the returned path may use `/private/tmp`.
 
-Use `waitctl loop` to manage the loop through `waitd`; `wait_loop.py` also works as a standalone state engine. The saved file survives service restarts and records the task, client/session, remote endpoint, schedule, phase, watch ID, run summaries, and event history. Delivery and stop conditions are fixed at `init`:
+Use `waitctl loop` to manage the loop through `waitd`; `loop.py` also works as a standalone state engine. The saved file survives service restarts and records the task, client/session, remote endpoint, schedule, phase, watch ID, run summaries, and event history. Delivery and stop conditions are fixed at `init`:
 
 - `--duration` limits the complete loop and defaults to 24 hours.
 - `--max-iterations` optionally limits successful iterations.
 - `--remote` selects the Codex endpoint saved for each timer; omission uses the default control socket.
 - `--remote` is optional and Codex-only. An explicit value is passed to every timer watcher; omission uses the default app-server control socket.
 
-After `complete`, the service registers `wait_loop.py due --wait` with a deadline of `next_run_at` plus 60 seconds. Loop state saves its path and remote endpoint before registration, so daemon recovery can restore a missing timer without repeating the iteration. Every timer receives the same notification preflight as a standalone wait. Its log is stored beside loop state and named with the watch ID.
+After `complete`, the service registers `loop.py due --wait` with a deadline of `next_run_at` plus 60 seconds. Loop state saves its path and remote endpoint before registration, so daemon recovery can restore a missing timer without repeating the iteration. Every timer receives the same notification preflight as a standalone wait. Its log is stored beside loop state and named with the watch ID.
 
 ## Recovery and cancellation
 

@@ -1,13 +1,13 @@
 # `$wait goal`：持久目标
 
-[English](wait-goal.md) | 简体中文
+[English](goal.md) | 简体中文
 
 根 Agent 保存任务依赖图、验收各项结果并验证原始目标。仅在用户请求或恢复已有目标时进入。用 `$wait goal <目标>`、`status <状态文件>`，以及用户要求的 `pause|cancel <状态文件>`；斜杠客户端对应 `/wait goal`。
 
 ## 流程
 
 1. `init` 保存目标并返回 `state_file`。节点应是有界任务，写清依赖、输入、允许修改的范围、必需产物和验收条件。依赖先于节点存在，图必须无环。
-2. 每次启动或恢复运行 `show`、`check`、`ready`。有原生 Todo 时按节点 ID 和最终验收跟踪，状态变更成功后再同步；清单不等于验收证据。
+2. 每次启动、恢复或派发前运行 `show`、`check`、`ready`，尊重用户编辑、暂停和取消。[看板](dashboard.zh-CN.md) 用于实时查看和维护 DAG；有原生 Todo 时，状态变更成功后再同步节点与最终验收。清单不等于验收证据。
 3. local/external 节点先 `start` 再执行；agent 节点先 `prepare-agent`，把 dispatch token 带进任务，只派发一次，再用 `start --dispatch-token ... --agent-id ...` 关联实例。独立、可分别验收且写入不冲突的工作可并发，紧密耦合的工作交给一个 Agent。
 4. 验证结果后 `complete`；失败用 `fail`，新发现用 `add --reason`。只有根 Agent 修改图和共享 Todo；子 Agent 只向根汇报证据、产物、改动和疑问，不互相联系，也不创建 Agent。
 5. 还有就绪任务、返回结果或目标待验收时继续推进。等存活子 Agent 时使用能将完成／异常事件送回当前会话的运行时阻塞等待；等外部状态时用下面的握手。结束未完成目标前，必须确认唤醒来源，或记录具体阻塞、用户暂停或取消。
@@ -67,6 +67,7 @@ python /path/to/wait/src/waitctl.py goal -- complete --state "$GOAL_STATE" \
 | 命令 | 用途 |
 | --- | --- |
 | `show`、`check`、`ready`、`events` | 状态／活动、调度问题、安全就绪队列、历史 |
+| `edit --id ID --title TEXT --depends-on ID --acceptance TEXT` | 替换 pending 节点的标题、依赖和验收条件；后两项可重复，省略即清空 |
 | `prepare-agent --id ID` | 预留派发，保留返回的 token |
 | `start --id ID --dispatch-token TOKEN --agent-id AGENT` | 关联该 token 已创建的子 Agent |
 | `abort-agent --id ID --dispatch-token TOKEN` | 仅在确认没有存活子 Agent 或已终止后释放预留 |
@@ -83,7 +84,7 @@ python /path/to/wait/src/waitctl.py goal -- complete --state "$GOAL_STATE" \
 ```bash
 python /path/to/wait/src/waitctl.py goal -- wait --state "$GOAL_STATE" \
   --id deploy --label "deployment api" --event-note "读取日志，wake 节点，再复查部署" \
-  --timeout 3500 -- env PYTHONPATH=/path/to/wait/src python /tmp/wait_deploy.py
+  --timeout 3500 -- env PYTHONPATH=/path/to/wait/src python /tmp/check_deployment.py
 # WATCH_ID 使用响应返回值。
 python /path/to/wait/src/waitctl.py goal -- activate-wait \
   --state "$GOAL_STATE" --id deploy --watch-id "$WATCH_ID"
@@ -108,7 +109,7 @@ python /path/to/wait/src/waitctl.py goal -- wake --state "$GOAL_STATE" \
 
 `wake` 只让节点回到 `running`，不宣告成功。只读复查一次当前状态，再决定 `complete`、`fail` 或继续等待。旧 ID 被拒绝，完全重复事件为空操作。Watcher 锁保留到确认或配置的 wake-ack 截止时间。可接受事件（含旧版值）见 CLI `--help`。
 
-长等待需要健康检查时可用 `loop init --goal-state FILE --goal-node ID`；所有权与取消规则见 [Loop](wait-loop.zh-CN.md)。
+长等待需要健康检查时可用 `loop init --goal-state FILE --goal-node ID`；所有权与取消规则见 [Loop](loop.zh-CN.md)。
 
 ## 恢复
 

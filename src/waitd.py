@@ -19,10 +19,12 @@ from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
 from typing import Any, TextIO
+from urllib.parse import urlencode
 
-import wait_loop
-import wait_runtime
-from wait_protocol import (
+import goal
+import loop
+import runtime
+from protocol import (
     PROTOCOL_VERSION,
     REGISTRY_PATH,
     SERVICE_FINGERPRINT,
@@ -33,7 +35,7 @@ from wait_protocol import (
 MAX_FINISHED_WATCHES = 256
 MAX_PROGRAM_OUTPUT_BYTES = 64 * 1024
 PATH_OPTIONS = {"--goal-state", "--loop-state", "--startup-file", "--log-file", "--lock-file"}
-STATE_SCRIPTS = {name: Path(__file__).with_name(f"wait_{name}.py") for name in STATE_COMMANDS}
+STATE_SCRIPTS = {name: Path(__file__).with_name(f"{name}.py") for name in STATE_COMMANDS}
 STATE_COMMAND_TIMEOUT = 30.0
 DELIVERED_NOTIFICATIONS = {"started", "queued", "completed", "native_pending"}
 
@@ -43,7 +45,7 @@ class PreDeliveryPersistenceError(OSError):
 
 
 def notification_is_unconfirmed(client: str, outcome: dict[str, object]) -> bool:
-    return outcome["event"] == "timeout" or (client == "codex" and outcome["exit_code"] == wait_runtime.EXIT_NOTIFY_UNCONFIRMED)
+    return outcome["event"] == "timeout" or (client == "codex" and outcome["exit_code"] == runtime.EXIT_NOTIFY_UNCONFIRMED)
 
 
 def watcher_failure(exc: BaseException, **context: object) -> dict[str, object]:
@@ -90,7 +92,7 @@ class StateCommandRunner:
 
         try:
             stdout, stderr, returncode = await asyncio.wait_for(execute(), STATE_COMMAND_TIMEOUT)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return {
                 "code": 124,
                 "output": "",
@@ -165,7 +167,7 @@ async def wait_for_cancel(cancel_event: asyncio.Event, timeout: float) -> bool:
     """Return whether cancellation arrives before the timeout."""
     try:
         await asyncio.wait_for(cancel_event.wait(), timeout)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         return False
     return True
 
@@ -207,7 +209,7 @@ async def run_program(
     try:
         await asyncio.wait_for(process.wait(), timeout)
         result["exit_code"] = process.returncode
-    except asyncio.TimeoutError:
+    except TimeoutError:
         result["event"] = "timeout"
     finally:
         with suppress(ProcessLookupError):
@@ -224,6 +226,8 @@ class WaitDaemon:
 
     def __init__(self, registry_path: Path = REGISTRY_PATH, socket_path: Path = SOCKET_PATH) -> None:
         self.registry_path = registry_path
+        self.goals: dict[str, str] = {}
+        self.dashboard_url = ""
         self.loops: dict[str, str] = {}
         self.watchers: dict[str, dict[str, Any]] = self._load_registry()
         self.tasks: dict[str, asyncio.Task[None]] = {}
@@ -240,6 +244,7 @@ class WaitDaemon:
         watchers = value.get("watchers") if isinstance(value, dict) else None
         if not isinstance(watchers, dict):
             raise TypeError(f"invalid waitd registry: {self.registry_path}")
+        self.goals = value.get("goals", {})
         self.loops = value.get("loops", {})
         if not isinstance(self.loops, dict) or any(not isinstance(v, str) for v in self.loops.values()):
             raise ValueError("invalid loop registry")
@@ -250,8 +255,8 @@ class WaitDaemon:
         protected = set()
         for filename in self.loops:
             try:
-                protected.add(wait_loop.LoopStore(Path(filename)).load()["watch_id"])
-            except (OSError, wait_loop.LoopError):
+                protected.add(loop.LoopStore(Path(filename)).load()["watch_id"])
+            except (OSError, loop.LoopError):
                 continue
         finished = sorted(
             (
@@ -264,13 +269,35 @@ class WaitDaemon:
         )
         for watch_id in finished[MAX_FINISHED_WATCHES:]:
             del self.watchers[watch_id]
-        wait_runtime.atomic_write_json(self.registry_path, {"watchers": self.watchers, "loops": self.loops})
+        runtime.atomic_write_json(self.registry_path, {"watchers": self.watchers, "loops": self.loops, "goals": self.goals})
+
+    def publish_change(self) -> None:
+        self.changed.set()
+        self.changed = asyncio.Event()
+
+    def dashboard_link(
+        self,
+        session: str | None,
+        mode: str,
+        identity: str,
+        node: str | None = None,
+    ) -> str | None:
+        if not session or not self.dashboard_url:
+            return None
+        query = {"session": session, "mode": mode, "focus": identity}
+        if node:
+            query["node"] = node
+        return self.dashboard_url + "/?" + urlencode(query)
+
+    def register_goal(self, path: Path, cwd: Path) -> None:
+        self.goals[str(path.resolve())] = str(cwd)
+        self.save()
+        self.publish_change()
 
     def _update_record(self, record: dict[str, Any], **changes: object) -> None:
         record.update(changes, updated_at=time.time())
         self.save()
-        self.changed.set()
-        self.changed = asyncio.Event()
+        self.publish_change()
 
     def _persist_result(
         self,
@@ -286,7 +313,7 @@ class WaitDaemon:
     def _write_result_log(args: argparse.Namespace, result: dict[str, object]) -> None:
         if result.get("event") == "watcher_failed" and "durable_result" in result:
             return
-        wait_runtime.persist_result(args.log_file, result)
+        runtime.persist_result(args.log_file, result)
 
     def _record_watcher_failure(
         self,
@@ -306,7 +333,7 @@ class WaitDaemon:
             result["durable_result"] = durable
         else:
             with suppress(OSError):
-                wait_runtime.persist_result(args.log_file, result)
+                runtime.persist_result(args.log_file, result)
         return result
 
     async def restore(self) -> None:
@@ -330,15 +357,15 @@ class WaitDaemon:
         """Repair the state-commit/timer-registration window from durable loop files."""
         monitors: list[dict[str, object]] = []
         for filename, cwd in list(self.loops.items()):
-            store = wait_loop.LoopStore(Path(filename))
+            store = loop.LoopStore(Path(filename))
             if not store.path.exists():
                 continue  # init may not have committed before the service stopped
             try:
                 state = store.load()
-            except (OSError, wait_loop.LoopError) as exc:
+            except (OSError, loop.LoopError) as exc:
                 monitors.append({"state_file": filename, "error": str(exc)})
                 continue
-            if state["status"] == "active" and not wait_loop.goal_is_open(state):
+            if state["status"] == "active" and not loop.goal_is_open(state):
                 outcome = await self.state_commands.run("loop", ["cancel", "--state", filename], Path(cwd))
                 if outcome["code"]:
                     monitors.append({"state_file": filename, "error": outcome["error"] or outcome["output"]})
@@ -352,7 +379,7 @@ class WaitDaemon:
             if watch_id in self.watchers:
                 continue
             try:
-                self.submit(wait_loop.timer_argv(state, store.path), cwd)
+                self.submit(loop.timer_argv(state, store.path), cwd)
             except (OSError, ValueError, SystemExit) as exc:
                 monitors.append({"state_file": filename, "error": str(exc)})
         return monitors
@@ -371,8 +398,8 @@ class WaitDaemon:
     def submit(self, argv: list[str], cwd: str) -> dict[str, object]:
         directory = working_directory(cwd)
         resolved_argv = absolute_wait_argv(argv, directory)
-        wait_runtime.validate_job_argv(resolved_argv)
-        options = wait_runtime.job_parser().parse_args(resolved_argv)
+        runtime.validate_job_argv(resolved_argv)
+        options = runtime.job_parser().parse_args(resolved_argv)
         if not options.goal_state and not options.loop_state:
             identity = json.dumps(
                 [str(directory.resolve()), options.client, options.thread, options.remote, options.label, options.command],
@@ -386,18 +413,18 @@ class WaitDaemon:
                 log_file = self.registry_path.parent / "watches" / f"{uuid.uuid4().hex}.json"
                 defaults += ["--log-file", str(log_file)]
             resolved_argv = defaults + resolved_argv
-        args, _ = wait_runtime.parse_job_args(resolved_argv)
+        args, _ = runtime.parse_job_args(resolved_argv)
         watch_id = args.event_id or uuid.uuid4().hex
         if watch_id in self.watchers:
             raise ValueError(f"watch ID already exists: {watch_id}")
         if args.event_id is None:
             resolved_argv = ["--event-id", watch_id, *resolved_argv]
         notification_channel: dict[str, object] = {"status": "disabled"}
-        if args.client == "codex" and args.thread:
+        if args.client == "codex" and runtime.notification_enabled(args):
             try:
-                remote = wait_runtime.preflight_codex_remote(args.remote)
-            except wait_runtime.NotificationUnavailable as exc:
-                wait_runtime.persist_result(
+                remote = runtime.preflight_codex_remote(args.remote)
+            except runtime.NotificationUnavailable as exc:
+                runtime.persist_result(
                     args.log_file,
                     {
                         "event": "notification_unavailable",
@@ -416,7 +443,7 @@ class WaitDaemon:
                 "status": "ready" if remote.startswith("unix://") else "configured",
                 "remote": remote,
             }
-        elif args.client == "claude" and args.thread:
+        elif args.client == "claude" and runtime.notification_enabled(args):
             notification_channel = {"status": "native_required"}
         now = time.time()
         deadline_at = now + args.timeout
@@ -448,6 +475,12 @@ class WaitDaemon:
             "query_status": "pending",
             "notification_channel": notification_channel,
             "session": args.thread,
+            "dashboard_url": self.dashboard_link(
+                args.thread,
+                "goal" if args.goal_state else "loop" if args.loop_state else "wait",
+                str(args.goal_state or args.loop_state or watch_id),
+                args.goal_node,
+            ),
             "deadline": deadline_at,
         }
 
@@ -460,7 +493,7 @@ class WaitDaemon:
             raise ValueError(f"ambiguous watch prefix: {token}; use a longer ID from list")
         watch_id = matches[0]
         record = self.watchers[watch_id]
-        args, _ = wait_runtime.parse_job_args(record["argv"])
+        args, _ = runtime.parse_job_args(record["argv"])
         return {
             **record,
             "resume": {
@@ -491,11 +524,29 @@ class WaitDaemon:
         operation = request.get("operation")
         if operation == "ping":
             return {
+                "dashboard_url": self.dashboard_url,
                 "status": "ok",
                 "pid": os.getpid(),
                 "protocol_version": PROTOCOL_VERSION,
                 "service_fingerprint": SERVICE_FINGERPRINT,
             }
+        if operation == "dashboard":
+            session = request.get("session")
+            if request.get("state"):
+                path = await asyncio.to_thread(Path(str(request["state"])).resolve)
+                graph = goal.GoalStore(path).load()
+                cwd = Path(self.goals.get(str(path), str(path.parent)))
+                self.register_goal(path, cwd)
+                session = session or graph.state["thread"]
+            if request.get("all_sessions"):
+                scope = {"all": "1"}
+                if session:
+                    scope["session"] = str(session)
+            elif session:
+                scope = {"session": str(session)}
+            else:
+                raise ValueError("Provide --session (or CODEX_THREAD_ID), --state with an owner, or --all-sessions")
+            return {"url": self.dashboard_url + "/?" + urlencode(scope)}
         if operation == "submit":
             return self.submit(
                 string_list(request.get("argv"), "argv"),
@@ -514,23 +565,40 @@ class WaitDaemon:
                 raise ValueError("follow timeout must be positive and finite")
             try:
                 return await asyncio.wait_for(self.follow(watch_id), timeout)
-            except asyncio.TimeoutError as exc:
+            except TimeoutError as exc:
                 raise ValueError("follow timed out; inspect the saved watch before resuming") from exc
         if isinstance(operation, str) and operation in STATE_COMMANDS:
             cwd = working_directory(str(request.get("cwd", "")))
             argv = string_list(request.get("argv"), "argv")
             if operation == "loop":
-                parsed = wait_loop.parser().parse_args(argv)
-                path = parsed.state or wait_loop.default_state_path(cwd)
+                parsed = loop.parser().parse_args(argv)
+                path = parsed.state or loop.default_state_path(cwd)
                 path = (cwd / path).resolve()
                 if parsed.state is None:
                     argv = [*argv, "--state", str(path)]
                 self.loops[str(path)] = str(cwd)
                 self.save()  # record recovery intent before the state command commits
             response = await self.state_commands.run(operation, argv, cwd)
+            if operation == "goal" and response["code"] == 0:
+                parsed = goal.parser().parse_args(argv)
+                path = parsed.state
+                if path is None:
+                    path = Path(response["output"]["state_file"])
+                self.register_goal(cwd / path, cwd)
+                graph = goal.GoalStore(cwd / path).load()
+                response["dashboard_url"] = self.dashboard_link(
+                    graph.state["thread"],
+                    "goal",
+                    str((cwd / path).resolve()),
+                    getattr(parsed, "id", None),
+                )
             monitors = await self.reconcile_loops()
             if monitors:
                 response["loop_monitors"] = monitors
+            if operation == "loop" and response["code"] == 0:
+                state = loop.LoopStore(path).load()
+                response["dashboard_url"] = self.dashboard_link(state["session"], "loop", str(path))
+                self.publish_change()
             return response
         if operation == "shutdown":
             self.shutdown_event.set()
@@ -549,8 +617,8 @@ class WaitDaemon:
                 break
             await changed.wait()
 
-        args, _ = wait_runtime.parse_job_args(record["argv"])
-        resume_message = wait_runtime.resume_instruction(args) if result and args.thread else None
+        args, _ = runtime.parse_job_args(record["argv"])
+        resume_message = runtime.resume_instruction(args) if result and args.thread else None
         return {
             "watch_id": watch_id,
             "state": record["state"],
@@ -563,7 +631,7 @@ class WaitDaemon:
         record = self.watchers[watch_id]
         args: argparse.Namespace | None = None
         try:
-            args, command = wait_runtime.parse_job_args(record["argv"])
+            args, command = runtime.parse_job_args(record["argv"])
             result, code = await self._watch(args, command, record, self.cancel_events[watch_id])
         except asyncio.CancelledError:
             return
@@ -573,7 +641,11 @@ class WaitDaemon:
         if record.get("state") != "active":
             return
         if result.get("event") == "watcher_failed":
-            if args and args.thread and await self._notify_watcher_failure(args, result, record, self.cancel_events[watch_id]):
+            if (
+                args
+                and runtime.notification_enabled(args)
+                and await self._notify_watcher_failure(args, result, record, self.cancel_events[watch_id])
+            ):
                 return
             record["phase"] = "finalizing"
         self._update_record(
@@ -630,10 +702,10 @@ class WaitDaemon:
         result.update(notification="unconfirmed", persistence_error=repr(persistence_error))
         if args.client != "claude":
             result["notification_attempts"] = 1
-            message = wait_runtime.resume_instruction(args) + "; event=watcher_failed; persistence=unavailable"
+            message = runtime.resume_instruction(args) + "; event=watcher_failed; persistence=unavailable"
             try:
                 command = self._notification_command(args, message)
-                _, timeout = wait_runtime.notification_limits(args)
+                _, timeout = runtime.notification_limits(args)
                 outcome = await run_program(command, timeout, record["cwd"])
                 result.update(
                     notification_exit_code=outcome.get("exit_code"),
@@ -641,7 +713,7 @@ class WaitDaemon:
                     notification_stderr=outcome.get("stderr") or outcome.get("error"),
                 )
                 if outcome["event"] == "exited" and outcome["exit_code"] == 0:
-                    result["notification"] = wait_runtime.notification_success(args.client)
+                    result["notification"] = runtime.notification_success(args.client)
                 elif not notification_is_unconfirmed(args.client, outcome):
                     result["notification"] = "failed"
             except (OSError, RuntimeError, TypeError, ValueError, KeyError) as exc:
@@ -657,13 +729,12 @@ class WaitDaemon:
             file=sys.stderr,
             flush=True,
         )
-        self.changed.set()
-        self.changed = asyncio.Event()
+        self.publish_change()
 
     @staticmethod
     def _notification_command(args: argparse.Namespace, message: str) -> list[str]:
-        remote = wait_runtime.resolve_codex_remote(args.remote) if args.client == "codex" else args.remote
-        return wait_runtime.notification_command(args.client, args.thread, message, remote, args.resume_args)
+        remote = runtime.resolve_codex_remote(args.remote) if args.client == "codex" else args.remote
+        return runtime.notification_command(args.client, args.thread, message, remote, args.resume_args)
 
     async def _watch(
         self,
@@ -680,7 +751,7 @@ class WaitDaemon:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
                 lock.close()
-                return {"event": "already_watching", "status": None}, wait_runtime.EXIT_ALREADY_WATCHING
+                return {"event": "already_watching", "status": None}, runtime.EXIT_ALREADY_WATCHING
             self._update_record(record, lock_status="held")
         try:
             phase = str(record.get("phase") or ("activating" if args.goal_state else "queued"))
@@ -706,8 +777,8 @@ class WaitDaemon:
                         "label": args.label,
                         "event_id": args.event_id,
                     }
-                    self._persist_result(args, record, result, phase="finalizing", code=wait_runtime.EXIT_ACTIVATION_CANCELLED)
-                    return result, wait_runtime.EXIT_ACTIVATION_CANCELLED
+                    self._persist_result(args, record, result, phase="finalizing", code=runtime.EXIT_ACTIVATION_CANCELLED)
+                    return result, runtime.EXIT_ACTIVATION_CANCELLED
                 phase = "queued"
                 self._update_record(record, phase=phase)
 
@@ -727,14 +798,14 @@ class WaitDaemon:
                 if result["event"] == "exited":
                     code = 0
                 elif result["event"] == "timeout":
-                    code = wait_runtime.EXIT_TIMEOUT
+                    code = runtime.EXIT_TIMEOUT
                 else:
                     code = 1
-                if cancel_event.is_set() or not wait_runtime.watch_is_current(args):
+                if cancel_event.is_set() or not runtime.watch_is_current(args):
                     result["event"] = "cancelled"
-                    code = wait_runtime.EXIT_ACTIVATION_CANCELLED
+                    code = runtime.EXIT_ACTIVATION_CANCELLED
                 result.update(label=args.label, event_id=args.event_id, log_file=str(args.log_file))
-                if args.thread and code != wait_runtime.EXIT_ACTIVATION_CANCELLED:
+                if runtime.notification_enabled(args) and code != runtime.EXIT_ACTIVATION_CANCELLED:
                     result.update(notification="pending", notification_attempts=0)
                     phase = "notifying"
                 else:
@@ -749,7 +820,7 @@ class WaitDaemon:
 
             if phase == "notifying" and result.get("notification") == "attempting":
                 result["notification"] = "unconfirmed"
-                code = wait_runtime.EXIT_NOTIFY_FAILED
+                code = runtime.EXIT_NOTIFY_FAILED
                 phase = "finalizing"
                 self._persist_result(args, record, result, phase=phase, code=code)
 
@@ -764,7 +835,7 @@ class WaitDaemon:
                     phase = "awaiting_ack"
                     if result.get("notification") == "native_pending":
                         # Native task availability is not delivery confirmation.
-                        _, timeout = wait_runtime.notification_limits(args)
+                        _, timeout = runtime.notification_limits(args)
                         deadline = float(result["available_at"]) + timeout
                     else:
                         deadline = float(result.get("delivered_at", time.time())) + args.wake_ack_timeout
@@ -774,16 +845,16 @@ class WaitDaemon:
                 self._update_record(record, phase=phase, code=code)
 
             if phase == "awaiting_ack":
-                await self._await_goal_wake(
+                await self._wake_goal(
                     args,
                     cancel_event,
                     float(record["wake_ack_deadline_at"]),
                 )
-                if result.get("notification") == "native_pending" and wait_runtime.goal_wait_is_current(args):
+                if result.get("notification") == "native_pending" and runtime.goal_wait_is_current(args):
                     if cancel_event.is_set():
-                        result["notification"], code = "cancelled", wait_runtime.EXIT_ACTIVATION_CANCELLED
+                        result["notification"], code = "cancelled", runtime.EXIT_ACTIVATION_CANCELLED
                     else:
-                        result["notification"], code = "unconfirmed", wait_runtime.EXIT_NOTIFY_FAILED
+                        result["notification"], code = "unconfirmed", runtime.EXIT_NOTIFY_FAILED
                 self._persist_result(args, record, result, phase="finalizing", code=code)
             self._write_result_log(args, result)
             return result, code
@@ -810,7 +881,7 @@ class WaitDaemon:
         cancel_event: asyncio.Event,
         deadline_at: float,
     ) -> str:
-        wait_runtime.persist_result(
+        runtime.persist_result(
             args.startup_file,
             {
                 "label": args.label,
@@ -827,7 +898,7 @@ class WaitDaemon:
         while True:
             if cancel_event.is_set():
                 return "cancelled"
-            phase = wait_runtime.goal_wait_phase(args)
+            phase = runtime.goal_wait_phase(args)
             if phase == "active":
                 return "active"
             if phase == "invalid":
@@ -855,7 +926,7 @@ class WaitDaemon:
         task = asyncio.create_task(run_program(command, remaining, record["cwd"], started))
         try:
             while not task.done():
-                if cancel_event.is_set() or not wait_runtime.watch_is_current(args):
+                if cancel_event.is_set() or not runtime.watch_is_current(args):
                     return {"event": "cancelled", "exit_code": None, "stdout": "", "stderr": ""}
                 await asyncio.wait({task}, timeout=0.25)
             return task.result()
@@ -878,12 +949,12 @@ class WaitDaemon:
             except OSError as exc:
                 raise PreDeliveryPersistenceError(*exc.args) from exc
             return None
-        max_attempts, timeout = wait_runtime.notification_limits(args)
+        max_attempts, timeout = runtime.notification_limits(args)
         previous_attempts = int(result.get("notification_attempts", 0))
         for attempt in range(previous_attempts + 1, max_attempts + 1):
-            if cancel_event.is_set() or not wait_runtime.watch_is_current(args):
+            if cancel_event.is_set() or not runtime.watch_is_current(args):
                 result["notification"] = "cancelled"
-                return wait_runtime.EXIT_ACTIVATION_CANCELLED
+                return runtime.EXIT_ACTIVATION_CANCELLED
             result.update(notification="attempting", notification_attempts=attempt)
             try:
                 self._persist_result(args, record, result)
@@ -891,20 +962,20 @@ class WaitDaemon:
                 if attempt == 1:
                     raise PreDeliveryPersistenceError(*exc.args) from exc
                 raise
-            message = wait_runtime.resume_instruction(args)
+            message = runtime.resume_instruction(args)
             if result.get("event") == "watcher_failed":
                 message += "; event=watcher_failed"
             try:
                 command = self._notification_command(args, message)
-            except wait_runtime.NotificationUnavailable as exc:
+            except runtime.NotificationUnavailable as exc:
                 result.update(notification="notification_unavailable", notification_stderr=str(exc))
                 self._persist_result(args, record, result)
-                return wait_runtime.EXIT_NOTIFY_FAILED
+                return runtime.EXIT_NOTIFY_FAILED
             outcome = await run_program(command, timeout, record["cwd"])
             if outcome["event"] == "start_failed":
                 result.update(notification="failed", notification_stderr=outcome["error"])
                 self._persist_result(args, record, result)
-                return wait_runtime.EXIT_NOTIFY_FAILED
+                return runtime.EXIT_NOTIFY_FAILED
             result.update(
                 notification_exit_code=outcome["exit_code"],
                 notification_stdout=outcome["stdout"],
@@ -916,16 +987,16 @@ class WaitDaemon:
                 # turn/start may have been accepted: never replay an ambiguous wake.
                 result["notification"] = "unconfirmed"
                 self._persist_result(args, record, result)
-                return wait_runtime.EXIT_NOTIFY_FAILED
+                return runtime.EXIT_NOTIFY_FAILED
             if outcome["event"] == "timeout":
                 failed = "unconfirmed"
             elif outcome["exit_code"] == 0:
-                result.update(notification=wait_runtime.notification_success(args.client), delivered_at=time.time())
+                result.update(notification=runtime.notification_success(args.client), delivered_at=time.time())
                 self._persist_result(args, record, result)
                 return None
             elif args.client == "codex" and (
-                outcome["exit_code"] == wait_runtime.EXIT_NOTIFY_FAILED
-                or wait_runtime.notification_failure_is_unavailable(outcome["stderr"])
+                outcome["exit_code"] == runtime.EXIT_NOTIFY_FAILED
+                or runtime.notification_failure_is_unavailable(outcome["stderr"])
             ):
                 failed = "notification_unavailable"
             elif args.client == "codex" and outcome["exit_code"] == 75:
@@ -936,18 +1007,18 @@ class WaitDaemon:
             result["notification"] = failed if exhausted else f"{failed}_retrying"
             self._persist_result(args, record, result)
             if exhausted:
-                return wait_runtime.EXIT_NOTIFY_FAILED
+                return runtime.EXIT_NOTIFY_FAILED
             delay = min(args.notification_retry_interval * 2 ** min(attempt - 1, 10), 300.0)
             await wait_for_cancel(cancel_event, delay)
-        return wait_runtime.EXIT_NOTIFY_FAILED
+        return runtime.EXIT_NOTIFY_FAILED
 
-    async def _await_goal_wake(
+    async def _wake_goal(
         self,
         args: argparse.Namespace,
         cancel_event: asyncio.Event,
         deadline_at: float,
     ) -> None:
-        while wait_runtime.goal_wait_is_current(args):
+        while runtime.goal_wait_is_current(args):
             if cancel_event.is_set():
                 return
             remaining = deadline_at - time.time()
@@ -1011,6 +1082,10 @@ async def serve(socket_path: Path = SOCKET_PATH, registry_path: Path = REGISTRY_
             path=socket_path,
             limit=1024 * 1024 + 1,
         )
+        from dashboard import Dashboard
+
+        dashboard = Dashboard(daemon)
+        daemon.dashboard_url = await dashboard.start()
         await asyncio.to_thread(socket_path.chmod, 0o600)
         loop = asyncio.get_running_loop()
         for signal_name in (signal.SIGINT, signal.SIGTERM):
@@ -1020,6 +1095,7 @@ async def serve(socket_path: Path = SOCKET_PATH, registry_path: Path = REGISTRY_
             async with server:
                 await daemon.shutdown_event.wait()
         finally:
+            await dashboard.close()
             server.close()
             await server.wait_closed()
             tasks = list(daemon.tasks.values())

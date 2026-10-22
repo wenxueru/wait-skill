@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
-import wait_runtime
+import runtime
 
 
 class RuntimeTest(unittest.TestCase):
@@ -30,10 +30,10 @@ class RuntimeTest(unittest.TestCase):
                 real_replace(source, destination)
 
             with (
-                mock.patch.object(wait_runtime.os, "replace", side_effect=replace),
-                mock.patch.object(wait_runtime.time, "sleep") as sleep,
+                mock.patch.object(runtime.os, "replace", side_effect=replace),
+                mock.patch.object(runtime.time, "sleep") as sleep,
             ):
-                wait_runtime.atomic_write_text(path, "ready\n")
+                runtime.atomic_write_text(path, "ready\n")
             self.assertEqual(path.read_text(), "ready\n")
             self.assertEqual(attempts, 2)
             sleep.assert_called_once()
@@ -41,25 +41,34 @@ class RuntimeTest(unittest.TestCase):
     def test_event_note_preserves_full_single_line(self) -> None:
         for note in ("  Recheck deployment  ", "完整恢复说明 " * 100):
             with self.subTest(note=note[:20]):
-                self.assertEqual(wait_runtime.single_line_note(note), note)
+                self.assertEqual(runtime.single_line_note(note), note)
         for note in ("", "   ", "line one\nline two", "line one\rline two"):
             with self.subTest(note=note), self.assertRaises(ArgumentTypeError):
-                wait_runtime.single_line_note(note)
+                runtime.single_line_note(note)
 
     def test_notification_limits_preserve_defaults_and_overrides(self) -> None:
-        for client in sorted(wait_runtime.CLIENTS):
+        for client in sorted(runtime.CLIENTS):
             with self.subTest(client=client):
                 args = Namespace(client=client, max_notification_attempts=None, notification_timeout=None)
                 expected = (12, 60.0) if client == "codex" else (1, 3600.0)
-                self.assertEqual(wait_runtime.notification_limits(args), expected)
+                self.assertEqual(runtime.notification_limits(args), expected)
                 args.max_notification_attempts = 3
-                self.assertEqual(wait_runtime.notification_limits(args), (3, expected[1]))
+                self.assertEqual(runtime.notification_limits(args), (3, expected[1]))
                 args.notification_timeout = 90.0
-                self.assertEqual(wait_runtime.notification_limits(args), (3, 90.0))
+                self.assertEqual(runtime.notification_limits(args), (3, 90.0))
 
     def test_notification_commands_cover_supported_clients(self) -> None:
         expected = {
-            "codex": [sys.executable, str(Path(wait_runtime.__file__).with_name("wait_codex.py")), "--remote", "unix://", "--session", "session-1", "--message", "resume"],
+            "codex": [
+                sys.executable,
+                str(Path(runtime.__file__).with_name("codex.py")),
+                "--remote",
+                "unix://",
+                "--session",
+                "session-1",
+                "--message",
+                "resume",
+            ],
             "codewiz": ["codewiz", "run", "--session", "session-1", "resume"],
             "cursor": ["cursor-agent", "--print", "--resume=session-1", "resume"],
             "copilot": ["copilot", "--resume=session-1", "--prompt", "resume"],
@@ -67,12 +76,12 @@ class RuntimeTest(unittest.TestCase):
         for client, command in expected.items():
             with self.subTest(client=client):
                 self.assertEqual(
-                    wait_runtime.notification_command(client, "session-1", "resume", "unix://"),
+                    runtime.notification_command(client, "session-1", "resume", "unix://"),
                     command,
                 )
 
         self.assertEqual(
-            wait_runtime.notification_command(
+            runtime.notification_command(
                 "cursor",
                 "session-1",
                 "resume",
@@ -85,27 +94,27 @@ class RuntimeTest(unittest.TestCase):
     def test_codex_remote_resolution(self) -> None:
         with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {"CODEX_HOME": home}):
             default = f"unix://{Path(home) / 'app-server-control' / 'app-server-control.sock'}"
-            self.assertEqual(wait_runtime.resolve_codex_remote(None), default)
-            self.assertEqual(wait_runtime.resolve_codex_remote("unix://"), default)
+            self.assertEqual(runtime.resolve_codex_remote(None), default)
+            self.assertEqual(runtime.resolve_codex_remote("unix://"), default)
         self.assertEqual(
-            wait_runtime.resolve_codex_remote("unix:///tmp/codex-control.sock"),
+            runtime.resolve_codex_remote("unix:///tmp/codex-control.sock"),
             "unix:///tmp/codex-control.sock",
         )
-        self.assertEqual(wait_runtime.resolve_codex_remote("wss://localhost:8000"), "wss://localhost:8000")
+        self.assertEqual(runtime.resolve_codex_remote("wss://localhost:8000"), "wss://localhost:8000")
         for remote in ("http://localhost:8000", "unix://relative.sock"):
             with (
                 self.subTest(remote=remote),
-                self.assertRaisesRegex(wait_runtime.NotificationUnavailable, "notification_unavailable"),
+                self.assertRaisesRegex(runtime.NotificationUnavailable, "notification_unavailable"),
             ):
-                wait_runtime.resolve_codex_remote(remote)
+                runtime.resolve_codex_remote(remote)
 
     def test_codex_preflight_requires_a_reachable_control_socket(self) -> None:
         with (
             tempfile.TemporaryDirectory() as home,
             mock.patch.dict(os.environ, {"CODEX_HOME": home}),
-            self.assertRaisesRegex(wait_runtime.NotificationUnavailable, "socket not found"),
+            self.assertRaisesRegex(runtime.NotificationUnavailable, "socket not found"),
         ):
-            wait_runtime.preflight_codex_remote(None)
+            runtime.preflight_codex_remote(None)
 
     def test_codex_preflight_requires_a_websocket_endpoint(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -120,13 +129,13 @@ class RuntimeTest(unittest.TestCase):
                     connection = mock.MagicMock()
                     connection.__enter__.return_value = connection
                     connection.recv.return_value = response
-                    with mock.patch.object(wait_runtime.socket, "socket", return_value=connection):
+                    with mock.patch.object(runtime.socket, "socket", return_value=connection):
                         endpoint = f"unix://{path}"
                         if available:
-                            self.assertEqual(wait_runtime.preflight_codex_remote(endpoint), endpoint)
+                            self.assertEqual(runtime.preflight_codex_remote(endpoint), endpoint)
                         else:
-                            with self.assertRaisesRegex(wait_runtime.NotificationUnavailable, "notification_unavailable"):
-                                wait_runtime.preflight_codex_remote(endpoint)
+                            with self.assertRaisesRegex(runtime.NotificationUnavailable, "notification_unavailable"):
+                                runtime.preflight_codex_remote(endpoint)
 
     def test_notification_connection_failures_are_unavailable(self) -> None:
         for stderr in (
@@ -136,8 +145,8 @@ class RuntimeTest(unittest.TestCase):
             "WebSocket handshake not finished",
         ):
             with self.subTest(stderr=stderr):
-                self.assertTrue(wait_runtime.notification_failure_is_unavailable(stderr))
-        self.assertFalse(wait_runtime.notification_failure_is_unavailable("thread not found"))
+                self.assertTrue(runtime.notification_failure_is_unavailable(stderr))
+        self.assertFalse(runtime.notification_failure_is_unavailable("thread not found"))
 
     def test_loop_watch_must_still_own_the_event(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -158,19 +167,19 @@ class RuntimeTest(unittest.TestCase):
                 client="claude",
                 thread="session-1",
             )
-            self.assertTrue(wait_runtime.loop_wait_is_current(args))
+            self.assertTrue(runtime.loop_wait_is_current(args))
 
             args.event_id = "stale"
-            self.assertFalse(wait_runtime.loop_wait_is_current(args))
+            self.assertFalse(runtime.loop_wait_is_current(args))
 
     def test_missing_or_corrupt_goal_state_invalidates_watch(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             state = Path(directory) / "goal.json"
             args = Namespace(goal_state=state, goal_node="deploy", event_id="watch-1")
-            self.assertFalse(wait_runtime.goal_wait_is_current(args))
+            self.assertFalse(runtime.goal_wait_is_current(args))
 
             state.write_text("{", encoding="utf-8")
-            self.assertFalse(wait_runtime.goal_wait_is_current(args))
+            self.assertFalse(runtime.goal_wait_is_current(args))
 
     def test_goal_watch_must_match_persisted_client_and_session(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -198,8 +207,8 @@ class RuntimeTest(unittest.TestCase):
                 client="codex",
                 thread="expected-thread",
             )
-            self.assertFalse(wait_runtime.goal_wait_is_current(args))
+            self.assertFalse(runtime.goal_wait_is_current(args))
 
             args.client = "claude"
             args.thread = "wrong-thread"
-            self.assertFalse(wait_runtime.goal_wait_is_current(args))
+            self.assertFalse(runtime.goal_wait_is_current(args))

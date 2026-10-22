@@ -15,12 +15,13 @@ import struct
 import sys
 import time
 from contextlib import suppress
+from typing import Self
 from urllib.parse import urlsplit
 
-import wait_runtime
+import runtime
 
-EXIT_UNAVAILABLE = wait_runtime.EXIT_NOTIFY_FAILED
-EXIT_UNCONFIRMED = wait_runtime.EXIT_NOTIFY_UNCONFIRMED
+EXIT_UNAVAILABLE = runtime.EXIT_NOTIFY_FAILED
+EXIT_UNCONFIRMED = runtime.EXIT_NOTIFY_UNCONFIRMED
 EXIT_BUSY = 75
 MAX_MESSAGE_BYTES = 8 * 1024 * 1024
 
@@ -41,7 +42,7 @@ class AppServer:
         self.connection: socket.socket | None = None
         self.buffer = bytearray()
         self.request_id = 0
-        self.remote = wait_runtime.resolve_codex_remote(remote)
+        self.remote = runtime.resolve_codex_remote(remote)
         self.token_env = token_env
 
     def remaining(self) -> float:
@@ -50,13 +51,16 @@ class AppServer:
             raise TimeoutError("Codex delivery deadline exceeded")
         return remaining
 
-    def __enter__(self) -> AppServer:
+    def __enter__(self) -> Self:
         try:
             host, target = self._connect()
             self._upgrade(host, target)
-            self.call("initialize", {
-                "clientInfo": {"name": "wait_skill", "title": "Wait", "version": "2.0.0"},
-            })
+            self.call(
+                "initialize",
+                {
+                    "clientInfo": {"name": "wait_skill", "title": "Wait", "version": "2.0.0"},
+                },
+            )
             self.send({"method": "initialized", "params": {}})
             return self
         except BaseException:
@@ -78,7 +82,8 @@ class AppServer:
         if url.scheme == "wss":
             self.connection.settimeout(self.remaining())
             self.connection = ssl.create_default_context().wrap_socket(
-                self.connection, server_hostname=url.hostname,
+                self.connection,
+                server_hostname=url.hostname,
             )
         return url.netloc, url.path or "/"
 
@@ -259,7 +264,7 @@ def main() -> int:
     parser.add_argument("--remote", required=True)
     parser.add_argument("--session", required=True)
     parser.add_argument("--remote-auth-token-env")
-    parser.add_argument("--timeout", type=wait_runtime.positive_number, default=50.0)
+    parser.add_argument("--timeout", type=runtime.positive_number, default=50.0)
     parser.add_argument("--message", required=True)
     args = parser.parse_args()
     try:

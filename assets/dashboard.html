@@ -1,0 +1,752 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Wait · 看板</title>
+<style>
+
+:root { font: 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #263b35; background: #f6f7f5; }
+* { box-sizing: border-box; }
+body { margin: 0; }
+button, input, textarea, select { font: inherit; color: inherit; }
+button, select, summary { cursor: pointer; }
+button { padding: 7px 11px; border: 1px solid #dce3dd; border-radius: 7px; background: #fff; transition: background .15s, border-color .15s; }
+button:hover { background: #f0f4ef; border-color: #aabeb0; }
+button:disabled { opacity: .4; cursor: default; }
+button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible, summary:focus-visible { outline: 2px solid #50927a; outline-offset: 3px; }
+[hidden] { display: none !important; }
+.primary { color: white; background: #285e4c; border-color: #285e4c; }
+.primary:hover { color: white; background: #204c3d; }
+.danger { color: #a75e57; border-color: transparent; background: transparent; }
+header { height: 58px; padding: 0 28px; display: flex; align-items: center; gap: 12px; border-bottom: 1px solid #e3e8e1; background: #fff; }
+h1 { font-size: 18px; letter-spacing: -.5px; margin: 0; }
+h1 small { margin-left: 10px; padding-left: 12px; border-left: 1px solid #dce3dd; font-size: 12px; font-weight: 400; letter-spacing: .5px; color: #819087; }
+header span { margin-left: auto; font-size: 11px; color: #5e8c75; }
+main { max-width: 1600px; padding: 24px 28px; margin: auto; }
+.toolbar { display: flex; align-items: center; gap: 7px; margin-bottom: 17px; }
+.toolbar .spacer { flex: 1; }
+select { max-width: 520px; padding: 7px 28px 7px 10px; border: 1px solid #dce3dd; border-radius: 7px; background: #fff; }
+#goals { max-width: min(60vw, 520px); font-weight: 500; }
+.goal-heading { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; margin-bottom: 18px; }
+h2 { font-size: 20px; font-weight: 600; letter-spacing: -.4px; margin: 0; }
+.stats { display: flex; gap: 14px; align-items: center; color: #78877d; font-size: 12px; }
+.badge { display: inline-block; padding: 4px 9px; border-radius: 5px; background: #edf3ec; color: #47705a; font-size: 11px; }
+.progress { height: 3px; background: #e5ebe3; border-radius: 3px; margin: -5px 0 21px; overflow: hidden; }
+.progress span { display: block; height: 100%; background: #518a6b; transition: width .3s; }
+.layout { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 16px; align-items: stretch; }
+.card { background: #fff; border: 1px solid #e0e6dd; border-radius: 10px; padding: 17px; overflow: hidden; }
+.graph-card { padding: 0; }
+.graph-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 14px 17px; border-bottom: 1px solid #edf0e9; }
+.graph-head b { font-weight: 550; font-size: 12px; }
+.graph { overflow: auto; min-height: 290px; background: radial-gradient(#dfe6dc .7px, transparent .7px); background-size: 18px 18px; }
+svg { display: block; min-width: 100%; }
+svg g { cursor: pointer; outline: none; }
+svg g:hover rect:first-child, svg g:focus-visible rect:first-child { stroke: #6d9a81; }
+svg text { font: 12px -apple-system, BlinkMacSystemFont, sans-serif; fill: #31463c; }
+svg .small { font-size: 10px; fill: #839184; }
+.legend { display: flex; gap: 12px; color: #8a978c; font-size: 10px; padding: 10px 17px; border-top: 1px solid #edf0e9; flex-wrap: wrap; }
+.dot { display: inline-block; width: 6px; height: 6px; margin-right: 5px; border-radius: 50%; }
+.details { min-height: 340px; }
+.details h3 { font-size: 16px; font-weight: 550; margin: 12px 0 5px; line-height: 1.5; }
+.details p { line-height: 1.65; }
+.details ul { padding-left: 17px; line-height: 1.8; }
+.details h4 { font-size: 12px; font-weight: 550; margin-bottom: 8px; }
+.details pre { white-space: pre-wrap; overflow-wrap: anywhere; font: 12px system-ui; line-height: 1.7; background: #f6f8f3; padding: 10px; border-radius: 6px; }
+.detail-placeholder { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; min-height: 270px; color: #a2ada2; text-align: center; }
+.detail-placeholder .symbol { font-size: 28px; color: #bdcabe; font-weight: 200; margin-bottom: 10px; }
+.detail-placeholder p { margin: 0; font-size: 12px; }
+.muted { color: #8a978c; font-size: 11px; }
+label { display: block; font-size: 11px; color: #7b8c7f; margin-top: 14px; }
+input, textarea { display: block; width: 100%; padding: 8px 9px; border: 1px solid #dfe6da; border-radius: 6px; margin-top: 6px; background: #fcfdfb; }
+textarea { min-height: 70px; resize: vertical; line-height: 1.6; }
+.actions { display: flex; gap: 8px; margin-top: 18px; }
+.events { margin-top: 16px; padding: 0; }
+.events summary { padding: 13px 17px; font-size: 12px; color: #7c8b7e; }
+.events summary::marker { color: #9ba99b; }
+#events { padding: 0 17px 9px; max-height: 240px; overflow: auto; }
+.event { display: flex; gap: 20px; padding: 9px 0; border-top: 1px solid #eff2eb; font-size: 11px; }
+.event time { color: #9ba89b; min-width: 125px; font-variant-numeric: tabular-nums; }
+#error { padding: 10px 13px; margin-bottom: 15px; border: 1px solid #f0d9d2; border-radius: 7px; background: #fff6f2; color: #a5584b; }
+dialog { border: 1px solid #e0e6dd; border-radius: 12px; padding: 24px; width: 430px; max-width: 94vw; box-shadow: 0 20px 80px #18362425; }
+dialog::backdrop { background: #253d3355; backdrop-filter: blur(3px); }
+dialog h2 { font-size: 18px; }
+dialog select { display: block; margin-top: 6px; width: 100%; }
+.empty { padding: 70px 20px; text-align: center; }
+@media (max-width: 800px) {
+  header { padding: 0 18px; }
+  main { padding: 18px; }
+  .layout { grid-template-columns: 1fr; }
+  .details { min-height: auto; }
+  .detail-placeholder { min-height: 100px; }
+  .goal-heading { gap: 10px; }
+}
+
+#scopeSwitch { color: #829588; font-size: 11px; text-decoration: none; cursor: pointer; }
+.mode-tabs { display: flex; gap: 5px; margin-bottom: 20px; border-bottom: 1px solid #e1e7de; }
+.mode-tabs button { border: 0; border-radius: 0; background: transparent; color: #8a978c; padding: 10px 16px; border-bottom: 2px solid transparent; }
+.mode-tabs button[aria-selected="true"] { color: #285e4c; border-bottom-color: #518a6b; }
+.task-card { margin-bottom: 12px; }
+.task-heading { display: flex; align-items: center; gap: 10px; }
+.task-heading h3 { font-size: 14px; font-weight: 550; margin: 0; flex: 1; overflow-wrap: anywhere; }
+.task-meta { display: flex; flex-wrap: wrap; gap: 8px 20px; margin-top: 12px; color: #819087; font-size: 11px; }
+.task-note { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.7; font-size: 12px; }
+.task-card details { margin-top: 12px; color: #819087; font-size: 11px; }
+.task-card pre { white-space: pre-wrap; overflow-wrap: anywhere; font: 11px system-ui; }
+.session-summary { padding: 2px 0 18px; }
+.eyebrow { display: block; font-size: 10px; color: #92a08f; letter-spacing: 2px; margin-bottom: 9px; }
+.session-summary h2 { font-size: 23px; }
+.session-summary p { color: #7d8d7e; font-size: 12px; line-height: 1.8; margin: 8px 0 0; }
+.notice { border-left: 3px solid #92af87; background: #f0f5e9; color: #5f7953; padding: 10px 13px; margin-bottom: 15px; font-size: 12px; line-height: 1.7; }
+.context-heading { font-size: 12px; font-weight: 500; color: #7d8d7e; margin: 22px 0 13px; }
+.task-card.focused { border-color: #71a281; }
+.wait-context { margin-top: 17px; padding-top: 12px; border-top: 1px solid #e4eadf; }
+.wait-context p { white-space: pre-wrap; overflow-wrap: anywhere; }
+.task-history { margin: 13px 0; font-size: 12px; color: #819087; }
+</style>
+<header>
+  <h1>Wait<small id="scopeLabel">当前会话</small></h1><a id="scopeSwitch">全部会话</a>
+  <span id="connection">连接中</span>
+</header>
+<main>
+  <div id="error" hidden></div>
+  <section class="session-summary" aria-live="polite">
+    <span class="eyebrow">会话任务</span>
+    <h2 id="sessionStatus">正在连接</h2>
+    <p id="sessionNext"></p>
+  </section>
+  <div id="notice" class="notice" hidden></div>
+  <nav id="modes" class="mode-tabs" aria-label="任务类型">
+    <button data-mode="session">当前任务</button>
+    <button data-mode="goal">目标</button>
+    <button data-mode="wait">等待</button>
+    <button data-mode="loop">循环</button>
+  </nav>
+  <div id="taskList" hidden></div>
+  <div class="toolbar" id="goalToolbar">
+    <select id="goals" aria-label="选择目标"></select>
+    <div class="spacer"></div>
+    <button id="pause">暂停</button>
+    <button id="resume">恢复</button>
+    <button class="danger" id="cancel">取消</button>
+  </div>
+  <div id="empty" class="card empty" hidden>
+    <h2>还没有目标</h2>
+    <p class="muted">本会话尚无 DAG。通过 waitctl goal init 创建。</p>
+  </div>
+  <div id="content" hidden>
+    <div class="goal-heading">
+      <h2 id="objective"></h2>
+      <div class="stats" id="stats"></div>
+    </div>
+    <div class="progress"><span id="progress"></span></div>
+    <div class="layout">
+      <section class="card graph-card">
+        <div class="graph-head">
+          <b>依赖图</b>
+          <button id="add">＋ 节点</button>
+        </div>
+        <div class="graph" id="graph"></div>
+        <div class="legend">
+          <span><i class="dot" style="background:#7e9588"></i>待处理</span>
+          <span><i class="dot" style="background:#4683c4"></i>执行中</span>
+          <span><i class="dot" style="background:#bc8d34"></i>等待</span>
+          <span><i class="dot" style="background:#2d8a60"></i>完成</span>
+          <span><i class="dot" style="background:#c7645d"></i>异常</span>
+        </div>
+      </section>
+      <aside class="card details" id="details"></aside>
+    </div>
+    <details class="card events">
+      <summary>最近变更</summary>
+      <div id="events"></div>
+    </details>
+  </div>
+  <section id="independentTasks"></section>
+</main>
+<dialog id="addDialog">
+  <form id="addForm">
+    <h2>添加节点</h2>
+    <label>节点 ID<input name="id" required pattern="[a-zA-Z0-9_.-]+"></label>
+    <label>任务说明<input name="title" required></label>
+    <label>类型
+      <select name="kind">
+        <option value="local">主 Agent 执行</option>
+        <option value="agent">子 Agent 执行</option>
+        <option value="external">外部事件</option>
+      </select>
+    </label>
+    <label>依赖节点 ID（逗号分隔）<input name="depends_on"></label>
+    <label>验收条件（每行一条）<textarea name="acceptance"></textarea></label>
+    <label>写入路径（每行一条，留空表示只读）<textarea name="write_paths"></textarea></label>
+    <div class="actions">
+      <button class="primary">添加</button>
+      <button type="button" id="dismiss">返回</button>
+    </div>
+  </form>
+</dialog>
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const names = {
+    open: "进行中", paused: "已暂停", completed: "已完成", cancelled: "已取消",
+    pending: "待处理", dispatching: "分派中", running: "执行中", waiting: "等待事件", failed: "失败"
+  };
+  const colors = {
+    pending: "#7e9588", running: "#4683c4", dispatching: "#4683c4",
+    waiting: "#bc8d34", completed: "#2d8a60", failed: "#c7645d", cancelled: "#c7645d"
+  };
+  const eventNames = {
+    init: "创建目标", add_node: "添加节点", edit_node: "修改节点", start_node: "开始节点",
+    complete_node: "完成节点", fail_node: "节点失败", retry_node: "重试节点",
+    pause_goal: "暂停目标", resume_goal: "恢复目标", cancel_goal: "取消目标",
+    verify_goal: "目标验证", finish_goal: "完成目标"
+  };
+  const scope = new URLSearchParams(location.search);
+  const scopeQuery = "?" + scope.toString();
+  const allSessions = scope.get("all") === "1";
+  $("scopeLabel").textContent = allSessions ? "全部会话" : "当前会话";
+  $("scopeLabel").title = scope.get("session") || "请通过 waitctl dashboard --session 打开";
+  const otherScope = new URLSearchParams(scope);
+  if (allSessions) otherScope.delete("all"); else otherScope.set("all", "1");
+  $("scopeSwitch").href = "/?" + otherScope.toString();
+  $("scopeSwitch").textContent = allSessions ? "当前会话" : "全部会话";
+  $("scopeSwitch").hidden = allSessions && !scope.get("session");
+  let tasks = {goals: [], watches: [], loops: [], linked_watches: []};
+  let mode = scope.get("mode") || "session";
+  const focus = scope.get("focus") || "";
+  let focusPending = !!focus;
+
+  let selected = mode === "goal" ? focus : "";
+  let nodeId = scope.get("node") || "";
+
+  function element(tag, text, className) {
+    const node = document.createElement(tag);
+    if (text !== undefined) node.textContent = text;
+    if (className) node.className = className;
+    return node;
+  }
+
+  function svgElement(tag, attributes) {
+    const node = document.createElementNS("http://www.w3.org/2000/svg", tag);
+    for (const [name, value] of Object.entries(attributes)) node.setAttribute(name, value);
+    return node;
+  }
+
+  function currentGoal() {
+    return tasks.goals.find(goal => goal.path === selected);
+  }
+
+  function splitValues(value, separator) {
+    return value.split(separator).map(item => item.trim()).filter(Boolean);
+  }
+
+  function nodeFields(values) {
+    return {
+      title: values.get("title"),
+      depends_on: splitValues(values.get("depends_on"), ","),
+      acceptance: splitValues(values.get("acceptance"), "\n")
+    };
+  }
+
+  function showError(message) {
+    $("error").textContent = message;
+    $("error").hidden = false;
+  }
+
+  async function act(action, fields = {}) {
+    $("error").hidden = true;
+    try {
+      const response = await fetch("/api/action" + scopeQuery, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: selected, action, ...fields })
+      });
+      const result = await response.json();
+      if (!response.ok) throw Error(result.error);
+      const notices = {
+        wait: "已请求取消等待程序。",
+        loop: "已取消后续轮次；已运行的任务不会被中断。",
+        pause: "已暂停新任务派发；已运行任务可能继续。",
+        cancel: "目标已取消；不会终止外部作业。"
+      };
+      $("notice").textContent = notices[fields.mode] || notices[action] ||
+        "已保存到任务状态，后续调度按此执行。页面不会立即唤醒 Agent。";
+      $("notice").dataset.kind = fields.mode || "goal";
+      $("notice").hidden = false;
+      return true;
+    } catch (error) {
+      showError(error.message);
+      return false;
+    }
+  }
+
+  function renderEvents(events) {
+    $("events").replaceChildren(...events.slice(-30).reverse().map(event => {
+      const row = element("div", undefined, "event");
+      const name = eventNames[event.operation] || event.operation || "变更";
+      row.append(
+        element("time", formatTime(event.at)),
+        element("span", (event.source === "user" ? "你 · " : event.operation === "wake_node" ? "事件 · " : "Agent · ") + name + (event.node_id ? " · " + event.node_id : ""))
+      );
+      return row;
+    }));
+  }
+
+  function formatTime(value) {
+    if (!value) return "—";
+    return new Date(typeof value === "number" ? value * 1000 : value).toLocaleString();
+  }
+
+  async function cancelTask(task, kind) {
+    if (!confirm(kind === "wait" ? "取消这个等待？等待程序将停止。" : "取消这个循环？后续轮次将停止。")) return;
+    await act("cancel", kind === "wait"
+      ? {mode: "wait", watch_id: task.watch_id}
+      : {mode: "loop", path: task.path});
+  }
+
+  function renderTaskList(collection, kind, list) {
+    if (!collection.length) {
+      const empty = element("div", undefined, "card empty");
+      empty.append(element("h2", kind === "wait" ? "暂无普通等待" : "暂无循环"));
+      list.replaceChildren(empty);
+      return;
+    }
+    const states = {active: "进行中", completed: "完成", cancelled: "已取消", failed: "失败"};
+    list.replaceChildren(...collection.map(task => {
+      const identity = kind === "wait" ? task.watch_id : task.path;
+      const card = element("article", undefined, "card task-card" + (identity === focus ? " focused" : ""));
+      if (identity === focus) card.id = "focusedTask";
+      if (task.error) {
+        card.append(element("p", task.error));
+        return card;
+      }
+      const state = kind === "wait" ? task.state : task.status;
+      const heading = element("div", undefined, "task-heading");
+      heading.append(element("h3", kind === "wait" ? task.label : task.task),
+        element("span", states[state] || state, "badge"));
+      if (state === "active") {
+        const cancel = element("button", "取消", "danger");
+        cancel.onclick = () => cancelTask(task, kind);
+        heading.append(cancel);
+      }
+      card.append(heading);
+      const meta = element("div", undefined, "task-meta");
+      if (kind === "loop") {
+        let phase = states[state];
+        if (task.phase === "waiting") phase = "下次 " + formatTime(task.next_run_at);
+        else if (task.phase === "running") phase = "执行中";
+        meta.append(element("span", "第 " + task.iteration + (task.max_iterations ? " / " + task.max_iterations : "") + " 轮"),
+          element("span", "间隔 " + task.interval_seconds + " 秒"),
+          element("span", phase));
+      } else {
+        meta.append(element("span", task.watch_id.slice(0, 8)),
+          element("span", "查询 " + (task.query_status || "—")),
+          element("span", "通知 " + (task.result?.notification || task.notification_channel?.status || "—")));
+      }
+      meta.append(element("span", "截止 " + formatTime(task.deadline_at)));
+      if (allSessions) meta.append(element("span", "会话 " + task.session));
+      card.append(meta);
+      if (task.event_note) {
+        card.append(element("p", "触发后 · " + task.event_note, "task-note"));
+      }
+      const more = element("details");
+      more.append(element("summary", "详情"));
+      const details = kind === "wait"
+        ? {result: task.result, log_file: task.log_file}
+        : {path: task.path, goal: task.goal, runs: task.runs, events: task.events};
+      more.append(element("pre", JSON.stringify(details, null, 2)));
+      card.append(more);
+      return card;
+    }));
+  }
+
+  function renderSummary() {
+    const validGoals = tasks.goals.filter(goal => !goal.error);
+    const running = validGoals.some(goal => Object.values(goal.nodes).some(node => ["running", "dispatching"].includes(node.status))) ||
+      tasks.loops.some(loop => loop.status === "active" && loop.phase === "running");
+    const ready = validGoals.some(goal => goal.status === "open" && goal.activity === "ready");
+    const waiting = tasks.watches.filter(watch => watch.state === "active").length +
+      tasks.linked_watches.filter(watch => {
+        if (watch.state !== "active") return false;
+        if (watch.owner.mode === "goal") {
+          const goal = validGoals.find(goal => goal.path === watch.owner.path);
+          return goal?.status === "open" && goal.nodes[watch.owner.node]?.wait?.watch_id === watch.watch_id;
+        }
+        const loop = tasks.loops.find(loop => loop.path === watch.owner.path);
+        return loop?.status === "active" && loop.watch_id === watch.watch_id;
+      }).length;
+    const paused = validGoals.some(goal => goal.status === "paused");
+    const verification = validGoals.some(goal => goal.status === "open" && goal.activity === "awaiting_verification");
+    const failed = validGoals.some(goal => Object.values(goal.nodes).some(node => node.status === "failed")) ||
+      tasks.watches.some(watch => watch.state === "failed");
+    const statuses = [
+      [failed, "有任务需要处理"],
+      [paused, "有目标已暂停"],
+      [running, "工作推进中"],
+      [waiting, "等待外部事件"],
+      [verification, "等待最终验收"],
+      [ready, "有任务可以推进"],
+      [validGoals.length || tasks.watches.length || tasks.loops.length, "当前没有待运行任务"],
+      [true, "准备开始"]
+    ];
+    const guidance = [
+      [paused, "已暂停的目标不会派发新任务；已有任务可能继续运行。"],
+      [waiting, waiting + " 个等待由程序运行，事件到达后按原有通道通知所属会话。"],
+      [failed, "打开任务检查结果与证据，再决定重试或调整计划。"],
+      [verification, "节点已完成，Agent 仍需核对原始目标、记录证据并完成验收。"],
+      [running || ready, "Agent 按依赖和验收条件推进；任务图与等待状态实时同步。"],
+      [true, "在对话中创建目标、普通等待或循环后，会自动出现在这里。"]
+    ];
+    $("sessionStatus").textContent = statuses.find(([matches]) => matches)[1];
+    $("sessionNext").textContent = guidance.find(([matches]) => matches)[1];
+  }
+
+  function renderIndependent() {
+    const root = $("independentTasks");
+    root.replaceChildren();
+    root.hidden = mode !== "session";
+    if (root.hidden) return;
+    const finishedGoals = tasks.goals.filter(goal => ["completed", "cancelled"].includes(goal.status));
+    if (finishedGoals.length) {
+      const history = element("details", undefined, "task-history");
+      history.append(element("summary", "目标历史 · " + finishedGoals.length));
+      for (const goal of finishedGoals) {
+        const button = element("button", goal.objective);
+        button.onclick = () => { selected = goal.path; nodeId = ""; mode = "goal"; render(); };
+        history.append(button);
+      }
+      root.append(history);
+    }
+    const independent = [
+      ["wait", tasks.watches],
+      ["loop", tasks.loops.filter(loop => !loop.goal)]
+    ];
+    for (const [kind, collection] of independent) {
+      const past = [];
+      const active = [];
+      for (const task of collection) {
+        const status = kind === "wait" ? task.state : task.status;
+        (task.error || status !== "active" ? past : active).push(task);
+      }
+      if (active.length) {
+        root.append(element("h3", kind === "wait" ? "独立等待" : "独立循环", "context-heading"));
+        const list = element("div");
+        renderTaskList(active, kind, list);
+        root.append(list);
+      }
+      if (past.length) {
+        const history = element("details", undefined, "task-history");
+        history.append(element("summary", (kind === "wait" ? "等待历史" : "循环历史") + " · " + past.length));
+        const list = element("div");
+        renderTaskList(past, kind, list);
+        history.append(list);
+        root.append(history);
+      }
+    }
+  }
+
+  function render() {
+    renderSummary();
+    renderIndependent();
+    const counts = {session: tasks.goals.filter(goal => goal.status === "open").length +
+      tasks.watches.filter(task => task.state === "active").length +
+      tasks.loops.filter(task => task.status === "active" && !task.goal).length,
+      goal: tasks.goals.length, wait: tasks.watches.length, loop: tasks.loops.length};
+    for (const button of $("modes").querySelectorAll("button")) {
+      const kind = button.dataset.mode;
+      button.textContent = ({session: "当前任务", goal: "目标", wait: "等待", loop: "循环"}[kind]) + " · " + counts[kind];
+      button.setAttribute("aria-selected", kind === mode);
+    }
+    const showingGoal = ["session", "goal"].includes(mode);
+    $("goalToolbar").hidden = !showingGoal || !tasks.goals.length;
+    $("taskList").hidden = showingGoal;
+    if (!showingGoal) {
+      $("empty").hidden = true;
+      $("content").hidden = true;
+      renderTaskList(mode === "wait" ? tasks.watches : tasks.loops, mode, $("taskList"));
+      return;
+    }
+    if (!currentGoal()) selected = (tasks.goals.find(goal => goal.status === "open") || tasks.goals[0])?.path || "";
+    $("goals").replaceChildren(...tasks.goals.map(goal => {
+      const option = element("option", goal.objective || goal.path);
+      option.value = goal.path;
+      return option;
+    }));
+    $("goals").value = selected;
+
+    const goal = currentGoal();
+    const historical = mode === "session" && goal && ["completed", "cancelled"].includes(goal.status);
+    $("empty").hidden = !!goal || mode === "session";
+    $("content").hidden = !goal || historical;
+    $("goalToolbar").hidden = historical || !goal;
+    for (const action of ["pause", "resume", "cancel"]) $(action).disabled = !goal;
+    if (!goal) return;
+    if (goal.error) {
+      showError(goal.error);
+      $("content").hidden = true;
+      return;
+    }
+
+    $("objective").textContent = goal.objective;
+    $("objective").title = goal.path;
+    const available = {
+      pause: goal.status === "open",
+      resume: goal.status === "paused",
+      cancel: ["open", "paused"].includes(goal.status)
+    };
+    for (const [action, enabled] of Object.entries(available)) {
+      $(action).hidden = !enabled;
+      $(action).disabled = !enabled;
+    }
+    $("add").disabled = goal.status !== "open";
+
+    const nodes = Object.values(goal.nodes);
+    const completed = nodes.filter(node => node.status === "completed").length;
+    $("stats").replaceChildren(
+      element("span", names[goal.status], "badge"),
+      element("span", completed + " / " + nodes.length + " 完成")
+    );
+    $("progress").style.width = (nodes.length ? completed / nodes.length * 100 : 0) + "%";
+    draw(goal);
+    if (!$("details").contains(document.activeElement)) {
+      renderDetails(goal);
+    } else {
+      const heading = $("details").querySelector("h3");
+      if (heading && goal.nodes[nodeId]) heading.textContent = goal.nodes[nodeId].title;
+    }
+    renderEvents(goal.events);
+  }
+
+  function layout(nodes, width) {
+    const positions = {};
+    const layers = {};
+    const vertical = width < 600;
+
+    function place(id) {
+      if (positions[id]) return positions[id].level;
+      const dependencies = nodes[id].depends_on;
+      const level = dependencies.length ? Math.max(...dependencies.map(place)) + 1 : 0;
+      const row = layers[level] || 0;
+      layers[level] = row + 1;
+      positions[id] = {
+        level,
+        x: vertical ? Math.max(24, (width - 200) / 2) + row * 225 : 24 + level * 245,
+        y: vertical ? 26 + level * 105 : 26 + row * 110
+      };
+      return level;
+    }
+
+    Object.keys(nodes).forEach(place);
+    return { positions, vertical };
+  }
+
+  function edgePath(from, to, vertical) {
+    if (vertical) {
+      return `M${from.x + 100} ${from.y + 76} C${from.x + 100} ${from.y + 92} ${to.x + 100} ${to.y - 16} ${to.x + 100} ${to.y}`;
+    }
+    return `M${from.x + 200} ${from.y + 36} C${from.x + 225} ${from.y + 36} ${to.x - 25} ${to.y + 36} ${to.x} ${to.y + 36}`;
+  }
+
+  function drawNode(id, node, position) {
+    const selectedNode = id === nodeId;
+    const group = svgElement("g", {
+      transform: `translate(${position.x},${position.y})`,
+      tabindex: 0, role: "button", "aria-label": node.title
+    });
+    group.append(
+      svgElement("rect", {
+        width: 200, height: 76, rx: 10,
+        fill: selectedNode ? "#edf5ec" : "white",
+        stroke: selectedNode ? "#184f43" : "#d1ded4",
+        "stroke-width": selectedNode ? 2 : 1
+      }),
+      svgElement("rect", { x: 0, y: 12, width: 4, height: 52, rx: 2, fill: colors[node.status] })
+    );
+    const title = svgElement("text", { x: 15, y: 26 });
+    title.textContent = node.title.length > 13 ? node.title.slice(0, 13) + "…" : node.title;
+    const status = svgElement("text", { x: 15, y: 52, class: "small" });
+    status.textContent = id + " · " + names[node.status];
+    const tooltip = svgElement("title", {});
+    tooltip.textContent = node.title;
+    group.append(title, status, tooltip);
+
+    function select() {
+      nodeId = id;
+      const goal = currentGoal();
+      draw(goal);
+      if (!$("details").contains(document.activeElement)) renderDetails(goal);
+    }
+    group.onclick = select;
+    group.onkeydown = event => {
+      if (event.key === "Enter") select();
+    };
+    return group;
+  }
+
+  function draw(goal) {
+    const { positions, vertical } = layout(goal.nodes, $("graph").clientWidth);
+    const svg = svgElement("svg", {
+      width: Math.max(vertical ? 260 : 650, ...Object.values(positions).map(point => point.x + 230)),
+      height: Math.max(270, ...Object.values(positions).map(point => point.y + 100))
+    });
+    const definitions = svgElement("defs", {});
+    const marker = svgElement("marker", {
+      id: "arrow", viewBox: "0 0 10 10", refX: 9, refY: 5,
+      markerWidth: 6, markerHeight: 6, orient: "auto-start-reverse"
+    });
+    marker.append(svgElement("path", { d: "M 0 0 L 10 5 L 0 10 z", fill: "#a8b9ac" }));
+    definitions.append(marker);
+    svg.append(definitions);
+
+    for (const [id, node] of Object.entries(goal.nodes)) {
+      for (const dependency of node.depends_on) {
+        svg.append(svgElement("path", {
+          d: edgePath(positions[dependency], positions[id], vertical),
+          fill: "none", stroke: "#a8b9ac", "stroke-width": 1.5, "marker-end": "url(#arrow)"
+        }));
+      }
+    }
+    for (const [id, node] of Object.entries(goal.nodes)) {
+      svg.append(drawNode(id, node, positions[id]));
+    }
+    $("graph").replaceChildren(svg);
+  }
+
+  function editForm(node) {
+    const form = element("form");
+    const fields = [
+      ["title", "任务说明", node.title],
+      ["depends_on", "依赖（逗号分隔）", node.depends_on.join(", ")],
+      ["acceptance", "验收条件（每行一条）", node.acceptance.join("\n")]
+    ];
+    for (const [name, label, value] of fields) {
+      const field = element("label", label);
+      const input = element(name === "acceptance" ? "textarea" : "input");
+      input.name = name;
+      input.value = value;
+      input.required = name === "title";
+      field.append(input);
+      form.append(field);
+    }
+    const save = element("button", "保存修改", "primary");
+    save.style.marginTop = "16px";
+    form.append(save);
+    form.onsubmit = async event => {
+      event.preventDefault();
+      await act("edit", { id: nodeId, ...nodeFields(new FormData(form)) });
+    };
+    return form;
+  }
+
+  function renderDetails(goal) {
+    const box = $("details");
+    box.replaceChildren();
+    const node = goal.nodes[nodeId];
+    if (!node) {
+      const placeholder = element("div", undefined, "detail-placeholder");
+      placeholder.append(element("div", "⌘", "symbol"), element("p", "选择节点查看详情"));
+      box.append(placeholder);
+      return;
+    }
+    const kind = { local: "主 Agent", agent: "子 Agent", external: "外部事件" }[node.kind] || node.kind;
+    box.append(
+      element("span", names[node.status], "badge"),
+      element("h3", node.title),
+      element("p", nodeId + " · " + kind, "muted")
+    );
+    if (node.status === "pending" && goal.status === "open") {
+      box.append(editForm(node));
+    } else {
+      const acceptance = element("ul");
+      acceptance.append(...node.acceptance.map(item => element("li", item)));
+      box.append(
+        element("p", "依赖：" + (node.depends_on.join("、") || "无")),
+        element("b", "验收条件"), acceptance
+      );
+    }
+    const relatedLoops = tasks.loops.filter(loop => loop.goal?.state === goal.path && loop.goal?.node === nodeId);
+    const waits = tasks.linked_watches.filter(watch =>
+      watch.owner.mode === "goal" && watch.owner.path === goal.path && watch.owner.node === nodeId);
+    if (node.wait || relatedLoops.length || waits.length) {
+      const context = element("section", undefined, "wait-context");
+      context.append(element("b", "等待与循环"));
+      if (node.wait) {
+        context.append(element("p", node.wait.label || "外部条件", "task-note"));
+        if (node.wait.event_note) context.append(element("p", "触发后 · " + node.wait.event_note, "task-note"));
+      }
+      for (const wait of waits) {
+        context.append(element("p", (wait.state === "active" ? "等待中" : wait.state) +
+          " · 截止 " + formatTime(wait.deadline_at), "muted"));
+      }
+      for (const loop of relatedLoops) {
+        context.append(element("p", loop.task + " · 第 " + loop.iteration + " 轮 · " + ({active: "进行中", completed: "完成", cancelled: "已取消"}[loop.status]), "task-note"));
+        if (loop.event_note) context.append(element("p", "下轮 · " + loop.event_note, "task-note"));
+      }
+      box.append(context);
+    }
+    if (node.result) {
+      box.append(element("h4", "执行结果"),
+        element("p", typeof node.result === "string" ? node.result : node.result.summary || JSON.stringify(node.result), "task-note"));
+    }
+    if (node.wait) {
+      const metadata = element("details", undefined, "muted");
+      metadata.append(element("summary", "等待详情"), element("pre", JSON.stringify(node.wait, null, 2)));
+      box.append(metadata);
+    }
+    if (node.status === "failed" && goal.status === "open") {
+      const retry = element("button", "重试节点");
+      retry.onclick = () => act("retry", { id: nodeId });
+      box.append(retry);
+    }
+  }
+
+  $("goals").onchange = event => {
+    selected = event.target.value;
+    nodeId = "";
+    render();
+  };
+  $("pause").onclick = () => act("pause");
+  $("resume").onclick = () => act("resume");
+  $("cancel").onclick = () => {
+    if (confirm("取消这个目标？未完成的任务将停止调度。")) act("cancel");
+  };
+  $("add").onclick = () => $("addDialog").showModal();
+  $("dismiss").onclick = () => $("addDialog").close();
+  $("addForm").onsubmit = async event => {
+    event.preventDefault();
+    const form = event.target;
+    const values = new FormData(form);
+    const writes = splitValues(values.get("write_paths"), "\n");
+    const added = await act("add", {
+      id: values.get("id"), kind: values.get("kind"), ...nodeFields(values),
+      read_only: !writes.length, write_paths: writes
+    });
+    if (added) {
+      $("addDialog").close();
+      form.reset();
+    }
+  };
+
+  $("modes").onclick = event => {
+    const button = event.target.closest("button[data-mode]");
+    if (button) { mode = button.dataset.mode; render(); }
+  };
+
+  new ResizeObserver(() => {
+    const goal = currentGoal();
+    if (goal && !goal.error) draw(goal);
+  }).observe($("graph"));
+
+  const stream = new EventSource("/events" + scopeQuery);
+  stream.onmessage = event => {
+    tasks = JSON.parse(event.data);
+    $("connection").textContent = "● 实时";
+    render();
+    if (focusPending) {
+      document.getElementById("focusedTask")?.scrollIntoView({block: "center", behavior: "smooth"});
+      focusPending = false;
+    }
+  };
+  stream.onerror = () => { $("connection").textContent = "重连中"; };
+})();
+</script></html>

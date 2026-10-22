@@ -1,6 +1,6 @@
 # `$wait loop`：事件驱动 Loop 模式
 
-[English](wait-loop.md) | 简体中文
+[English](loop.md) | 简体中文
 
 通过 `$wait loop <间隔>: <任务>` 启动，`status|cancel <状态文件>` 查看或控制；斜杠客户端用 `/wait loop`。根 Agent 做完一轮任务，再由 `wait` 计时等待下一轮。同一时间只运行一轮，两轮之间模型不用轮询。
 
@@ -74,13 +74,13 @@ python /path/to/wait/src/waitctl.py loop -- expire \
 
 不传 `--state` 时，`init` 会创建 `/tmp/.wait-loop/<项目名>-<路径哈希>/loop-<ID>.json` 并返回规范化路径。最近的 Git 根目录用于识别项目；macOS 返回值可能使用 `/private/tmp`。
 
-用 `waitctl loop` 通过 `waitd` 管理循环；`wait_loop.py` 也可独立处理状态。状态文件在服务重启后仍有效，记录任务、客户端与会话、远程端点、时间安排、阶段、watch ID、执行摘要和操作历史。投递和停止条件都在 `init` 时确定：
+用 `waitctl loop` 通过 `waitd` 管理循环；`loop.py` 也可独立处理状态。状态文件在服务重启后仍有效，记录任务、客户端与会话、远程端点、时间安排、阶段、watch ID、执行摘要和操作历史。投递和停止条件都在 `init` 时确定：
 
 - `--duration` 限制整个循环，默认 24 小时。
 - `--max-iterations` 可选，用于限制成功完成的轮数。
 - `--remote` 可选，只用于 Codex；显式值会传给之后的每个计时 watcher，省略时使用默认 app-server 控制 socket。
 
-服务在 `complete` 后注册 `wait_loop.py due --wait`，截止时间为 `next_run_at` 加 60 秒。Loop 状态会在注册前保存路径和远程端点，因此服务重启后可以补齐遗漏的计时器而不重复本轮任务。每个计时器都执行与普通 wait 相同的通知预检；日志保存在 loop 状态文件旁，并以 watch ID 命名。
+服务在 `complete` 后注册 `loop.py due --wait`，截止时间为 `next_run_at` 加 60 秒。Loop 状态会在注册前保存路径和远程端点，因此服务重启后可以补齐遗漏的计时器而不重复本轮任务。每个计时器都执行与普通 wait 相同的通知预检；日志保存在 loop 状态文件旁，并以 watch ID 命名。
 
 ## 恢复与取消
 

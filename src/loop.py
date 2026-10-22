@@ -11,20 +11,20 @@ import sys
 import time
 import uuid
 from collections import UserDict
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Generator, Mapping, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 
-import wait_runtime
+import runtime
 
-CLIENTS = wait_runtime.CLIENTS
+CLIENTS = runtime.CLIENTS
 DEFAULT_DURATION = 86400.0
 DEFAULT_STATE_ROOT = Path("/tmp/.wait-loop")
 STATUSES = {"active", "completed", "cancelled"}
 PHASES = {"running", "waiting"}
 
 
-class LoopError(wait_runtime.StateError):
+class LoopError(runtime.StateError):
     """Raised when a loop operation is invalid."""
 
 
@@ -53,11 +53,11 @@ def positive_number(value: str) -> float:
     return number
 
 
-positive_int = wait_runtime.positive_int
+positive_int = runtime.positive_int
 
 
 def default_state_path(start: Path | None = None) -> Path:
-    return wait_runtime.project_state_path(DEFAULT_STATE_ROOT, "loop", start)
+    return runtime.project_state_path(DEFAULT_STATE_ROOT, "loop", start)
 
 
 def validate(state: object) -> dict[str, object]:
@@ -93,7 +93,7 @@ def validate(state: object) -> dict[str, object]:
         raise LoopError("task must be a non-empty string")
     if "event_note" in state:
         try:
-            wait_runtime.single_line_note(state["event_note"])
+            runtime.single_line_note(state["event_note"])
         except (argparse.ArgumentTypeError, AttributeError) as exc:
             raise LoopError("event_note must be a concise single-line string") from exc
     if state["client"] not in CLIENTS:
@@ -237,11 +237,11 @@ class LoopStore:
         self.path = Path(os.path.realpath(os.path.abspath(os.path.expanduser(path))))
 
     def load(self) -> LoopState:
-        return LoopState(wait_runtime.load_state_json(self.path, LoopError))
+        return LoopState(runtime.load_state_json(self.path, LoopError))
 
     def write(self, state: LoopState) -> None:
         validate(state.data)
-        wait_runtime.atomic_write_json(self.path, state.data)
+        runtime.atomic_write_json(self.path, state.data)
 
     def create(self, state: LoopState) -> None:
         with self.locked():
@@ -250,15 +250,15 @@ class LoopStore:
             self.write(state)
 
     @contextmanager
-    def edit(self) -> Iterator[LoopState]:
+    def edit(self) -> Generator[LoopState, None, None]:
         with self.locked():
             state = self.load()
             yield state  # noqa: RUF075 - failed edits must not be committed
             self.write(state)
 
     @contextmanager
-    def locked(self) -> Iterator[None]:
-        with wait_runtime.file_lock(self.path):
+    def locked(self) -> Generator[None, None, None]:
+        with runtime.file_lock(self.path):
             yield
 
 
@@ -277,6 +277,7 @@ def command_init(args: argparse.Namespace) -> None:
         "client": args.client,
         "session": args.session,
         "remote": getattr(args, "remote", None),
+        "no_notify": getattr(args, "no_notify", False),
         "interval_seconds": args.interval,
         "deadline_at": now + args.duration,
         "max_iterations": args.max_iterations,
@@ -340,6 +341,8 @@ def timer_argv(state: LoopState, path: Path) -> list[str]:
         "--lock-file",
         str(log.with_suffix(".lock")),
     ]
+    if state.get("no_notify"):
+        argv.append("--no-notify")
     if event_note := state.get("event_note"):
         argv.extend(["--event-note", str(event_note)])
     if remote := state.get("remote"):
@@ -403,12 +406,13 @@ def parser() -> argparse.ArgumentParser:
     init = commands.add_parser("init")
     add_state(init, required=False)
     init.add_argument("--task", required=True)
-    init.add_argument("--event-note", type=wait_runtime.single_line_note, required=True)
+    init.add_argument("--event-note", type=runtime.single_line_note, required=True)
     init.add_argument("--interval", type=positive_number, required=True)
     init.add_argument("--duration", type=positive_number, default=DEFAULT_DURATION)
     init.add_argument("--max-iterations", type=positive_int)
     init.add_argument("--client", choices=sorted(CLIENTS), default="codex")
     init.add_argument("--session", "--thread", dest="session", required=True)
+    init.add_argument("--no-notify", action="store_true", help="Follow timer events manually without starting resume turns")
     init.add_argument(
         "--remote",
         help="Codex app-server endpoint; defaults to the app-server control socket when omitted",

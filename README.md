@@ -9,8 +9,8 @@ One skill for event-driven waiting. Programs wait outside model turns; the ownin
 | Invocation | Purpose | Protocol |
 | --- | --- | --- |
 | `$wait <condition>` | Wait for one external state | [Wait](docs/wait.md) |
-| `$wait loop <interval>: <task>` | Repeat one task for a bounded duration | [Loop](docs/wait-loop.md) |
-| `$wait goal <objective>` | Execute and verify a durable dependency graph | [Goal](docs/wait-goal.md) |
+| `$wait loop <interval>: <task>` | Repeat one task for a bounded duration | [Loop](docs/loop.md) |
+| `$wait goal <objective>` | Execute and verify a durable dependency graph | [Goal](docs/goal.md) |
 
 Use `/wait` on slash-command clients. Codex and Claude Code delivery are documented in [client adapters](docs/clients.md); CLI adapters also exist for CodeWiz, Cursor, and GitHub Copilot.
 

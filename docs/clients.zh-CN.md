@@ -32,13 +32,13 @@ Codex Desktop 创建的 `~/.codex/ipc/ipc.sock` 不是 app-server 端点，服�
 - Unix 端点必须存在并完成 WebSocket 升级；成功时返回 `notification_channel.status: ready`。
 - `ws://` 和 `wss://` 端点返回 `configured`；URL 格式与连通性在投递时检查。
 - Unix 端点缺失或不兼容时，立即返回 `notification_unavailable` 和 `query_status: not_started`，不创建 watcher，也不开始重试。
-- 不绑定会话的 wait 会把通知标为 `disabled`，仍可手动执行 `follow`。
+- 不绑定会话的 wait 会把通知标为 `disabled`，仍可手动执行 `follow`。 `--no-notify` 可保留会话归属和看板可见性，同时禁用自动恢复回合；用 `waitctl follow` 阻塞接收事件。
 
 这样查询启动状态和通知通道状态彼此独立，不会用正常的状态查询掩盖失效的唤醒路径。
 
 ### 投递与恢复
 
-`waitd` 运行 `src/wait_codex.py`，连接原端点和原会话 ID：先初始化 JSON-RPC 连接、读取线程运行状态，仅在线程未加载时执行 `thread/resume`，再通过 `turn/start` 发送 `$wait resume ...`、`$wait goal resume ...` 或 `$wait loop resume ...`。保持原会话的模型、工作目录、指令、沙箱和审批设置；不启动第二个 Codex 执行器，也不依赖桌面客户端消费队列。
+`waitd` 运行 `src/codex.py`，连接原端点和原会话 ID：先初始化 JSON-RPC 连接、读取线程运行状态，仅在线程未加载时执行 `thread/resume`，再通过 `turn/start` 发送 `$wait resume ...`、`$wait goal resume ...` 或 `$wait loop resume ...`。保持原会话的模型、工作目录、指令、沙箱和审批设置；不启动第二个 Codex 执行器，也不依赖桌面客户端消费队列。
 
 - `notification: started` 表示 `turn/start` 已返回真实 turn ID，记录在 helper 的 JSON stdout 中。启动执行不代表业务成功，Root 仍须核对事件与结果。
 - 会话活跃时返回 `busy`，不主动 steer 正在进行的轮次；服务有界延迟重试。状态读取与 `turn/start` 之间存在竞争窗口，线程在窗口内变为活跃时仍可能接收该输入。

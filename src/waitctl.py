@@ -14,8 +14,8 @@ import sys
 import time
 from pathlib import Path
 
-import wait_runtime
-from wait_protocol import (
+import runtime
+from protocol import (
     PROTOCOL_VERSION,
     RUNTIME_DIR,
     SERVICE_FINGERPRINT,
@@ -115,7 +115,7 @@ def forwarded_args(values: list[str]) -> list[str]:
 
 def validate_start_argv(values: list[str]) -> list[str]:
     argv = forwarded_args(values)
-    wait_runtime.validate_job_argv(argv)
+    runtime.validate_job_argv(argv)
     return argv
 
 
@@ -156,6 +156,11 @@ def parser() -> argparse.ArgumentParser:
         "Standalone log/lock paths are automatic; the service generates the resume instruction.",
     )
     start.add_argument("argv", nargs=argparse.REMAINDER)
+    dashboard = commands.add_parser("dashboard", help="Show the session Wait/Loop/Goal dashboard URL")
+    dashboard.add_argument("--state", type=Path)
+    scope = dashboard.add_mutually_exclusive_group()
+    scope.add_argument("--session", default=os.environ.get("CODEX_THREAD_ID"))
+    scope.add_argument("--all-sessions", action="store_true")
     commands.add_parser("list")
     show = commands.add_parser("show")
     show.add_argument("watch_id")
@@ -203,6 +208,13 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 if response.get("ok", False):
                     response = verify_start(response)
+            elif args.command == "dashboard":
+                response = request({
+                    "operation": "dashboard",
+                    "session": args.session,
+                    "all_sessions": args.all_sessions,
+                    "state": str(args.state.resolve()) if args.state else None,
+                })
             elif args.command == "list":
                 response = request({"operation": "list"})
             elif args.command == "show":

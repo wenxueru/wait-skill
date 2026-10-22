@@ -12,14 +12,14 @@ import os
 import re
 import time
 import uuid
-from collections.abc import Callable, Iterator, Mapping, Sequence
-from contextlib import contextmanager
-from datetime import datetime, timezone
+from collections.abc import Callable, Generator, Mapping, Sequence
+from contextlib import AbstractContextManager, contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import NotRequired, TypedDict, cast
 
-import wait_runtime
-from wait_protocol import SOCKET_PATH
+import runtime
+from protocol import SOCKET_PATH
 
 # Constants
 
@@ -30,7 +30,7 @@ NODE_STATUSES = {"pending", "dispatching", "running", "waiting", "completed", "f
 GOAL_STATUSES = {"open", "paused", "completed", "cancelled"}
 WAIT_EVENTS = {"exited", "start_failed", "interrupted", "ready", "terminal", "timeout", "query_failed"}
 WAIT_PHASES = {"prepared", "active"}
-CLIENTS = wait_runtime.CLIENTS
+CLIENTS = runtime.CLIENTS
 DEFAULT_STATE_ROOT = Path("/tmp/.wait-goal")
 
 # Persisted-state schema (TypedDicts mirroring the JSON on disk) and errors
@@ -92,6 +92,7 @@ class GoalEventFields(TypedDict):
 
 
 class GoalEvent(GoalEventFields, total=False):
+    source: str
     node_id: str
     details: dict[str, object]
 
@@ -141,7 +142,7 @@ class GoalState(GoalStateFields, total=False):
     completed_at: str
 
 
-class GoalError(wait_runtime.StateError):
+class GoalError(runtime.StateError):
     """Raised when a graph operation would create invalid state."""
 
 
@@ -149,7 +150,7 @@ class GoalError(wait_runtime.StateError):
 
 
 def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
 def absolute_path(value: str | Path) -> str:
@@ -157,7 +158,7 @@ def absolute_path(value: str | Path) -> str:
 
 
 def default_state_path(start: Path | None = None) -> Path:
-    return wait_runtime.project_state_path(DEFAULT_STATE_ROOT, "goal", start)
+    return runtime.project_state_path(DEFAULT_STATE_ROOT, "goal", start)
 
 
 def canonical_path(value: str | Path) -> str:
@@ -353,7 +354,7 @@ class GoalGraph:
             event_note = wait.get("event_note")
             if event_note is not None:
                 try:
-                    wait_runtime.single_line_note(event_note)
+                    runtime.single_line_note(event_note)
                 except (argparse.ArgumentTypeError, AttributeError) as exc:
                     raise GoalError(f"node {node_id!r} has invalid wait event_note") from exc
             phase = wait.get("phase")
@@ -749,6 +750,19 @@ class GoalGraph:
             return "blocked"
         return "idle"
 
+    def edit_node(
+        self,
+        node_id: str,
+        title: str,
+        depends_on: list[str],
+        acceptance: list[str],
+    ) -> None:
+        node = self.get_node(node_id)
+        if self.state["status"] != "open" or node["status"] != "pending":
+            raise GoalError("Only pending nodes in an open goal can be edited")
+        node.update(title=title, depends_on=depends_on, acceptance=acceptance)
+        self.record_event("edit_node", node_id=node_id)
+
     def add_node(
         self,
         node_id: str,
@@ -1107,7 +1121,7 @@ class GoalStore:
         self.path = Path(os.path.realpath(absolute_path(path)))
 
     def load(self) -> GoalGraph:
-        state = wait_runtime.load_state_json(self.path, GoalError)
+        state = runtime.load_state_json(self.path, GoalError)
         graph = GoalGraph(state)
         graph.validate()
         return graph
@@ -1120,22 +1134,24 @@ class GoalStore:
             self.write(graph.state)
 
     def write(self, state: GoalState) -> None:
-        wait_runtime.atomic_write_json(self.path, state)
+        runtime.atomic_write_json(self.path, state)
 
     @contextmanager
-    def edit(self) -> Iterator[GoalGraph]:
+    def edit(self, source: str = "agent") -> Generator[GoalGraph, None, None]:
         with self._locked():
             graph = self.load()
             original_state = copy.deepcopy(graph.state)
             yield graph  # noqa: RUF075 - failed edits must not be committed
             if graph.state != original_state:
+                for event in graph.events[len(original_state["events"]) :]:
+                    event["source"] = source
                 graph.validate()
                 graph.state["updated_at"] = utc_now()
                 self.write(graph.state)
 
     @contextmanager
-    def _locked(self) -> Iterator[None]:
-        with wait_runtime.file_lock(self.path):
+    def _locked(self) -> Generator[None, None, None]:
+        with runtime.file_lock(self.path):
             yield
 
 
@@ -1153,6 +1169,10 @@ def parse_input(value: str) -> tuple[str, str]:
     return name.strip(), source.strip()
 
 
+def edit_goal(args: argparse.Namespace) -> AbstractContextManager[GoalGraph]:
+    return GoalStore(args.state).edit(source=getattr(args, "source", "agent"))
+
+
 def command_init(args: argparse.Namespace) -> None:
     state = args.state or default_state_path()
     graph = GoalGraph.create(args.objective, args.thread, getattr(args, "client", "codex"))
@@ -1165,7 +1185,7 @@ def command_add(args: argparse.Namespace) -> None:
     inputs = dict(args.input)
     if len(inputs) != len(args.input):
         raise GoalError("input names must be unique")
-    with GoalStore(args.state).edit() as graph:
+    with edit_goal(args) as graph:
         before = getattr(args, "before", None)
         graph.add_node(
             args.id,
@@ -1181,6 +1201,12 @@ def command_add(args: argparse.Namespace) -> None:
             args.reason,
         )
     print_json({"id": args.id, "status": "pending", "before": before})
+
+
+def command_edit(args: argparse.Namespace) -> None:
+    with edit_goal(args) as graph:
+        graph.edit_node(args.id, args.title, args.depends_on, args.acceptance)
+    print_json({"id": args.id, "status": "pending"})
 
 
 def command_ready(args: argparse.Namespace) -> None:
@@ -1200,19 +1226,19 @@ def command_events(args: argparse.Namespace) -> None:
 
 
 def command_start(args: argparse.Namespace) -> None:
-    with GoalStore(args.state).edit() as graph:
+    with edit_goal(args) as graph:
         graph.start_node(args.id, args.agent_id, args.dispatch_token)
     print_json({"id": args.id, "status": "running", "agent_id": args.agent_id})
 
 
 def command_prepare_agent(args: argparse.Namespace) -> None:
-    with GoalStore(args.state).edit() as graph:
+    with edit_goal(args) as graph:
         dispatch_token = graph.prepare_agent(args.id)
     print_json({"id": args.id, "status": "dispatching", "dispatch_token": dispatch_token})
 
 
 def command_abort_agent(args: argparse.Namespace) -> None:
-    with GoalStore(args.state).edit() as graph:
+    with edit_goal(args) as graph:
         graph.abort_agent(args.id, args.dispatch_token)
     print_json({"id": args.id, "status": "pending", "dispatch_token": args.dispatch_token})
 
@@ -1253,7 +1279,7 @@ def submit_prepared_wait(
 
     def fail(reason: str) -> GoalError:
         try:
-            with GoalStore(args.state).edit() as graph:
+            with edit_goal(args) as graph:
                 graph.abort_external_wait(args.id, wait["watch_id"])
             outcome = "prepared wait rolled back"
         except GoalError as exc:
@@ -1302,7 +1328,7 @@ def command_wait(args: argparse.Namespace) -> None:
         lock_file=lock_file,
         startup_file=startup_file,
     )
-    with GoalStore(args.state).edit() as graph:
+    with edit_goal(args) as graph:
         watch_id = graph.prepare_external_wait(
             args.id,
             args.label,
@@ -1336,67 +1362,67 @@ def command_wait(args: argparse.Namespace) -> None:
 
 
 def command_activate_wait(args: argparse.Namespace) -> None:
-    with GoalStore(args.state).edit() as graph:
+    with edit_goal(args) as graph:
         graph.activate_external_wait(args.id, args.watch_id)
     print_json({"id": args.id, "status": "waiting", "watch_id": args.watch_id})
 
 
 def command_abort_wait(args: argparse.Namespace) -> None:
-    with GoalStore(args.state).edit() as graph:
+    with edit_goal(args) as graph:
         graph.abort_external_wait(args.id, args.watch_id)
     print_json({"id": args.id, "status": "running", "watch_id": args.watch_id})
 
 
 def command_wake(args: argparse.Namespace) -> None:
-    with GoalStore(args.state).edit() as graph:
+    with edit_goal(args) as graph:
         status, duplicate = graph.wake_node(args.id, args.event_id, args.event, args.external_status)
     print_json({"id": args.id, "status": status, "event": args.event, "duplicate": duplicate})
 
 
 def command_complete(args: argparse.Namespace) -> None:
-    with GoalStore(args.state).edit() as graph:
+    with edit_goal(args) as graph:
         graph.complete_node(args.id, args.summary, args.artifact)
     print_json({"id": args.id, "status": "completed"})
 
 
 def command_fail(args: argparse.Namespace) -> None:
-    with GoalStore(args.state).edit() as graph:
+    with edit_goal(args) as graph:
         graph.fail_node(args.id, args.summary)
     print_json({"id": args.id, "status": "failed"})
 
 
 def command_retry(args: argparse.Namespace) -> None:
-    with GoalStore(args.state).edit() as graph:
+    with edit_goal(args) as graph:
         graph.retry_node(args.id)
     print_json({"id": args.id, "status": "pending"})
 
 
 def command_verify(args: argparse.Namespace) -> None:
-    with GoalStore(args.state).edit() as graph:
+    with edit_goal(args) as graph:
         graph.verify(args.summary, args.check)
     print_json({"status": "open", "activity": "verified"})
 
 
 def command_pause(args: argparse.Namespace) -> None:
-    with GoalStore(args.state).edit() as graph:
+    with edit_goal(args) as graph:
         graph.pause()
     print_json({"status": "paused"})
 
 
 def command_resume(args: argparse.Namespace) -> None:
-    with GoalStore(args.state).edit() as graph:
+    with edit_goal(args) as graph:
         graph.resume()
     print_json({"status": "open"})
 
 
 def command_cancel(args: argparse.Namespace) -> None:
-    with GoalStore(args.state).edit() as graph:
+    with edit_goal(args) as graph:
         graph.cancel()
     print_json({"status": "cancelled"})
 
 
 def command_finish(args: argparse.Namespace) -> None:
-    with GoalStore(args.state).edit() as graph:
+    with edit_goal(args) as graph:
         graph.finish(args.summary)
     print_json({"status": "completed"})
 
@@ -1429,6 +1455,7 @@ def parser() -> argparse.ArgumentParser:
         options = {"help": help} if help is not None else {}
         command = commands.add_parser(name, **options)
         add_state_argument(command, required=state_required)
+        command.add_argument("--source", choices=("agent", "user"), default="agent")
         command.set_defaults(handler=handler)
         return command
 
@@ -1466,6 +1493,12 @@ def parser() -> argparse.ArgumentParser:
     add.add_argument("--expects-artifact", action="append", default=[])
     add.add_argument("--reason", help="Why this node was added to the graph")
 
+    edit = state_command("edit", command_edit, help="Edit a pending node")
+    edit.add_argument("--id", required=True)
+    edit.add_argument("--title", required=True)
+    edit.add_argument("--depends-on", action="append", default=[])
+    edit.add_argument("--acceptance", action="append", default=[])
+
     state_command("ready", command_ready, help="List nodes whose dependencies are complete")
 
     state_command("check", command_check, help="Report graph and scheduling issues")
@@ -1487,11 +1520,11 @@ def parser() -> argparse.ArgumentParser:
     wait = state_command("wait", command_wait, help="Prepare an external wait before watcher startup")
     wait.add_argument("--id", required=True)
     wait.add_argument("--label", required=True)
-    wait.add_argument("--event-note", type=wait_runtime.single_line_note, required=True)
+    wait.add_argument("--event-note", type=runtime.single_line_note, required=True)
     wait.add_argument("--log-file", help="Override the generated watcher log path")
     wait.add_argument("--lock-file", help="Override the generated watcher lock path")
     wait.add_argument("--startup-file", help="Override the generated startup receipt path")
-    wait.add_argument("--timeout", type=wait_runtime.positive_number, default=wait_runtime.DEFAULT_WAIT_TIMEOUT)
+    wait.add_argument("--timeout", type=runtime.positive_number, default=runtime.DEFAULT_WAIT_TIMEOUT)
     wait.add_argument("--remote", help="Codex app-server endpoint passed through to the watcher")
     wait.add_argument(
         "program",

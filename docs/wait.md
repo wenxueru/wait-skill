@@ -13,7 +13,7 @@ A read-only program waits for useful external evidence; `waitd` runs it once, sa
    python /path/to/wait/src/waitctl.py start -- \
      --label "deployment api" --event-note "Recheck deployment; verify health or report failure" \
      --client codex --session "$AGENT_SESSION_ID" --timeout 3600 \
-     -- env PYTHONPATH=/path/to/wait/src python /tmp/wait_deploy.py
+     -- env PYTHONPATH=/path/to/wait/src python /tmp/check_deployment.py
    ```
 
    The first `--` ends `waitctl` parsing; the second begins the program argv. No shell is implied. Log paths, lock paths, and event IDs are generated unless overridden.
@@ -23,16 +23,16 @@ A read-only program waits for useful external evidence; `waitd` runs it once, sa
 
 Resolve the short ID using the [resume protocol](../SKILL.md#resume-messages).
 
-Without `--session`, results are saved without automatic delivery. Goal-owned waits use the [Goal handshake](wait-goal.md#external-waits).
+Without `--session`, results are saved without automatic delivery. Goal-owned waits use the [Goal handshake](goal.md#external-waits).
 
 ## Waiting-program contract
 
-For example, save this as `/tmp/wait_deploy.py` when an external task creates a success or failure marker:
+For example, save this as `/tmp/check_deployment.py` when an external task creates a success or failure marker:
 
 ```python
 import json
 from pathlib import Path
-from wait_for import poll
+from polling import poll
 
 def query():
     return {
@@ -59,13 +59,13 @@ print(json.dumps(poll(query, evaluate, interval=5, timeout=3500)))
 | `query_timeout` | 30 seconds | Bounds each query; evaluation uses the remaining overall deadline |
 | `max_consecutive_failures` | 12 | Query `OSError` and subprocess errors retry; exhaustion raises `QueryFailed` |
 
-A successful query resets the failure count. Parsing errors and evaluator exceptions propagate immediately. Use `run_command(["deployctl", "status", "api", "--json"])` from `wait_for` for command queries and parse stdout yourself. It uses no shell, defaults to 30 seconds, inherits stderr, and terminates and reaps the query process on errors or interruption.
+A successful query resets the failure count. Parsing errors and evaluator exceptions propagate immediately. Use `run_command(["deployctl", "status", "api", "--json"])` from `polling` for command queries and parse stdout yourself. It uses no shell, defaults to 30 seconds, inherits stderr, and terminates and reaps the query process on errors or interruption.
 
 `poll` uses Unix timer signals: call it in the main thread without another `SIGALRM/ITIMER_REAL` timer, and do not override these signals. The outer service timeout covers native code Python signals cannot interrupt. Limit output at the source and avoid detached children.
 
 ## Wait limits
 
-`--timeout` defaults to one hour. Extend it only when the program can detect failures and stalled progress; a live process does not prove external health. For long waits requiring periodic assessment, use a bounded [Loop](wait-loop.md). Service timeout and cancellation terminate the whole program process group; timeout preserves available output and triggers delivery. Delivery has separate [bounds](clients.md).
+`--timeout` defaults to one hour. Extend it only when the program can detect failures and stalled progress; a live process does not prove external health. For long waits requiring periodic assessment, use a bounded [Loop](loop.md). Service timeout and cancellation terminate the whole program process group; timeout preserves available output and triggers delivery. Delivery has separate [bounds](clients.md).
 
 ## Results
 

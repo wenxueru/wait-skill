@@ -11,9 +11,9 @@ from pathlib import Path
 
 SRC = Path(__file__).parents[1] / "src"
 sys.path.insert(0, str(SRC))
-import wait_goal
-import wait_loop
-import wait_runtime
+import goal
+import loop
+import runtime
 import waitctl
 import waitd
 
@@ -26,7 +26,7 @@ class PollServiceTest(unittest.IsolatedAsyncioTestCase):
             program.write_text(
                 "import sys, json\n"
                 f"sys.path.insert(0, {str(SRC)!r})\n"
-                "from wait_for import poll\n"
+                "from polling import poll\n"
                 "values = iter([{'healthy': 0}, {'healthy': 8}])\n"
                 "def query(): return next(values)\n"
                 "def evaluate(data):\n"
@@ -35,11 +35,22 @@ class PollServiceTest(unittest.IsolatedAsyncioTestCase):
                 encoding="utf-8",
             )
             daemon = waitd.WaitDaemon(root / "registry.json")
-            submitted = daemon.submit([
-                "--label", "custom", "--event-note", "Recheck the custom state",
-                "--client", "claude", "--session", "test",
-                "--", sys.executable, str(program),
-            ], str(root))
+            submitted = daemon.submit(
+                [
+                    "--label",
+                    "custom",
+                    "--event-note",
+                    "Recheck the custom state",
+                    "--client",
+                    "claude",
+                    "--session",
+                    "test",
+                    "--",
+                    sys.executable,
+                    str(program),
+                ],
+                str(root),
+            )
             task = daemon.tasks[submitted["watch_id"]]
             try:
                 response = await asyncio.wait_for(daemon.follow(submitted["watch_id"]), 3)
@@ -68,25 +79,25 @@ class DocumentationTest(unittest.TestCase):
                 with self.subTest(source=source.name, link=link):
                     self.assertTrue(target.is_file(), f"Missing linked file: {target}")
                     if anchor:
-                        prose = re.sub(r"```.*?```", "", target.read_text(), flags=re.S)
-                        headings = re.findall(r"^#+\s+(.+)$", prose, flags=re.M)
+                        prose = re.sub(r"```.*?```", "", target.read_text(), flags=re.DOTALL)
+                        headings = re.findall(r"^#+\s+(.+)$", prose, flags=re.MULTILINE)
                         slugs = [re.sub(r"[^\w -]", "", heading.lower()).replace(" ", "-") for heading in headings]
                         self.assertIn(anchor, slugs)
 
     def test_shell_examples_match_the_current_command_parsers(self) -> None:
         checked = 0
         for source in self.files:
-            for block in re.findall(r"```bash\n(.*?)```", source.read_text(), flags=re.S):
-                for line in block.replace('\\\n', " ").splitlines():
+            for block in re.findall(r"```bash\n(.*?)```", source.read_text(), flags=re.DOTALL):
+                for line in block.replace("\\\n", " ").splitlines():
                     argv = shlex.split(line, comments=True)
                     if len(argv) < 2 or not argv[1].endswith("/src/waitctl.py"):
                         continue
                     with self.subTest(source=source.name, command=line):
                         args = waitctl.parser().parse_args(argv[2:])
                         if args.command == "start":
-                            wait_runtime.parse_job_args(waitctl.forwarded_args(args.argv))
+                            runtime.parse_job_args(waitctl.forwarded_args(args.argv))
                         elif args.command in {"goal", "loop"}:
-                            parser = wait_goal.parser() if args.command == "goal" else wait_loop.parser()
+                            parser = goal.parser() if args.command == "goal" else loop.parser()
                             parser.parse_args(waitctl.forwarded_args(args.argv))
                         checked += 1
         self.assertGreater(checked, 0)

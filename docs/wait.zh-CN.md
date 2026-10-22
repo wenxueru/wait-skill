@@ -13,7 +13,7 @@
    python /path/to/wait/src/waitctl.py start -- \
      --label "deployment api" --event-note "复查部署，验证健康或报告失败" \
      --client codex --session "$AGENT_SESSION_ID" --timeout 3600 \
-     -- env PYTHONPATH=/path/to/wait/src python /tmp/wait_deploy.py
+     -- env PYTHONPATH=/path/to/wait/src python /tmp/check_deployment.py
    ```
 
    第一个 `--` 结束 `waitctl` 参数，第二个开始程序 argv；不隐式调用 shell。日志、锁路径和 event ID 默认自动生成，可显式覆盖。
@@ -23,16 +23,16 @@
 
 先按[唤醒恢复协议](../SKILL.zh-CN.md#唤醒消息)解析短 ID，再执行本模式的恢复步骤。
 
-不传 `--session` 时只保存结果，不自动投递。Goal 所属的等待使用 [Goal 握手](wait-goal.zh-CN.md#外部等待)。
+不传 `--session` 时只保存结果，不自动投递。Goal 所属的等待使用 [Goal 握手](goal.zh-CN.md#外部等待)。
 
 ## 等待程序约定
 
-外部任务创建成功或失败标记时，可将以下程序保存为 `/tmp/wait_deploy.py`：
+外部任务创建成功或失败标记时，可将以下程序保存为 `/tmp/check_deployment.py`：
 
 ```python
 import json
 from pathlib import Path
-from wait_for import poll
+from polling import poll
 
 def query():
     return {
@@ -59,13 +59,13 @@ print(json.dumps(poll(query, evaluate, interval=5, timeout=3500)))
 | `query_timeout` | 30 秒 | 限制每次查询；判断受剩余总时限约束 |
 | `max_consecutive_failures` | 12 | 查询的 `OSError` 和子进程错误可重试，耗尽抛 `QueryFailed` |
 
-查询成功会清零失败计数；解析错误和判断异常直接传播。命令查询可用 `wait_for` 的 `run_command(["deployctl", "status", "api", "--json"])`，再自行解析 stdout。它不调用 shell，默认 30 秒超时，继承 stderr，错误或中断时终止并回收查询进程。
+查询成功会清零失败计数；解析错误和判断异常直接传播。命令查询可用 `polling` 的 `run_command(["deployctl", "status", "api", "--json"])`，再自行解析 stdout。它不调用 shell，默认 30 秒超时，继承 stderr，错误或中断时终止并回收查询进程。
 
 `poll` 使用 Unix 定时信号：仅在主线程调用，不能已有 `SIGALRM/ITIMER_REAL` 定时器，也不要覆盖这些信号。Python 信号无法打断的原生代码由外层服务超时兜底。限制源头输出，不启动脱离管理的子进程。
 
 ## 等待时限
 
-`--timeout` 默认一小时。只有程序能检测失败与停滞时才延长；进程存活不证明外部任务健康。长等待需要周期评估时使用有界 [Loop](wait-loop.zh-CN.md)。服务超时和取消都会终止整个程序进程组；超时保留已有输出并触发投递。投递有独立[上限](clients.zh-CN.md)。
+`--timeout` 默认一小时。只有程序能检测失败与停滞时才延长；进程存活不证明外部任务健康。长等待需要周期评估时使用有界 [Loop](loop.zh-CN.md)。服务超时和取消都会终止整个程序进程组；超时保留已有输出并触发投递。投递有独立[上限](clients.zh-CN.md)。
 
 ## 结果
 

@@ -9,8 +9,8 @@
 | 调用 | 用途 | 协议 |
 | --- | --- | --- |
 | `$wait <条件>` | 等待一个外部状态 | [Wait](docs/wait.zh-CN.md) |
-| `$wait loop <间隔>: <任务>` | 在有限总时长内重复执行 | [Loop](docs/wait-loop.zh-CN.md) |
-| `$wait goal <目标>` | 执行并验收持久化任务依赖图 | [Goal](docs/wait-goal.zh-CN.md) |
+| `$wait loop <间隔>: <任务>` | 在有限总时长内重复执行 | [Loop](docs/loop.zh-CN.md) |
+| `$wait goal <目标>` | 执行并验收持久化任务依赖图 | [Goal](docs/goal.zh-CN.md) |
 
 斜杠命令客户端用 `/wait`。Codex 和 Claude Code 的投递见[客户端适配](docs/clients.zh-CN.md)；代码也保留 CodeWiz、Cursor 和 GitHub Copilot 的 CLI 适配。
 

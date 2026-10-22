@@ -1,13 +1,13 @@
 # `$wait goal`: durable objectives
 
-English | [简体中文](wait-goal.zh-CN.md)
+English | [简体中文](goal.zh-CN.md)
 
 The root persists a task dependency graph, accepts each result, and verifies the original objective. Invoke only when requested or resuming a saved goal. Use `$wait goal <objective>`, `status <state-file>`, or user-requested `pause|cancel <state-file>`; slash-command clients use `/wait goal`.
 
 ## Workflow
 
 1. `init` saves the objective and returns `state_file`. Add bounded nodes with dependencies, inputs, allowed writes, required artifacts, and acceptance checks. Dependencies must already exist and the graph must remain acyclic.
-2. On start or resume, run `show`, `check`, and `ready`. Track node IDs and final verification in native Todo when available; update it after state mutations succeed. A checklist is not acceptance evidence.
+2. On start, resume and before dispatch, run `show`, `check`, and `ready`; respect user edits, pauses and cancellation. Use the [dashboard](dashboard.md) to view and maintain the DAG. When native Todo is available, synchronize node IDs and final verification after state mutations succeed. A checklist is not acceptance evidence.
 3. `start` local/external nodes before acting. For agent nodes, `prepare-agent`, include its dispatch token in the assignment, dispatch once, then attach the runtime ID with `start --dispatch-token ... --agent-id ...`. Prefer independent, separately verifiable work with non-overlapping writes; keep tightly coupled work with one agent.
 4. Verify results before `complete`; record failures with `fail` and discoveries with `add --reason`. Only the root changes the graph/shared Todo. Children report evidence, artifacts, changes, and questions only to the root; they neither communicate with each other nor create agents.
 5. Continue while ready work, returned results, or objective verification remain. For live children, block on runtime completion/attention events that reach this session. For external state, use the handshake below. Before ending an unfinished goal, confirm a wake source or record a concrete blocker, user pause, or cancellation.
@@ -67,6 +67,7 @@ python /path/to/wait/src/waitctl.py goal -- complete --state "$GOAL_STATE" \
 | Commands | Purpose |
 | --- | --- |
 | `show`, `check`, `ready`, `events` | State/activity, scheduling issues, safe frontier, history |
+| `edit --id ID --title TEXT --depends-on ID --acceptance TEXT` | Replace a pending node's title, dependencies and acceptance; the last two flags repeat and clear their lists when omitted |
 | `prepare-agent --id ID` | Reserve dispatch; retain returned token |
 | `start --id ID --dispatch-token TOKEN --agent-id AGENT` | Attach the child already created for that token |
 | `abort-agent --id ID --dispatch-token TOKEN` | Release a reservation only after proving no child is live or terminating it |
@@ -83,7 +84,7 @@ First start the external node and prepare a [read-only waiting program](wait.md)
 ```bash
 python /path/to/wait/src/waitctl.py goal -- wait --state "$GOAL_STATE" \
   --id deploy --label "deployment api" --event-note "Read log, wake node, then recheck deployment" \
-  --timeout 3500 -- env PYTHONPATH=/path/to/wait/src python /tmp/wait_deploy.py
+  --timeout 3500 -- env PYTHONPATH=/path/to/wait/src python /tmp/check_deployment.py
 # Set WATCH_ID from the response.
 python /path/to/wait/src/waitctl.py goal -- activate-wait \
   --state "$GOAL_STATE" --id deploy --watch-id "$WATCH_ID"
@@ -108,7 +109,7 @@ python /path/to/wait/src/waitctl.py goal -- wake --state "$GOAL_STATE" \
 
 `wake` returns the node to `running`; it does not declare success. Re-query current state once, then choose `complete`, `fail`, or another wait. Stale IDs are rejected and exact duplicates are no-ops. Watcher locks remain owned until acknowledgement or the configured wake-ack deadline. See CLI `--help` for accepted events, including legacy values.
 
-Long waits requiring health checks can use `loop init --goal-state FILE --goal-node ID`; [Loop](wait-loop.md) describes ownership and cancellation.
+Long waits requiring health checks can use `loop init --goal-state FILE --goal-node ID`; [Loop](loop.md) describes ownership and cancellation.
 
 ## Recovery
 

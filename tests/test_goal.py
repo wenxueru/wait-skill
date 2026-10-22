@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import copy
-import importlib.util
 import json
 import os
 import sys
@@ -17,12 +16,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
-import wait_runtime  # noqa: E402
-SCRIPT = Path(__file__).parents[1] / "src" / "wait_goal.py"
-SPEC = importlib.util.spec_from_file_location("wait_goal", SCRIPT)
-assert SPEC and SPEC.loader
-wait_goal = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(wait_goal)
+import goal
+import runtime
+
+SCRIPT = Path(__file__).parents[1] / "src" / "goal.py"
 
 
 class WaitGoalTest(unittest.TestCase):
@@ -31,7 +28,7 @@ class WaitGoalTest(unittest.TestCase):
         self.addCleanup(self.directory.cleanup)
         self.state = Path(self.directory.name) / "goal.json"
         self.invoke(
-            wait_goal.command_init,
+            goal.command_init,
             state=self.state,
             objective="ship safely",
             thread="thread-1",
@@ -43,7 +40,7 @@ class WaitGoalTest(unittest.TestCase):
 
     def test_init_persists_client_and_session(self) -> None:
         state = Path(self.directory.name) / "claude.json"
-        args = wait_goal.parser().parse_args([
+        args = goal.parser().parse_args([
             "init",
             "--state",
             str(state),
@@ -66,13 +63,13 @@ class WaitGoalTest(unittest.TestCase):
         nested.mkdir(parents=True)
         (project / ".git").mkdir()
 
-        first = wait_goal.default_state_path(nested)
-        second = wait_goal.default_state_path(project)
+        first = goal.default_state_path(nested)
+        second = goal.default_state_path(project)
         self.assertEqual(first.parent, second.parent)
-        self.assertEqual(first.parents[1], wait_goal.DEFAULT_STATE_ROOT)
+        self.assertEqual(first.parents[1], goal.DEFAULT_STATE_ROOT)
 
         state = first.parent / "goal.json"
-        args = wait_goal.parser().parse_args([
+        args = goal.parser().parse_args([
             "init",
             "--objective",
             "ship safely",
@@ -80,7 +77,7 @@ class WaitGoalTest(unittest.TestCase):
             "session-1",
         ])
         output = StringIO()
-        with patch.object(wait_goal, "default_state_path", return_value=state), redirect_stdout(output):
+        with patch.object(goal, "default_state_path", return_value=state), redirect_stdout(output):
             args.handler(args)
 
         self.assertTrue(state.exists())
@@ -101,7 +98,7 @@ class WaitGoalTest(unittest.TestCase):
         reason: str | None = None,
     ) -> None:
         self.invoke(
-            wait_goal.command_add,
+            goal.command_add,
             state=self.state,
             id=node_id,
             title=node_id,
@@ -123,7 +120,7 @@ class WaitGoalTest(unittest.TestCase):
         dispatch_token: str | None = None,
     ) -> None:
         self.invoke(
-            wait_goal.command_start,
+            goal.command_start,
             state=self.state,
             id=node_id,
             agent_id=agent_id,
@@ -133,7 +130,7 @@ class WaitGoalTest(unittest.TestCase):
     def prepare_agent(self, node_id: str) -> str:
         output = StringIO()
         with redirect_stdout(output):
-            wait_goal.command_prepare_agent(Namespace(state=self.state, id=node_id))
+            goal.command_prepare_agent(Namespace(state=self.state, id=node_id))
         return json.loads(output.getvalue())["dispatch_token"]
 
     def prepare_wait(self, node_id: str) -> str:
@@ -141,7 +138,7 @@ class WaitGoalTest(unittest.TestCase):
         startup_file = root / f"{node_id}.started.json"
         output = StringIO()
         with redirect_stdout(output):
-            wait_goal.command_wait(
+            goal.command_wait(
                 Namespace(
                     state=self.state,
                     id=node_id,
@@ -160,7 +157,7 @@ class WaitGoalTest(unittest.TestCase):
         for field in ("log_file", "lock_file", "startup_file"):
             self.assertEqual(response[field], wait[field])
         self.assertEqual(response["state"], str(self.state))
-        args, command = wait_runtime.parse_job_args([*response["start_argv"], "--", "true"])
+        args, command = runtime.parse_job_args([*response["start_argv"], "--", "true"])
         self.assertEqual(command, ["true"])
         self.assertEqual(args.event_id, wait["watch_id"])
         self.assertEqual(str(args.goal_state), response["state"])
@@ -189,9 +186,9 @@ class WaitGoalTest(unittest.TestCase):
     def wait(self, node_id: str) -> str:
         watch_id = self.prepare_wait(node_id)
         self.write_startup_receipt(node_id, watch_id)
-        with patch.object(wait_goal, "lock_is_held", return_value=True):
+        with patch.object(goal, "lock_is_held", return_value=True):
             self.invoke(
-                wait_goal.command_activate_wait,
+                goal.command_activate_wait,
                 state=self.state,
                 id=node_id,
                 watch_id=watch_id,
@@ -200,7 +197,7 @@ class WaitGoalTest(unittest.TestCase):
 
     def complete(self, node_id: str, artifacts: list[str] | None = None) -> None:
         self.invoke(
-            wait_goal.command_complete,
+            goal.command_complete,
             state=self.state,
             id=node_id,
             summary=f"{node_id} complete",
@@ -212,7 +209,7 @@ class WaitGoalTest(unittest.TestCase):
         self.add("implement", ["inspect"])
         self.assertEqual(self.ready_ids(), ["inspect"])
 
-        with self.assertRaises(wait_goal.GoalError):
+        with self.assertRaises(goal.GoalError):
             self.complete("implement")
 
         self.start("inspect")
@@ -223,17 +220,17 @@ class WaitGoalTest(unittest.TestCase):
         self.complete("implement")
         self.assertEqual(self.graph().activity(), "awaiting_verification")
 
-        with self.assertRaises(wait_goal.GoalError):
-            self.invoke(wait_goal.command_finish, state=self.state, summary="done")
+        with self.assertRaises(goal.GoalError):
+            self.invoke(goal.command_finish, state=self.state, summary="done")
 
         self.invoke(
-            wait_goal.command_verify,
+            goal.command_verify,
             state=self.state,
             summary="original request satisfied",
             check=["tests pass"],
         )
         self.assertEqual(self.graph().activity(), "verified")
-        self.invoke(wait_goal.command_finish, state=self.state, summary="done")
+        self.invoke(goal.command_finish, state=self.state, summary="done")
         self.assertEqual(self.load()["status"], "completed")
 
     def test_verification_rejects_blank_checks(self) -> None:
@@ -241,9 +238,9 @@ class WaitGoalTest(unittest.TestCase):
         self.start("work")
         self.complete("work")
 
-        with self.assertRaises(wait_goal.GoalError):
+        with self.assertRaises(goal.GoalError):
             self.invoke(
-                wait_goal.command_verify,
+                goal.command_verify,
                 state=self.state,
                 summary="verified",
                 check=["   "],
@@ -253,7 +250,7 @@ class WaitGoalTest(unittest.TestCase):
         self.add("deploy", kind="external")
         self.start("deploy")
         watch_id = self.wait("deploy")
-        with patch.object(wait_goal, "lock_is_held", return_value=True):
+        with patch.object(goal, "lock_is_held", return_value=True):
             self.assertEqual(self.graph().activity(), "waiting")
 
         event = {
@@ -263,16 +260,16 @@ class WaitGoalTest(unittest.TestCase):
             "event": "ready",
             "external_status": "Ready",
         }
-        self.invoke(wait_goal.command_wake, **event)
+        self.invoke(goal.command_wake, **event)
         state_after_first_wake = self.load()
-        self.invoke(wait_goal.command_wake, **event)
+        self.invoke(goal.command_wake, **event)
         self.assertEqual(self.load(), state_after_first_wake)
         self.assertEqual(state_after_first_wake["nodes"]["deploy"]["status"], "running")
 
     def test_only_external_nodes_can_wait(self) -> None:
         self.add("build")
         self.start("build")
-        with self.assertRaises(wait_goal.GoalError):
+        with self.assertRaises(goal.GoalError):
             self.wait("build")
 
     def test_wait_is_prepared_before_activation(self) -> None:
@@ -285,9 +282,9 @@ class WaitGoalTest(unittest.TestCase):
         for field in ("log_file", "lock_file", "startup_file"):
             self.assertTrue(Path(node["wait"][field]).is_absolute())
 
-        with self.assertRaises(wait_goal.GoalError):
+        with self.assertRaises(goal.GoalError):
             self.invoke(
-                wait_goal.command_activate_wait,
+                goal.command_activate_wait,
                 state=self.state,
                 id="deploy",
                 watch_id=watch_id,
@@ -297,9 +294,9 @@ class WaitGoalTest(unittest.TestCase):
         receipt = json.loads(startup_file.read_text(encoding="utf-8"))
         receipt["thread"] = "wrong-thread"
         startup_file.write_text(json.dumps(receipt), encoding="utf-8")
-        with self.assertRaises(wait_goal.GoalError):
+        with self.assertRaises(goal.GoalError):
             self.invoke(
-                wait_goal.command_activate_wait,
+                goal.command_activate_wait,
                 state=self.state,
                 id="deploy",
                 watch_id=watch_id,
@@ -309,9 +306,9 @@ class WaitGoalTest(unittest.TestCase):
         receipt = json.loads(startup_file.read_text(encoding="utf-8"))
         receipt["activation_deadline"] = 0
         startup_file.write_text(json.dumps(receipt), encoding="utf-8")
-        with self.assertRaises(wait_goal.GoalError):
+        with self.assertRaises(goal.GoalError):
             self.invoke(
-                wait_goal.command_activate_wait,
+                goal.command_activate_wait,
                 state=self.state,
                 id="deploy",
                 watch_id=watch_id,
@@ -319,19 +316,19 @@ class WaitGoalTest(unittest.TestCase):
 
         self.write_startup_receipt("deploy", watch_id)
         with (
-            patch.object(wait_goal, "lock_is_held", return_value=False),
-            self.assertRaises(wait_goal.GoalError),
+            patch.object(goal, "lock_is_held", return_value=False),
+            self.assertRaises(goal.GoalError),
         ):
             self.invoke(
-                wait_goal.command_activate_wait,
+                goal.command_activate_wait,
                 state=self.state,
                 id="deploy",
                 watch_id=watch_id,
             )
 
-        with patch.object(wait_goal, "lock_is_held", return_value=True):
+        with patch.object(goal, "lock_is_held", return_value=True):
             self.invoke(
-                wait_goal.command_activate_wait,
+                goal.command_activate_wait,
                 state=self.state,
                 id="deploy",
                 watch_id=watch_id,
@@ -345,25 +342,27 @@ class WaitGoalTest(unittest.TestCase):
         self.start("deploy")
         self.wait("deploy")
 
-        with patch.object(wait_goal, "lock_is_held", return_value=False):
+        with patch.object(goal, "lock_is_held", return_value=False):
             issues = self.graph().lint()
             self.assertEqual(self.graph().activity(), "orphaned_wait")
 
             check_output = StringIO()
             with redirect_stdout(check_output):
-                wait_goal.command_check(Namespace(state=self.state))
+                goal.command_check(Namespace(state=self.state))
             show_output = StringIO()
             with redirect_stdout(show_output):
-                wait_goal.command_show(Namespace(state=self.state))
+                goal.command_show(Namespace(state=self.state))
 
         self.assertEqual(
             issues,
-            [{
-                "code": "orphaned_wait",
-                "severity": "error",
-                "node_id": "deploy",
-                "message": "waiting node no longer has a live watcher",
-            }],
+            [
+                {
+                    "code": "orphaned_wait",
+                    "severity": "error",
+                    "node_id": "deploy",
+                    "message": "waiting node no longer has a live watcher",
+                }
+            ],
         )
         self.assertFalse(json.loads(check_output.getvalue())["ok"])
         self.assertEqual(json.loads(show_output.getvalue())["activity"], "orphaned_wait")
@@ -373,7 +372,7 @@ class WaitGoalTest(unittest.TestCase):
         self.start("deploy")
         prepared_watch = self.prepare_wait("deploy")
         self.invoke(
-            wait_goal.command_abort_wait,
+            goal.command_abort_wait,
             state=self.state,
             id="deploy",
             watch_id=prepared_watch,
@@ -383,15 +382,15 @@ class WaitGoalTest(unittest.TestCase):
         self.assertIsNone(node["wait"])
 
         active_watch = self.wait("deploy")
-        with self.assertRaises(wait_goal.GoalError):
+        with self.assertRaises(goal.GoalError):
             self.invoke(
-                wait_goal.command_abort_wait,
+                goal.command_abort_wait,
                 state=self.state,
                 id="deploy",
                 watch_id=prepared_watch,
             )
         self.invoke(
-            wait_goal.command_abort_wait,
+            goal.command_abort_wait,
             state=self.state,
             id="deploy",
             watch_id=active_watch,
@@ -405,9 +404,9 @@ class WaitGoalTest(unittest.TestCase):
         self.add("deploy", kind="external")
         self.start("deploy")
         shared = str(Path(self.directory.name) / "shared")
-        with self.assertRaises(wait_goal.GoalError):
+        with self.assertRaises(goal.GoalError):
             self.invoke(
-                wait_goal.command_wait,
+                goal.command_wait,
                 state=self.state,
                 id="deploy",
                 label="deploy",
@@ -423,15 +422,15 @@ class WaitGoalTest(unittest.TestCase):
         state = self.load()
         state["thread"] = None
         self.state.write_text(json.dumps(state), encoding="utf-8")
-        with self.assertRaises(wait_goal.GoalError):
+        with self.assertRaises(goal.GoalError):
             self.prepare_wait("deploy")
 
     def test_paused_goal_cannot_prepare_external_wait(self) -> None:
         self.add("deploy", kind="external")
         self.start("deploy")
-        self.invoke(wait_goal.command_pause, state=self.state)
+        self.invoke(goal.command_pause, state=self.state)
 
-        with self.assertRaises(wait_goal.GoalError):
+        with self.assertRaises(goal.GoalError):
             self.prepare_wait("deploy")
 
         self.assertIsNone(self.load()["nodes"]["deploy"]["wait"])
@@ -457,7 +456,7 @@ class WaitGoalTest(unittest.TestCase):
         self.start("deploy")
         output = StringIO()
         with redirect_stdout(output):
-            wait_goal.command_wait(self.wait_namespace())
+            goal.command_wait(self.wait_namespace())
         response = json.loads(output.getvalue())
         wait = self.load()["nodes"]["deploy"]["wait"]
         for field in ("log_file", "lock_file", "startup_file"):
@@ -474,22 +473,25 @@ class WaitGoalTest(unittest.TestCase):
         def fake_request(payload: dict[str, object], socket_path: object = None, timeout: float = 5.0) -> dict[str, object]:
             payloads.append(payload)
             wait = self.load()["nodes"]["deploy"]["wait"]
-            Path(wait["startup_file"]).write_text(json.dumps({
-                "label": wait["label"],
-                "event_id": wait["watch_id"],
-                "event": "watcher_started",
-                "goal_node": "deploy",
-                "client": wait["client"],
-                "thread": wait["thread"],
-                "log_file": wait["log_file"],
-                "lock_file": wait["lock_file"],
-                "activation_deadline": time.time() + 60,
-            }), encoding="utf-8")
+            Path(wait["startup_file"]).write_text(
+                json.dumps({
+                    "label": wait["label"],
+                    "event_id": wait["watch_id"],
+                    "event": "watcher_started",
+                    "goal_node": "deploy",
+                    "client": wait["client"],
+                    "thread": wait["thread"],
+                    "log_file": wait["log_file"],
+                    "lock_file": wait["lock_file"],
+                    "activation_deadline": time.time() + 60,
+                }),
+                encoding="utf-8",
+            )
             return {"ok": True, "watch_id": wait["watch_id"], "state": "active"}
 
         output = StringIO()
         with patch("waitctl.request", side_effect=fake_request), redirect_stdout(output):
-            wait_goal.command_wait(self.wait_namespace(program=["--", "true"]))
+            goal.command_wait(self.wait_namespace(program=["--", "true"]))
         response = json.loads(output.getvalue())
         self.assertTrue(response["submitted"])
         self.assertEqual(response["receipt"], "verified")
@@ -513,14 +515,16 @@ class WaitGoalTest(unittest.TestCase):
             self.assertEqual(argv[argv.index(option) + 1], expected)
         for field in ("log_file", "lock_file", "startup_file"):
             self.assertEqual(argv[argv.index("--" + field.replace("_", "-")) + 1], wait[field])
-        self.assertEqual(argv[argv.index("--") + 1:], ["true"])
+        self.assertEqual(argv[argv.index("--") + 1 :], ["true"])
 
     def test_wait_program_rolls_back_when_submission_fails(self) -> None:
         self.add("deploy", kind="external")
         self.start("deploy")
-        with patch("waitctl.request", return_value={"ok": False, "error": "boom"}), \
-                self.assertRaisesRegex(wait_goal.GoalError, "boom.*rolled back"):
-            wait_goal.command_wait(self.wait_namespace(program=["true"]))
+        with (
+            patch("waitctl.request", return_value={"ok": False, "error": "boom"}),
+            self.assertRaisesRegex(goal.GoalError, "boom.*rolled back"),
+        ):
+            goal.command_wait(self.wait_namespace(program=["true"]))
         node = self.load()["nodes"]["deploy"]
         self.assertEqual(node["status"], "running")
         self.assertIsNone(node["wait"])
@@ -530,10 +534,10 @@ class WaitGoalTest(unittest.TestCase):
         self.start("deploy")
         with (
             patch("waitctl.request", return_value={"ok": True, "watch_id": "w"}),
-            patch.object(wait_goal, "RECEIPT_WAIT_SECONDS", 0.05),
-            self.assertRaisesRegex(wait_goal.GoalError, "receipt did not appear"),
+            patch.object(goal, "RECEIPT_WAIT_SECONDS", 0.05),
+            self.assertRaisesRegex(goal.GoalError, "receipt did not appear"),
         ):
-            wait_goal.command_wait(self.wait_namespace(program=["true"]))
+            goal.command_wait(self.wait_namespace(program=["true"]))
         node = self.load()["nodes"]["deploy"]
         self.assertEqual(node["status"], "running")
         self.assertIsNone(node["wait"])
@@ -544,7 +548,7 @@ class WaitGoalTest(unittest.TestCase):
         self.start("build")
         watch_id = self.wait("build")
         self.invoke(
-            wait_goal.command_wake,
+            goal.command_wake,
             state=self.state,
             id="build",
             event_id=watch_id,
@@ -552,7 +556,7 @@ class WaitGoalTest(unittest.TestCase):
             external_status="Failed",
         )
         self.invoke(
-            wait_goal.command_fail,
+            goal.command_fail,
             state=self.state,
             id="build",
             summary="verified terminal state",
@@ -560,9 +564,9 @@ class WaitGoalTest(unittest.TestCase):
         self.assertEqual(self.graph().activity(), "blocked")
         self.assertEqual(self.ready_ids(), [])
 
-        with self.assertRaises(wait_goal.GoalError):
+        with self.assertRaises(goal.GoalError):
             self.invoke(
-                wait_goal.command_fail,
+                goal.command_fail,
                 state=self.state,
                 id="build",
                 summary="overwrite watcher result",
@@ -572,12 +576,12 @@ class WaitGoalTest(unittest.TestCase):
         self.add("build")
         self.start("build")
         self.invoke(
-            wait_goal.command_fail,
+            goal.command_fail,
             state=self.state,
             id="build",
             summary="first attempt failed",
         )
-        self.invoke(wait_goal.command_retry, state=self.state, id="build")
+        self.invoke(goal.command_retry, state=self.state, id="build")
 
         node = self.load()["nodes"]["build"]
         self.assertEqual(node["status"], "pending")
@@ -592,7 +596,7 @@ class WaitGoalTest(unittest.TestCase):
         self.start("deploy")
         watch_id = self.wait("deploy")
         self.invoke(
-            wait_goal.command_wake,
+            goal.command_wake,
             state=self.state,
             id="deploy",
             event_id=watch_id,
@@ -614,7 +618,7 @@ class WaitGoalTest(unittest.TestCase):
         self.add("inspect", reason="initial decomposition")
         before = self.load()["events"]
 
-        with self.assertRaises(wait_goal.GoalError):
+        with self.assertRaises(goal.GoalError):
             self.add("invalid", inputs=[("source", "inspect")])
 
         events = self.load()["events"]
@@ -635,7 +639,7 @@ class WaitGoalTest(unittest.TestCase):
         self.complete("inspect")
         self.start("implement")
 
-        with self.assertRaises(wait_goal.GoalError):
+        with self.assertRaises(goal.GoalError):
             self.complete("implement")
 
         self.complete("implement", ["patch"])
@@ -654,7 +658,7 @@ class WaitGoalTest(unittest.TestCase):
 
         self.start("first")
         self.assertEqual(self.graph().activity(), "running")
-        with self.assertRaises(wait_goal.GoalError):
+        with self.assertRaises(goal.GoalError):
             self.start("second")
         self.complete("first")
         self.assertEqual(self.ready_ids(), ["second"])
@@ -679,7 +683,7 @@ class WaitGoalTest(unittest.TestCase):
         self.assertEqual(issue_codes, {"write_path_conflict", "unknown_write_scope"})
 
         self.start("a_unknown")
-        with self.assertRaises(wait_goal.GoalError):
+        with self.assertRaises(goal.GoalError):
             self.start("b_known")
 
         self.complete("a_unknown")
@@ -697,50 +701,50 @@ class WaitGoalTest(unittest.TestCase):
         self.assertEqual(graph.ready_nodes()[0]["id"], "work")
 
     def test_rejects_missing_dependency_and_duplicate_node(self) -> None:
-        with self.assertRaises(wait_goal.GoalError):
+        with self.assertRaises(goal.GoalError):
             self.add("later", ["missing"])
         self.add("one")
-        with self.assertRaises(wait_goal.GoalError):
+        with self.assertRaises(goal.GoalError):
             self.add("one")
 
     def test_rejects_incomplete_state_shape(self) -> None:
         state = self.load()
         del state["created_at"]
 
-        with self.assertRaises(wait_goal.GoalError):
-            wait_goal.GoalGraph(state).validate()
+        with self.assertRaises(goal.GoalError):
+            goal.GoalGraph(state).validate()
 
         self.add("work")
         graph = self.graph()
         del graph.nodes["work"]["result"]
 
-        with self.assertRaises(wait_goal.GoalError):
+        with self.assertRaises(goal.GoalError):
             graph.validate()
 
     def test_invalid_json_shapes_raise_goal_error(self) -> None:
         state = self.load()
         state["status"] = []
-        with self.assertRaises(wait_goal.GoalError):
-            wait_goal.GoalGraph(state).validate()
+        with self.assertRaises(goal.GoalError):
+            goal.GoalGraph(state).validate()
 
         state = self.load()
         state["events"] = [None]
-        with self.assertRaises(wait_goal.GoalError):
-            wait_goal.GoalGraph(state).validate()
+        with self.assertRaises(goal.GoalError):
+            goal.GoalGraph(state).validate()
 
         self.add("work")
         state = self.load()
         state["nodes"]["work"]["kind"] = {}
-        with self.assertRaises(wait_goal.GoalError):
-            wait_goal.GoalGraph(state).validate()
+        with self.assertRaises(goal.GoalError):
+            goal.GoalGraph(state).validate()
 
         state = self.load()
         state["nodes"]["work"]["status"] = "dispatching"
-        with self.assertRaises(wait_goal.GoalError):
-            wait_goal.GoalGraph(state).validate()
+        with self.assertRaises(goal.GoalError):
+            goal.GoalGraph(state).validate()
 
     def test_deep_acyclic_graph_does_not_recurse(self) -> None:
-        graph = wait_goal.GoalGraph.create("deep graph", None)
+        graph = goal.GoalGraph.create("deep graph", None)
         template = {
             "title": "node",
             "kind": "local",
@@ -768,15 +772,15 @@ class WaitGoalTest(unittest.TestCase):
         state = self.load()
         state["version"] = 2
 
-        with self.assertRaises(wait_goal.GoalError):
-            wait_goal.GoalGraph(state)
+        with self.assertRaises(goal.GoalError):
+            goal.GoalGraph(state)
 
     def test_stale_event_cannot_wake_a_later_wait_cycle(self) -> None:
         self.add("deploy", kind="external")
         self.start("deploy")
         first_watch = self.wait("deploy")
         self.invoke(
-            wait_goal.command_wake,
+            goal.command_wake,
             state=self.state,
             id="deploy",
             event_id=first_watch,
@@ -785,7 +789,7 @@ class WaitGoalTest(unittest.TestCase):
         )
         second_watch = self.wait("deploy")
         self.invoke(
-            wait_goal.command_wake,
+            goal.command_wake,
             state=self.state,
             id="deploy",
             event_id=second_watch,
@@ -794,9 +798,9 @@ class WaitGoalTest(unittest.TestCase):
         )
         third_watch = self.wait("deploy")
 
-        with self.assertRaises(wait_goal.GoalError):
+        with self.assertRaises(goal.GoalError):
             self.invoke(
-                wait_goal.command_wake,
+                goal.command_wake,
                 state=self.state,
                 id="deploy",
                 event_id=first_watch,
@@ -810,12 +814,12 @@ class WaitGoalTest(unittest.TestCase):
 
     def test_agent_start_requires_and_persists_assignment(self) -> None:
         self.add("review", kind="agent")
-        with self.assertRaises(wait_goal.GoalError):
+        with self.assertRaises(goal.GoalError):
             self.start("review")
 
         dispatch_token = self.prepare_agent("review")
         self.assertEqual(self.load()["nodes"]["review"]["status"], "dispatching")
-        with self.assertRaises(wait_goal.GoalError):
+        with self.assertRaises(goal.GoalError):
             self.start("review", "agent-42", "wrong-token")
         self.start("review", "agent-42", dispatch_token)
         assignment = self.load()["nodes"]["review"]["assignment"]
@@ -826,8 +830,8 @@ class WaitGoalTest(unittest.TestCase):
         self.complete("review")
         state = self.load()
         state["nodes"]["review"]["assignment"] = None
-        with self.assertRaises(wait_goal.GoalError):
-            wait_goal.GoalGraph(state).validate()
+        with self.assertRaises(goal.GoalError):
+            goal.GoalGraph(state).validate()
 
     def test_prepared_agent_dispatch_can_be_reconciled_or_aborted(self) -> None:
         self.add("review", kind="agent")
@@ -835,15 +839,15 @@ class WaitGoalTest(unittest.TestCase):
         self.assertEqual(self.graph().activity(), "dispatching")
         self.assertEqual(self.ready_ids(), [])
 
-        with self.assertRaises(wait_goal.GoalError):
+        with self.assertRaises(goal.GoalError):
             self.invoke(
-                wait_goal.command_abort_agent,
+                goal.command_abort_agent,
                 state=self.state,
                 id="review",
                 dispatch_token="wrong-token",
             )
         self.invoke(
-            wait_goal.command_abort_agent,
+            goal.command_abort_agent,
             state=self.state,
             id="review",
             dispatch_token=dispatch_token,
@@ -859,14 +863,14 @@ class WaitGoalTest(unittest.TestCase):
 
         self.assertEqual(self.graph().activity(), "dispatching")
         self.assertEqual(self.ready_ids(), [])
-        with self.assertRaises(wait_goal.GoalError):
+        with self.assertRaises(goal.GoalError):
             self.prepare_agent("second")
 
     def test_cancelled_prepared_dispatch_retains_reconciliation_token(self) -> None:
         self.add("review", kind="agent")
         dispatch_token = self.prepare_agent("review")
 
-        self.invoke(wait_goal.command_cancel, state=self.state)
+        self.invoke(goal.command_cancel, state=self.state)
 
         node = self.load()["nodes"]["review"]
         self.assertEqual(node["status"], "cancelled")
@@ -879,26 +883,25 @@ class WaitGoalTest(unittest.TestCase):
         self.complete("work")
         state = self.load()
         state["nodes"]["work"]["result"] = None
-        with self.assertRaises(wait_goal.GoalError):
-            wait_goal.GoalGraph(state).validate()
+        with self.assertRaises(goal.GoalError):
+            goal.GoalGraph(state).validate()
 
         state = self.load()
         self.invoke(
-            wait_goal.command_verify,
+            goal.command_verify,
             state=self.state,
             summary="verified",
             check=["tests pass"],
         )
         state = self.load()
         state["status"] = "completed"
-        with self.assertRaises(wait_goal.GoalError):
-            wait_goal.GoalGraph(state).validate()
+        with self.assertRaises(goal.GoalError):
+            goal.GoalGraph(state).validate()
 
     def test_locked_state_does_not_commit_after_an_exception(self) -> None:
-        with self.assertRaises(RuntimeError):
-            with wait_goal.GoalStore(self.state).edit() as graph:
-                graph.state["status"] = "cancelled"
-                raise RuntimeError("abort transaction")
+        with self.assertRaises(RuntimeError), goal.GoalStore(self.state).edit() as graph:
+            graph.state["status"] = "cancelled"
+            raise RuntimeError("abort transaction")
         self.assertEqual(self.load()["status"], "open")
 
     def test_concurrent_initialization_has_one_winner(self) -> None:
@@ -906,8 +909,8 @@ class WaitGoalTest(unittest.TestCase):
 
         def create() -> bool:
             try:
-                wait_goal.GoalStore(state).create(wait_goal.GoalGraph.create("goal", None))
-            except wait_goal.GoalError:
+                goal.GoalStore(state).create(goal.GoalGraph.create("goal", None))
+            except goal.GoalError:
                 return False
             return True
 
@@ -916,10 +919,10 @@ class WaitGoalTest(unittest.TestCase):
             results = [future.result() for future in futures]
 
         self.assertEqual(sorted(results), [False, True])
-        self.assertEqual(wait_goal.GoalStore(state).load().state["objective"], "goal")
+        self.assertEqual(goal.GoalStore(state).load().state["objective"], "goal")
 
-    def graph(self) -> wait_goal.GoalGraph:
-        return wait_goal.GoalStore(self.state).load()
+    def graph(self) -> goal.GoalGraph:
+        return goal.GoalStore(self.state).load()
 
     def load(self) -> dict[str, object]:
         return self.graph().state

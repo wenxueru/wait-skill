@@ -52,7 +52,7 @@ waitctl.py start -- <watcher 参数> -- <等待程序及参数>
 | 投递已接受 | 继续收尾／确认，不再次发送 |
 | Loop 状态已提交但缺少计时器注册 | 用保存的 watch ID 恢复计时器，不重跑迭代 |
 
-终态 watcher 释放锁，重复 event ID 和锁冲突会被拒绝。Goal `check` 将失去 watcher 所有权报告为 `orphaned_wait`，应恢复[原节点](wait-goal.zh-CN.md#恢复)。恢复只重建调度与投递，不增加外部修改权限。
+终态 watcher 释放锁，重复 event ID 和锁冲突会被拒绝。Goal `check` 将失去 watcher 所有权报告为 `orphaned_wait`，应恢复[原节点](goal.zh-CN.md#恢复)。恢复只重建调度与投递，不增加外部修改权限。
 
 ## Watcher 故障
 

@@ -17,7 +17,7 @@ import sys
 import tempfile
 import time
 import uuid
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Generator, Sequence
 from contextlib import contextmanager, suppress
 from pathlib import Path
 
@@ -147,7 +147,7 @@ def notification_command(
             raise NotificationUnavailable("notification_unavailable: no Codex app-server endpoint; pass --remote")
         return [
             sys.executable,
-            str(Path(__file__).with_name("wait_codex.py")),
+            str(Path(__file__).with_name("codex.py")),
             "--remote",
             remote,
             "--session",
@@ -241,6 +241,10 @@ def notification_failure_is_unavailable(stderr: str) -> bool:
     return any(marker in stderr.casefold() for marker in CONNECTION_FAILURE_MARKERS)
 
 
+def notification_enabled(args: argparse.Namespace) -> bool:
+    return bool(args.thread) and not args.no_notify
+
+
 def notification_limits(args: argparse.Namespace) -> tuple[int, float]:
     """Resolve the shared CLI and service delivery policy."""
     attempts = args.max_notification_attempts
@@ -288,7 +292,7 @@ def goal_wait_is_current(args: argparse.Namespace) -> bool:
 
 
 def loop_wait_is_current(args: argparse.Namespace) -> bool:
-    from wait_loop import goal_is_open
+    from loop import goal_is_open
 
     try:
         state = json.loads(args.loop_state.read_text(encoding="utf-8"))
@@ -352,7 +356,7 @@ def atomic_write_text(path: Path, payload: str) -> None:
 
 
 @contextmanager
-def file_lock(path: Path) -> Iterator[None]:
+def file_lock(path: Path) -> Generator[None, None, None]:
     """Block until an exclusive advisory lock on path's ``.lock`` sibling is held."""
     lock_path = path.with_name(path.name + ".lock")
     lock_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -380,6 +384,11 @@ def persist_result(path: Path | None, result: dict[str, object]) -> None:
 def add_runtime_arguments(result: argparse.ArgumentParser) -> None:
     """Shared ownership and delivery options, independent of status matching."""
     result.add_argument("--client", choices=sorted(CLIENTS), default="codex")
+    result.add_argument(
+        "--no-notify",
+        action="store_true",
+        help="Keep session ownership without starting a resume turn; follow the event manually",
+    )
     result.add_argument(
         "--session",
         "--thread",

@@ -32,13 +32,13 @@ Before starting the waiting program, `waitd` resolves the endpoint and checks th
 - A Unix endpoint must exist and complete a WebSocket upgrade. Success is reported as `notification_channel.status: ready`.
 - A `ws://` or `wss://` endpoint is reported as `configured`; URL validation and connectivity are checked at delivery.
 - An unavailable or incompatible Unix endpoint returns `notification_unavailable` with `query_status: not_started`. No watcher is created and no retry begins.
-- A wait without a session has notification disabled and can still be followed manually.
+- A wait without a session has notification disabled and can still be followed manually. `--no-notify` retains session ownership and dashboard visibility while disabling automatic resume turns; use `waitctl follow` to block for its event.
 
 This separates query startup from notification readiness, so a healthy status query cannot hide a broken wake path.
 
 ### Delivery and recovery
 
-`waitd` runs `src/wait_codex.py` against the same endpoint and exact thread ID. The helper initializes a JSON-RPC connection, reads runtime thread status, resumes only an unloaded thread, and calls `turn/start` with the generated `$wait resume ...`, `$wait goal resume ...`, or `$wait loop resume ...` instruction. It preserves the thread's model, working directory, instructions, sandbox, and approval settings. It never spawns a second Codex executor or waits for a Desktop queue consumer.
+`waitd` runs `src/codex.py` against the same endpoint and exact thread ID. The helper initializes a JSON-RPC connection, reads runtime thread status, resumes only an unloaded thread, and calls `turn/start` with the generated `$wait resume ...`, `$wait goal resume ...`, or `$wait loop resume ...` instruction. It preserves the thread's model, working directory, instructions, sandbox, and approval settings. It never spawns a second Codex executor or waits for a Desktop queue consumer.
 
 - `notification: started` means `turn/start` returned an actual turn ID. The helper's JSON stdout records that ID. Starting a turn is not business success; the root still validates the event and result.
 - An active thread returns `busy` without steering it. The service retries after a bounded delay; a server-side race can still cause `turn/start` to reach a turn that became active after the status read.

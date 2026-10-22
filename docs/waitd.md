@@ -52,7 +52,7 @@ On restart, active records receive `recovered_at` and `recovery_action`. Recover
 | Delivery already accepted | Continue finalization/acknowledgement without resending |
 | Loop state committed, timer registry entry missing | Restore that timer using its saved watch ID without rerunning the iteration |
 
-Terminal watchers release locks. Duplicate event IDs and conflicting locks are rejected. Goal `check` exposes lost watcher ownership as `orphaned_wait`; recover the [original node](wait-goal.md#recovery). Recovery restores scheduling and delivery only, never authority for external mutations.
+Terminal watchers release locks. Duplicate event IDs and conflicting locks are rejected. Goal `check` exposes lost watcher ownership as `orphaned_wait`; recover the [original node](goal.md#recovery). Recovery restores scheduling and delivery only, never authority for external mutations.
 
 ## Watcher failures
 

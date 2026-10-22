@@ -7,7 +7,7 @@ import signal
 import subprocess
 import threading
 import time
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Generator, Sequence
 from contextlib import contextmanager, suppress
 from typing import TypeVar
 
@@ -24,7 +24,7 @@ class _DeadlineExpired(BaseException):
 
 
 @contextmanager
-def _time_limit(seconds: float) -> Iterator[None]:
+def _time_limit(seconds: float) -> Generator[None, None, None]:
     def expire(signum: int, frame: object) -> None:
         raise _DeadlineExpired
 
@@ -128,4 +128,4 @@ def run_command(command: Sequence[str], *, timeout: float = 30) -> str:
 
 
 if __name__ == "__main__":
-    raise SystemExit("Import poll(query, evaluate) in your waiting script; wait_for.py is no longer a CLI.")
+    raise SystemExit("Import poll(query, evaluate) in your waiting script; polling.py is no longer a CLI.")
