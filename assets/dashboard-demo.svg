@@ -1,0 +1,110 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="900" viewBox="0 0 1440 900" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" role="img" aria-labelledby="title desc">
+  <title id="title">Wait dashboard demo</title>
+  <desc id="desc">An English, light-theme session dashboard with goal, wait and loop views.</desc>
+  <defs>
+    <pattern id="dots" width="18" height="18" patternUnits="userSpaceOnUse">
+      <circle cx="1" cy="1" r="0.8" fill="#dfe6dc"/>
+    </pattern>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="2" stdDeviation="5" flood-color="#203d2e" flood-opacity=".06"/>
+    </filter>
+  </defs>
+  <rect width="1440" height="900" fill="#f6f7f5"/>
+  <rect width="1440" height="58" fill="#fff"/>
+  <path d="M0 57.5H1440" stroke="#e3e8e1"/>
+  <text x="30" y="37" fill="#263b35" font-size="20" font-weight="650">Wait</text>
+  <path d="M84 18v22" stroke="#dce3dd"/>
+  <text x="100" y="35" fill="#819087" font-size="13">Current session</text>
+  <text x="204" y="35" fill="#829588" font-size="12">All sessions</text>
+  <rect x="1202" y="12" width="58" height="34" rx="7" fill="#fff" stroke="#dce3dd"/>
+  <text x="1216" y="34" fill="#263b35" font-size="12">中文</text>
+  <rect x="1268" y="12" width="64" height="34" rx="7" fill="#fff" stroke="#dce3dd"/>
+  <text x="1280" y="34" fill="#263b35" font-size="12">Dark</text>
+  <circle cx="1350" cy="29" r="4" fill="#5e8c75"/>
+  <text x="1362" y="33" fill="#5e8c75" font-size="12">Live</text>
+
+  <text x="32" y="96" fill="#92a08f" font-size="11" letter-spacing="2">SESSION TASKS</text>
+  <text x="32" y="132" fill="#263b35" font-size="27" font-weight="620">Work in progress</text>
+  <text x="32" y="159" fill="#7d8d7e" font-size="13">The agent follows dependencies and acceptance criteria as the graph updates.</text>
+
+  <g font-size="13">
+    <text x="56" y="215" fill="#285e4c" font-weight="550">Session · 1</text>
+    <text x="177" y="215" fill="#8a978c">Goals · 1</text>
+    <text x="264" y="215" fill="#8a978c">Waits · 1</text>
+    <text x="351" y="215" fill="#8a978c">Loops · 1</text>
+  </g>
+  <path d="M32 229H1408" stroke="#e1e7de"/>
+  <path d="M32 228h112" stroke="#518a6b" stroke-width="3"/>
+
+  <rect x="32" y="250" width="300" height="42" rx="7" fill="#fff" stroke="#dce3dd"/>
+  <text x="48" y="276" fill="#31463c" font-size="13">Release API v1</text>
+  <path d="m308 267 5 5 5-5" fill="none" stroke="#718379" stroke-width="1.5"/>
+  <rect x="1276" y="250" width="72" height="42" rx="7" fill="#fff" stroke="#dce3dd"/>
+  <text x="1292" y="276" fill="#31463c" font-size="13">Pause</text>
+  <text x="1363" y="276" fill="#a75e57" font-size="13">Cancel</text>
+
+  <text x="32" y="328" fill="#263b35" font-size="22" font-weight="600">Release API v1</text>
+  <rect x="190" y="306" width="61" height="27" rx="5" fill="#edf3ec"/>
+  <text x="202" y="324" fill="#47705a" font-size="11">Active</text>
+  <text x="273" y="324" fill="#78877d" font-size="12">2 of 3 completed</text>
+  <rect x="32" y="347" width="1376" height="3" rx="2" fill="#e5ebe3"/>
+  <rect x="32" y="347" width="917" height="3" rx="2" fill="#518a6b"/>
+
+  <rect x="32" y="371" width="1010" height="382" rx="10" fill="#fff" stroke="#e0e6dd" filter="url(#shadow)"/>
+  <path d="M32 423H1042" stroke="#edf0e9"/>
+  <text x="52" y="402" fill="#31463c" font-size="13" font-weight="550">Dependency graph</text>
+  <rect x="946" y="386" width="76" height="32" rx="7" fill="#fff" stroke="#dce3dd"/>
+  <text x="964" y="407" fill="#31463c" font-size="12">+ Node</text>
+  <rect x="33" y="424" width="1008" height="285" fill="url(#dots)"/>
+
+  <g fill="none" stroke="#b7c4ba" stroke-width="2">
+    <path d="M286 538h63"/><path d="m341 532 8 6-8 6" fill="#b7c4ba"/>
+    <path d="M568 538h63"/><path d="m623 532 8 6-8 6" fill="#b7c4ba"/>
+  </g>
+  <g>
+    <rect x="66" y="480" width="220" height="116" rx="12" fill="#fff" stroke="#dce3dd"/>
+    <path d="M68 494v88" stroke="#518a6b" stroke-width="4" stroke-linecap="round"/>
+    <text x="84" y="519" fill="#31463c" font-size="13">Map dependencies</text>
+    <text x="84" y="545" fill="#839184" font-size="11">plan · Completed</text>
+    <circle cx="267" cy="510" r="5" fill="#2d8a60"/>
+
+    <rect x="348" y="480" width="220" height="116" rx="12" fill="#fff" stroke="#dce3dd"/>
+    <path d="M350 494v88" stroke="#518a6b" stroke-width="4" stroke-linecap="round"/>
+    <text x="366" y="519" fill="#31463c" font-size="13">Build API</text>
+    <text x="366" y="545" fill="#839184" font-size="11">build · Completed</text>
+    <circle cx="549" cy="510" r="5" fill="#2d8a60"/>
+
+    <rect x="630" y="480" width="220" height="116" rx="12" fill="#fff" stroke="#dce3dd"/>
+    <path d="M632 494v88" stroke="#4683c4" stroke-width="4" stroke-linecap="round"/>
+    <text x="648" y="519" fill="#31463c" font-size="13">Test and health check</text>
+    <text x="648" y="545" fill="#839184" font-size="11">verify · Running</text>
+    <circle cx="831" cy="510" r="5" fill="#4683c4"/>
+  </g>
+  <path d="M32 710H1042" stroke="#edf0e9"/>
+  <g font-size="11" fill="#8a978c">
+    <circle cx="53" cy="733" r="4" fill="#7e9588"/><text x="62" y="737">Pending</text>
+    <circle cx="132" cy="733" r="4" fill="#4683c4"/><text x="141" y="737">Running</text>
+    <circle cx="214" cy="733" r="4" fill="#bc8d34"/><text x="223" y="737">Waiting</text>
+    <circle cx="297" cy="733" r="4" fill="#2d8a60"/><text x="306" y="737">Completed</text>
+    <circle cx="400" cy="733" r="4" fill="#c7645d"/><text x="409" y="737">Failed</text>
+  </g>
+
+  <rect x="1058" y="371" width="350" height="382" rx="10" fill="#fff" stroke="#e0e6dd" filter="url(#shadow)"/>
+  <text x="1082" y="410" fill="#92a08f" font-size="11" letter-spacing="1.5">NODE DETAILS</text>
+  <text x="1082" y="447" fill="#263b35" font-size="18" font-weight="550">Test and health check</text>
+  <rect x="1082" y="466" width="64" height="24" rx="5" fill="#edf3ec"/>
+  <text x="1095" y="482" fill="#47705a" font-size="10">Running</text>
+  <text x="1082" y="528" fill="#7d8d7e" font-size="11">ACCEPTANCE CRITERIA</text>
+  <text x="1082" y="552" fill="#31463c" font-size="12">• All unit tests pass</text>
+  <text x="1082" y="576" fill="#31463c" font-size="12">• /health returns Ready</text>
+  <path d="M1082 604h302" stroke="#edf0e9"/>
+  <text x="1082" y="634" fill="#7d8d7e" font-size="11">TASK</text>
+  <text x="1082" y="659" fill="#31463c" font-size="12">Run unit tests and check /health</text>
+  <text x="1082" y="688" fill="#819087" font-size="11">Wait and Loop tasks appear in the session view</text>
+
+  <rect x="32" y="773" width="1376" height="88" rx="10" fill="#fff" stroke="#e0e6dd"/>
+  <text x="52" y="806" fill="#7c8b7e" font-size="12">Recent changes</text>
+  <path d="M52 820H1388" stroke="#eff2eb"/>
+  <text x="52" y="844" fill="#9ba89b" font-size="11">10:42</text>
+  <text x="112" y="844" fill="#31463c" font-size="11">Test and health check started · state from this session</text>
+</svg>

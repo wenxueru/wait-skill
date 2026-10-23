@@ -13,6 +13,7 @@ python /path/to/wait/src/waitctl.py dashboard --session "$AGENT_SESSION_ID"
 - `dashboard --state /绝对路径/goal.json` 可登记已有 DAG，并推断归属会话。
 - 不带范围的裸地址不显示任务；`--all-sessions` 显式打开本机总览。
 - 打开返回的完整 URL；端口随 waitd 重启而变化。
+- 页面默认使用英文和浅色主题，可在页头切换。当前浏览器按看板地址（含端口）保存选择；重启后若端口改变，新地址会使用默认设置。
 
 ## 任务与操作
 

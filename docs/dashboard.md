@@ -13,6 +13,7 @@ python /path/to/wait/src/waitctl.py dashboard --session "$AGENT_SESSION_ID"
 - `dashboard --state /absolute/path/goal.json` registers an existing DAG and can infer its owner.
 - An unscoped URL shows no tasks. `--all-sessions` explicitly opens the machine-wide view.
 - Open the full returned URL. The port changes when waitd restarts.
+- The page defaults to English and light mode. Header controls switch language and theme; this browser saves the choices for the dashboard address, including its port. A new port after restart uses the defaults.
 
 ## Tasks and controls
 
