@@ -18,7 +18,7 @@ from contextlib import suppress
 from typing import Self
 from urllib.parse import urlsplit
 
-import runtime
+from .. import runtime
 
 EXIT_UNAVAILABLE = runtime.EXIT_NOTIFY_FAILED
 EXIT_UNCONFIRMED = runtime.EXIT_NOTIFY_UNCONFIRMED
@@ -259,14 +259,14 @@ def wake(remote: str, session: str, message: str, timeout: float, token_env: str
         return {"status": "started", "thread_id": session, "turn_id": turn["id"]}, 0
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("--remote", required=True)
     parser.add_argument("--session", required=True)
     parser.add_argument("--remote-auth-token-env")
     parser.add_argument("--timeout", type=runtime.positive_number, default=50.0)
     parser.add_argument("--message", required=True)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     try:
         result, code = wake(args.remote, args.session, args.message, args.timeout, args.remote_auth_token_env)
     except Unconfirmed as exc:

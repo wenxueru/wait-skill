@@ -9,17 +9,18 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlsplit
 
-import goal
-import loop
-import runtime
+from .. import runtime
+from ..http import loopback_origin
+from ..tasks import goal, loop
 
 if TYPE_CHECKING:
-    from waitd import WaitDaemon
+    from .daemon import WaitDaemon
 
 
 class Dashboard:
     def __init__(self, daemon: WaitDaemon) -> None:
         self.daemon = daemon
+        self.assets = Path(__file__).resolve().parents[3] / "assets"
         self.server: asyncio.Server
         self.clients: set[asyncio.Task[None]] = set()
         self.stopping = False
@@ -164,12 +165,16 @@ class Dashboard:
         method, target, _ = lines[0].split()
         headers = {}
         for line in lines[1:]:
-            if ": " in line:
-                key, value = line.split(": ", 1)
-                headers[key.lower()] = value
-        if headers.get("host") != urlsplit(self.url).netloc:
-            raise ValueError("Invalid host")
-        if headers.get("origin", self.url) != self.url:
+            if ":" in line:
+                key, value = line.split(":", 1)
+                key = key.lower()
+                if key in headers and key in ("host", "origin", "content-type", "content-length"):
+                    raise ValueError("Duplicate header")
+                headers[key] = value.strip()
+        origin = loopback_origin(headers.get("host", ""))
+        if "origin" in headers and (
+            not headers["origin"].startswith("http://") or loopback_origin(headers["origin"][7:]) != origin
+        ):
             raise ValueError("Invalid origin")
         return method, target, headers
 
@@ -182,9 +187,18 @@ class Dashboard:
             target = address.path
             if method == "GET" and target == "/events":
                 await self.stream(writer, session)
-            elif method == "GET" and target == "/":
-                content = (Path(__file__).parents[1] / "assets" / "dashboard.html").read_bytes()
-                await self.respond(writer, 200, content, "text/html; charset=utf-8")
+            elif method == "GET" and target in (
+                "/",
+                "/assets/dashboard.mjs",
+                "/assets/appearance.mjs",
+                "/assets/task-model.mjs",
+                "/assets/graph-layout.mjs",
+                "/assets/vendor/dagre.mjs",
+            ):
+                filename = "dashboard.html" if target == "/" else target.removeprefix("/assets/")
+                content_type = "text/html" if target == "/" else "text/javascript"
+                content = await asyncio.to_thread((self.assets / filename).read_bytes)
+                await self.respond(writer, 200, content, f"{content_type}; charset=utf-8")
             elif method == "GET" and target == "/api/state":
                 await self.respond(writer, 200, self.snapshot(session))
             elif method == "POST" and target == "/api/action":

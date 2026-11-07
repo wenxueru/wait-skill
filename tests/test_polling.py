@@ -11,14 +11,14 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import Mock
 
-sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 from polling import QueryFailed, poll, run_command
+from tests import SRC
 
 
 class PollTest(unittest.TestCase):
     def test_removed_cli_fails_explicitly(self) -> None:
         completed = subprocess.run(
-            [sys.executable, str(Path(__file__).parents[1] / "src" / "polling.py"), "--ready", "Ready"],
+            [sys.executable, str(SRC / "polling.py"), "--ready", "Ready"],
             capture_output=True,
             text=True,
             check=False,

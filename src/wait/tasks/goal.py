@@ -18,8 +18,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import NotRequired, TypedDict, cast
 
-import runtime
-from protocol import SOCKET_PATH
+from .. import runtime
+from ..protocol import SOCKET_PATH
 
 # Constants
 

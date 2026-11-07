@@ -10,8 +10,8 @@ from argparse import ArgumentTypeError, Namespace
 from pathlib import Path
 from unittest import mock
 
-sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
-import runtime
+from tests import SRC
+from wait import runtime
 
 
 class RuntimeTest(unittest.TestCase):
@@ -29,14 +29,15 @@ class RuntimeTest(unittest.TestCase):
                     raise missing
                 real_replace(source, destination)
 
+            clock = mock.Mock(wraps=runtime.time, sleep=mock.Mock())
             with (
                 mock.patch.object(runtime.os, "replace", side_effect=replace),
-                mock.patch.object(runtime.time, "sleep") as sleep,
+                mock.patch.object(runtime, "time", clock),
             ):
                 runtime.atomic_write_text(path, "ready\n")
             self.assertEqual(path.read_text(), "ready\n")
             self.assertEqual(attempts, 2)
-            sleep.assert_called_once()
+            clock.sleep.assert_called_once()
 
     def test_event_note_preserves_full_single_line(self) -> None:
         for note in ("  Recheck deployment  ", "完整恢复说明 " * 100):
@@ -61,7 +62,8 @@ class RuntimeTest(unittest.TestCase):
         expected = {
             "codex": [
                 sys.executable,
-                str(Path(runtime.__file__).with_name("codex.py")),
+                str(SRC / "worker.py"),
+                "codex",
                 "--remote",
                 "unix://",
                 "--session",

@@ -10,12 +10,13 @@ import math
 import os
 import socket
 import subprocess
-import sys
 import time
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
-import runtime
-from protocol import (
+from wait import runtime
+from wait.http import preview_origin
+from wait.protocol import (
     PROTOCOL_VERSION,
     RUNTIME_DIR,
     SERVICE_FINGERPRINT,
@@ -23,8 +24,6 @@ from protocol import (
     STATE_COMMANDS,
 )
 
-DAEMON_SCRIPT = Path(__file__).with_name("waitd.py")
-DAEMON_LOG = RUNTIME_DIR / "waitd.log"
 STARTUP_TIMEOUT = 5.0
 
 
@@ -89,9 +88,10 @@ def start_daemon() -> dict[str, object]:
         )
     RUNTIME_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
     RUNTIME_DIR.chmod(0o700)
-    with DAEMON_LOG.open("ab") as log:
+    log_path = RUNTIME_DIR / "waitd.log"
+    with log_path.open("ab") as log:
         subprocess.Popen(
-            [sys.executable, os.fspath(DAEMON_SCRIPT), "serve"],
+            runtime.worker_command("daemon", "serve"),
             stdin=subprocess.DEVNULL,
             stdout=log,
             stderr=log,
@@ -106,7 +106,7 @@ def start_daemon() -> dict[str, object]:
         except OSError:
             pass
         time.sleep(0.05)
-    raise RuntimeError(f"waitd did not start; inspect {DAEMON_LOG}")
+    raise RuntimeError(f"waitd did not start; inspect {log_path}")
 
 
 def forwarded_args(values: list[str]) -> list[str]:
@@ -158,6 +158,7 @@ def parser() -> argparse.ArgumentParser:
     start.add_argument("argv", nargs=argparse.REMAINDER)
     dashboard = commands.add_parser("dashboard", help="Show the session Wait/Loop/Goal dashboard URL")
     dashboard.add_argument("--state", type=Path)
+    dashboard.add_argument("--base-url", type=preview_origin, help="Loopback HTTP origin of a forwarded preview")
     scope = dashboard.add_mutually_exclusive_group()
     scope.add_argument("--session", default=os.environ.get("CODEX_THREAD_ID"))
     scope.add_argument("--all-sessions", action="store_true")
@@ -215,6 +216,10 @@ def main(argv: list[str] | None = None) -> int:
                     "all_sessions": args.all_sessions,
                     "state": str(args.state.resolve()) if args.state else None,
                 })
+                if response.get("ok", False) and args.base_url:
+                    address = urlsplit(str(response["url"]))
+                    base = urlsplit(args.base_url)
+                    response["url"] = urlunsplit((base.scheme, base.netloc, address.path, address.query, address.fragment))
             elif args.command == "list":
                 response = request({"operation": "list"})
             elif args.command == "show":

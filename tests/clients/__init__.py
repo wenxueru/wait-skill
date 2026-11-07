@@ -1,0 +1,1 @@
+"""Client delivery adapter tests."""

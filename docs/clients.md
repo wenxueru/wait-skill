@@ -2,7 +2,7 @@
 
 [简体中文](clients.zh-CN.md)
 
-`waitd` supports two documented delivery paths. Both use the owning conversation's exact session ID and deliver a service-generated resume instruction containing the log path, event ID, and agent-authored `event_note`.
+`waitd` supports two documented delivery paths, both bound to the owning conversation's exact session ID. Resume messages show the first eight event-ID characters and the complete agent-authored `event_note`; `waitctl show SHORT_ID` resolves the full ID, log path and mode state.
 
 | Client | Delivery path | Invocation |
 | --- | --- | --- |
@@ -38,7 +38,13 @@ This separates query startup from notification readiness, so a healthy status qu
 
 ### Delivery and recovery
 
-`waitd` runs `src/codex.py` against the same endpoint and exact thread ID. The helper initializes a JSON-RPC connection, reads runtime thread status, resumes only an unloaded thread, and calls `turn/start` with the generated `$wait resume ...`, `$wait goal resume ...`, or `$wait loop resume ...` instruction. It preserves the thread's model, working directory, instructions, sandbox, and approval settings. It never spawns a second Codex executor or waits for a Desktop queue consumer.
+`waitd` runs `src/worker.py codex` against the owning endpoint and exact thread ID. The adapter:
+
+1. Initializes JSON-RPC and reads the thread's runtime status.
+2. Calls `thread/resume` only when the thread is unloaded.
+3. Calls `turn/start` with the generated `$wait [goal|loop] resume ...` instruction.
+
+The original model, working directory, instructions, sandbox and approval settings stay with the thread. Delivery uses that app-server directly, without a second Codex executor or Desktop queue consumer.
 
 - `notification: started` means `turn/start` returned an actual turn ID. The helper's JSON stdout records that ID. Starting a turn is not business success; the root still validates the event and result.
 - An active thread returns `busy` without steering it. The service retries after a bounded delay; a server-side race can still cause `turn/start` to reach a turn that became active after the status read.

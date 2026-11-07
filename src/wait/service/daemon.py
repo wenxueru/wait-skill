@@ -21,21 +21,19 @@ from pathlib import Path
 from typing import Any, TextIO
 from urllib.parse import urlencode
 
-import goal
-import loop
-import runtime
-from protocol import (
+from .. import runtime
+from ..protocol import (
     PROTOCOL_VERSION,
     REGISTRY_PATH,
     SERVICE_FINGERPRINT,
     SOCKET_PATH,
     STATE_COMMANDS,
 )
+from ..tasks import goal, loop
 
 MAX_FINISHED_WATCHES = 256
 MAX_PROGRAM_OUTPUT_BYTES = 64 * 1024
 PATH_OPTIONS = {"--goal-state", "--loop-state", "--startup-file", "--log-file", "--lock-file"}
-STATE_SCRIPTS = {name: Path(__file__).with_name(f"{name}.py") for name in STATE_COMMANDS}
 STATE_COMMAND_TIMEOUT = 30.0
 DELIVERED_NOTIFICATIONS = {"started", "queued", "completed", "native_pending"}
 
@@ -65,15 +63,13 @@ class StateCommandRunner:
     def __init__(self, socket_path: Path = SOCKET_PATH) -> None:
         # State commands reach back through this socket, e.g. to submit a watcher.
         self.socket_path = socket_path
-        self.locks = {name: asyncio.Lock() for name in STATE_SCRIPTS}
+        self.locks = {name: asyncio.Lock() for name in STATE_COMMANDS}
 
     async def run(self, name: str, argv: list[str], cwd: Path) -> dict[str, object]:
         async def execute() -> tuple[bytes, bytes, int]:
             async with self.locks[name]:
                 process = await asyncio.create_subprocess_exec(
-                    sys.executable,
-                    os.fspath(STATE_SCRIPTS[name]),
-                    *argv,
+                    *runtime.worker_command(name, *argv),
                     cwd=cwd,
                     env={**os.environ, "WAITD_SOCKET": str(self.socket_path)},
                     stdout=asyncio.subprocess.PIPE,
@@ -1082,7 +1078,7 @@ async def serve(socket_path: Path = SOCKET_PATH, registry_path: Path = REGISTRY_
             path=socket_path,
             limit=1024 * 1024 + 1,
         )
-        from dashboard import Dashboard
+        from .dashboard import Dashboard
 
         dashboard = Dashboard(daemon)
         daemon.dashboard_url = await dashboard.start()
@@ -1120,8 +1116,8 @@ def parser() -> argparse.ArgumentParser:
     return result
 
 
-def main() -> int:
-    args = parser().parse_args()
+def main(argv: list[str] | None = None) -> int:
+    args = parser().parse_args(argv)
     try:
         asyncio.run(serve(args.socket, args.registry))
     except (OSError, RuntimeError) as exc:

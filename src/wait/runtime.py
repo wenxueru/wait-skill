@@ -134,6 +134,10 @@ def validate_codex_resume_args(resume_args: Sequence[str]) -> None:
     raise ValueError("Codex wake preserves thread settings; only --remote-auth-token-env is supported as a resume argument")
 
 
+def worker_command(mode: str, *arguments: str) -> list[str]:
+    return [sys.executable, str(Path(__file__).resolve().parents[1] / "worker.py"), mode, *arguments]
+
+
 def notification_command(
     client: str,
     session: str,
@@ -145,9 +149,8 @@ def notification_command(
         validate_codex_resume_args(resume_args)
         if not remote:
             raise NotificationUnavailable("notification_unavailable: no Codex app-server endpoint; pass --remote")
-        return [
-            sys.executable,
-            str(Path(__file__).with_name("codex.py")),
+        return worker_command(
+            "codex",
             "--remote",
             remote,
             "--session",
@@ -155,7 +158,7 @@ def notification_command(
             *resume_args,
             "--message",
             message,
-        ]
+        )
     if client == "codewiz":
         return ["codewiz", "run", "--session", session, *resume_args, message]
     if client == "cursor":
@@ -292,7 +295,7 @@ def goal_wait_is_current(args: argparse.Namespace) -> bool:
 
 
 def loop_wait_is_current(args: argparse.Namespace) -> bool:
-    from loop import goal_is_open
+    from .tasks.loop import goal_is_open
 
     try:
         state = json.loads(args.loop_state.read_text(encoding="utf-8"))

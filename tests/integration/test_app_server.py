@@ -14,8 +14,7 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
-from codex import AppServer, wake
+from wait.clients.codex import AppServer, wake
 
 requests = []
 

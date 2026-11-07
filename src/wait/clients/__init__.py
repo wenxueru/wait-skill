@@ -1,0 +1,1 @@
+"""Client event delivery adapters."""

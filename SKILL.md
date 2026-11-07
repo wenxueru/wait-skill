@@ -26,9 +26,10 @@ Use `/wait` on slash-command clients. Enter Goal only when requested or resuming
 
 ## Visualization
 
-- waitd derives the panel automatically from existing task state. Use normal Wait/Loop/Goal commands; do not author HTML, maintain page summaries, or perform page-specific bookkeeping.
-- Commands return a session/task-scoped `dashboard_url`. Offer it when useful and reuse an existing panel. To open explicitly, use `dashboard --session CURRENT_SESSION_ID`; use `--all-sessions` only when requested.
-- Page controls update the same task state. Follow the normal rule of rereading state before dispatch and respecting user pause/cancellation. There is no extra acknowledgement workflow.
+- **Maintain tasks, not the page.** waitd derives the dashboard from normal Wait/Loop/Goal state. Do not author HTML, maintain page summaries, or add page-specific bookkeeping.
+- **Link every progress or result report.** After startup or callback handling, when reporting progress or blockers, and before waiting or finishing, state what changed and the next step, then append `[Dashboard](ACTUAL_URL)`.
+- **Use the owning session's URL.** Prefer the command's `dashboard_url`; otherwise obtain it with `dashboard --session CURRENT_SESSION_ID`. Reuse the panel and a known working forwarded origin, preserving the full query. Use `--all-sessions` only when requested. If no usable link is available, explain why; do not invent one or substitute a demo.
+- **Respect page controls.** They update the same task state: reread before dispatch and honor user edits, pause and cancellation. No extra acknowledgement is needed. For [preview or SSH access](docs/dashboard.md#app-preview-and-remote-access), keep active waitd running rather than restarting it to obtain a link.
 
 ## Resume messages
 

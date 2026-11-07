@@ -18,9 +18,9 @@
 
 ## 看板
 
-![Wait 看板演示图](assets/dashboard-demo.svg)
+![Wait 看板演示图](assets/dashboard-demo.png)
 
-*演示数据。中英文 README 共用英文、浅色主题的演示图。*
+*使用示例任务的看板截图，默认英文、浅色主题。*
 
 打开当前会话的看板：
 
@@ -28,10 +28,10 @@
 python ~/.codex/skills/wait/src/waitctl.py dashboard --session "$CODEX_THREAD_ID"
 ```
 
-- Wait、Loop 和 Goal 命令也会返回定位当前会话的 `dashboard_url`；使用 `--all-sessions` 查看本机全部会话。
-- 页面从保存的状态生成任务图与 Wait/Loop 状态，并自动更新；Agent 无需另外维护页面。
-- 默认使用英文和浅色主题，可在页头切换。当前浏览器按看板地址（含端口）保存选择；重启后若端口改变，新地址会使用默认设置。
-- 任务操作与远程访问见[看板操作](docs/dashboard.zh-CN.md)。
+- Wait、Loop 和 Goal 命令返回所属会话的 `dashboard_url`；需要本机总览时使用 `--all-sessions`。
+- 任务列表展示状态和已有的更新时间，依赖图自动减少交叉；页面随任务状态更新，Agent 只需维护任务。
+- 默认英文、浅色主题，可在「设置」中选择中文和深色主题，浏览器会保存选择。
+- 任务操作、会话范围与远程访问见[看板操作](docs/dashboard.zh-CN.md)。
 
 ## 试试看
 
@@ -72,13 +72,27 @@ python /path/to/wait-skill/src/install_skill.py
 
 ## 开发
 
-脚本仅依赖 Python 标准库。
+Python 核心仅依赖标准库，浏览器依赖[随仓库本地打包](assets/vendor/README.md)；只有前端测试需要 Node。
+
+| 位置 | 职责 |
+| --- | --- |
+| `src/` 入口 | CLI、安装脚本、等待程序 API 与共用子进程入口 |
+| `src/wait/tasks/` | Goal、Loop 状态引擎 |
+| `src/wait/service/` | watcher 监管与看板 HTTP 服务 |
+| `src/wait/clients/` | 客户端投递适配器 |
+| `src/wait/` 共享模块 | 运行逻辑、服务身份与回环地址策略 |
+| `assets/` | 看板渲染、外观、从任务派生的展示状态与图布局 |
+| `tests/` | 按源码分层测试，`integration/` 覆盖跨进程流程和文档 |
+
+在仓库根目录运行：
 
 ```sh
-python -m unittest discover -s tests -v
+python -m unittest discover -s tests -t . -v
+python -m unittest tests.tasks.test_goal -v
+node --test tests/service/*.test.mjs
 python /path/to/skill-creator/scripts/quick_validate.py .
 ```
 
 ## 许可证
 
-MIT
+MIT。Dagre/Graphlib 的许可声明见 [assets/vendor/dagre.LICENSE.txt](assets/vendor/dagre.LICENSE.txt)。

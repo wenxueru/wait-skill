@@ -7,144 +7,233 @@
 :root {
   color-scheme: light;
   font: 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --page: #f6f7f5; --surface: #fff; --surface-raised: #fcfdfb; --text: #263b35;
-  --muted: #78877d; --soft-text: #819087; --border: #dce3dd; --border-soft: #edf0e9;
-  --hover: #f0f4ef; --primary: #285e4c; --primary-hover: #204c3d; --primary-text: #fff;
-  --badge: #edf3ec; --badge-text: #47705a; --track: #e5ebe3; --input-border: #dfe6da;
-  --grid: #dfe6dc; --node: #fff; --node-selected: #edf5ec; --node-border: #d1ded4;
-  --node-selected-border: #184f43; --edge: #a8b9ac; --focus: #50927a;
-  --status-pending: #7e9588; --status-running: #4683c4; --status-waiting: #bc8d34;
-  --status-completed: #2d8a60; --status-failed: #c7645d;
-  --notice-bg: #f0f5e9; --notice-text: #5f7953; --notice-border: #92af87;
-  --error-bg: #fff6f2; --error-text: #a5584b; --error-border: #f0d9d2;
+  --page: #f5f6f8; --surface: #fff; --surface-raised: #f8fafb; --text: #202d3a;
+  --muted: #697887; --soft-text: #758391; --border: #dfe5ea; --border-soft: #edf0f3;
+  --hover: #f1f5f7; --primary: #286852; --primary-hover: #205540; --primary-text: #fff;
+  --badge: #edf5f0; --badge-text: #286852; --track: #e8edef; --input-border: #dbe2e8;
+  --grid: #dce3e8; --node: #fff; --node-selected: #f0f8f3; --node-border: #d7e0e6;
+  --node-selected-border: #368463; --edge: #b6c4cc; --focus: #43846b;
+  --status-pending: #8b97a5; --status-running: #387ecd; --status-waiting: #b38224;
+  --status-completed: #328565; --status-failed: #bf605b;
+  --notice-bg: #edf6ef; --notice-text: #38634a; --notice-border: #73a087;
+  --error-bg: #fff1ee; --error-text: #a64e46; --error-border: #efd3cd;
+  --shadow: 0 2px 8px #20324604;
   color: var(--text); background: var(--page);
 }
 html[data-theme="dark"] {
   color-scheme: dark;
-  --page: #151916; --surface: #1d231f; --surface-raised: #202722; --text: #e5ece7;
-  --muted: #a0aca3; --soft-text: #92a097; --border: #354139; --border-soft: #2b342e;
-  --hover: #29332d; --primary: #7ab498; --primary-hover: #8dc6a7; --primary-text: #142019;
-  --badge: #283b30; --badge-text: #a6d0b5; --track: #303a33; --input-border: #3c4940;
-  --grid: #38433c; --node: #202722; --node-selected: #23372b; --node-border: #465449;
-  --node-selected-border: #84b89a; --edge: #62756a; --focus: #8fc5a8;
-  --status-pending: #a4b5a9; --status-running: #7db4ee; --status-waiting: #e7bb68;
-  --status-completed: #76c99b; --status-failed: #e4877f;
-  --notice-bg: #263528; --notice-text: #bdd3af; --notice-border: #789269;
-  --error-bg: #3b2925; --error-text: #f0a094; --error-border: #75443c;
+  --page: #14191f; --surface: #1c232b; --surface-raised: #202932; --text: #e2eaf0;
+  --muted: #a3b1bd; --soft-text: #91a1af; --border: #34414c; --border-soft: #2b3540;
+  --hover: #28343e; --primary: #8bc7a7; --primary-hover: #a1d7bb; --primary-text: #14241b;
+  --badge: #263c31; --badge-text: #a3d4b6; --track: #303e49; --input-border: #3b4a57;
+  --grid: #35434e; --node: #202a32; --node-selected: #273c33; --node-border: #445662;
+  --node-selected-border: #8bc7a7; --edge: #657b89; --focus: #8bc7a7;
+  --status-pending: #a3b1bf; --status-running: #87b8f1; --status-waiting: #e5ba69;
+  --status-completed: #87ceaa; --status-failed: #ed9a91;
+  --notice-bg: #26382d; --notice-text: #bad8c2; --notice-border: #81b793;
+  --error-bg: #392b2b; --error-text: #eda59c; --error-border: #734b47;
+  --shadow: none;
 }
 * { box-sizing: border-box; }
-body { margin: 0; background: var(--page); color: var(--text); }
+body { margin: 0; color: var(--text); background: var(--page); }
 button, input, textarea, select { font: inherit; color: inherit; }
 button, select, summary { cursor: pointer; }
-button { padding: 7px 11px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); transition: background .15s, border-color .15s; }
-button:hover { background: var(--hover); border-color: var(--focus); }
+button { padding: 8px 13px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); transition: background .15s, border-color .15s; }
+button:hover { background: var(--hover); border-color: var(--soft-text); }
 button:disabled { opacity: .4; cursor: default; }
-button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible, summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible, summary:focus-visible, a:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
 [hidden] { display: none !important; }
 .primary { color: var(--primary-text); background: var(--primary); border-color: var(--primary); }
-.primary:hover { color: var(--primary-text); background: var(--primary-hover); }
-.danger { color: #c46f66; border-color: transparent; background: transparent; }
-header { height: 58px; padding: 0 28px; display: flex; align-items: center; gap: 12px; border-bottom: 1px solid var(--border); background: var(--surface); }
-h1 { font-size: 18px; letter-spacing: -.5px; margin: 0; }
-h1 small { margin-left: 10px; padding-left: 12px; border-left: 1px solid var(--border); font-size: 12px; font-weight: 400; letter-spacing: .5px; color: var(--soft-text); }
-#scopeSwitch { color: var(--soft-text); font-size: 11px; text-decoration: none; cursor: pointer; }
-.header-controls { display: flex; gap: 6px; margin-left: auto; }
-.header-controls button { padding: 5px 8px; font-size: 11px; }
-header #connection { font-size: 11px; color: var(--primary); }
-main { max-width: 1600px; padding: 24px 28px; margin: auto; }
-.toolbar { display: flex; align-items: center; gap: 7px; margin-bottom: 17px; }
-.toolbar .spacer { flex: 1; }
-select { max-width: 520px; padding: 7px 28px 7px 10px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); }
-#goals { max-width: min(60vw, 520px); font-weight: 500; }
-.goal-heading { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; margin-bottom: 18px; }
-h2 { font-size: 20px; font-weight: 600; letter-spacing: -.4px; margin: 0; }
-.stats { display: flex; gap: 14px; align-items: center; color: var(--muted); font-size: 12px; }
-.badge { display: inline-block; padding: 4px 9px; border-radius: 5px; background: var(--badge); color: var(--badge-text); font-size: 11px; }
-.progress { height: 3px; background: var(--track); border-radius: 3px; margin: -5px 0 21px; overflow: hidden; }
-.progress span { display: block; height: 100%; background: var(--primary); transition: width .3s; }
-.layout { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 16px; align-items: stretch; }
-.card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 17px; overflow: hidden; }
-.graph-card { padding: 0; }
-.graph-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 14px 17px; border-bottom: 1px solid var(--border-soft); }
-.graph-head b { font-weight: 550; font-size: 12px; }
-.graph { overflow: auto; min-height: 290px; background: radial-gradient(var(--grid) .7px, transparent .7px); background-size: 18px 18px; }
-svg { display: block; min-width: 100%; }
-svg g { cursor: pointer; outline: none; }
-svg g:hover rect:first-child, svg g:focus-visible rect:first-child { stroke: var(--focus); }
-svg text { font: 12px -apple-system, BlinkMacSystemFont, sans-serif; fill: var(--text); }
-svg .small { font-size: 10px; fill: var(--soft-text); }
-.legend { display: flex; gap: 12px; color: var(--soft-text); font-size: 10px; padding: 10px 17px; border-top: 1px solid var(--border-soft); flex-wrap: wrap; }
-.dot { display: inline-block; width: 6px; height: 6px; margin-right: 5px; border-radius: 50%; }
-.dot.pending { background: var(--status-pending); } .dot.running { background: var(--status-running); }
-.dot.waiting { background: var(--status-waiting); } .dot.completed { background: var(--status-completed); }
-.dot.failed { background: var(--status-failed); }
-.details { min-height: 340px; }
-.details h3 { font-size: 16px; font-weight: 550; margin: 12px 0 5px; line-height: 1.5; }
-.details p { line-height: 1.65; }
-.details ul { padding-left: 17px; line-height: 1.8; }
-.details h4 { font-size: 12px; font-weight: 550; margin-bottom: 8px; }
-.details pre { white-space: pre-wrap; overflow-wrap: anywhere; font: 12px system-ui; line-height: 1.7; background: var(--surface-raised); padding: 10px; border-radius: 6px; }
-.detail-placeholder { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; min-height: 270px; color: var(--muted); text-align: center; }
-.detail-placeholder .symbol { font-size: 28px; color: var(--soft-text); font-weight: 200; margin-bottom: 10px; }
-.detail-placeholder p { margin: 0; font-size: 12px; }
+.primary:hover { background: var(--primary-hover); }
+.danger { color: var(--status-failed); }
+header { position: sticky; top: 0; z-index: 5; min-height: 64px; padding: 12px 32px; display: flex; align-items: center; gap: 16px; background: var(--surface); border-bottom: 1px solid var(--border); }
+h1 { display: flex; align-items: center; gap: 10px; margin: 0; font-size: 20px; letter-spacing: -.6px; }
+.brand-mark { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 9px; color: var(--primary-text); background: var(--primary); font-size: 20px; }
+h1 small { margin-left: 6px; padding-left: 16px; border-left: 1px solid var(--border); font-size: 12px; font-weight: 400; color: var(--muted); letter-spacing: 0; }
+#scopeSwitch { font-size: 12px; color: var(--muted); text-decoration: none; }
+#scopeSwitch:hover { color: var(--primary); }
+.header-controls { display: flex; gap: 8px; margin-left: auto; }
+.header-controls button { padding: 6px 10px; font-size: 11px; }
+#settingsToggle { display: inline-flex; align-items: center; gap: 6px; }
+.settings-icon { font-size: 16px; line-height: 1; }
+.settings-panel { position: fixed; inset: 56px 32px auto auto; margin: 0; width: 240px; max-width: calc(100vw - 32px); padding: 18px; border: 1px solid var(--border); border-radius: 12px; color: var(--text); background: var(--surface); box-shadow: 0 12px 40px #0002; }
+.settings-panel h2 { font-size: 14px; letter-spacing: 0; }
+.settings-panel select { display: block; width: 100%; margin-top: 6px; }
+#connection { font-size: 11px; color: var(--primary); white-space: nowrap; }
+main { max-width: 1640px; padding: 30px 32px 44px; margin: auto; }
+.eyebrow { display: block; margin-bottom: 9px; color: var(--muted); font-size: 10px; font-weight: 600; letter-spacing: 1.7px; text-transform: uppercase; }
+.session-summary { padding-bottom: 24px; }
+.session-summary h2 { font-size: 26px; letter-spacing: -.7px; margin: 0; font-weight: 650; }
+.session-summary p { margin: 9px 0 0; color: var(--muted); font-size: 12px; line-height: 1.7; max-width: 950px; }
+.mode-tabs { display: flex; gap: 5px; margin-bottom: 22px; border-bottom: 1px solid var(--border); }
+.mode-tabs button { position: relative; border: 0; border-radius: 0; padding: 12px 17px; background: transparent; color: var(--muted); border-bottom: 2px solid transparent; }
+.mode-tabs button:first-child { padding-left: 0; padding-right: 22px; }
+.mode-tabs button[aria-selected="true"] { color: var(--primary); border-bottom-color: var(--primary); font-weight: 600; }
+.toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 16px; }
+.spacer { flex: 1; }
+select { padding: 8px 30px 8px 11px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+#goals { max-width: min(60vw, 540px); font-size: 12px; }
+.goal-heading { display: flex; align-items: flex-start; gap: 24px; justify-content: space-between; margin-bottom: 9px; }
+h2 { font-size: 22px; line-height: 1.4; font-weight: 650; margin: 0; letter-spacing: -.5px; }
+#objective { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; max-width: 1000px; overflow-wrap: anywhere; }
+.stats { display: flex; gap: 12px; align-items: center; padding-top: 5px; flex-shrink: 0; color: var(--muted); font-size: 11px; white-space: nowrap; }
+.badge { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 6px; background: var(--badge); color: var(--badge-text); font-size: 10px; font-weight: 550; white-space: nowrap; }
+.badge[data-state="waiting"] { color: var(--status-waiting); background: color-mix(in srgb, var(--status-waiting) 11%, var(--surface)); }
+.badge[data-state="running"], .badge[data-state="dispatching"], .badge[data-state="ready"] { color: var(--status-running); background: color-mix(in srgb, var(--status-running) 10%, var(--surface)); }
+.badge[data-state="failed"] { color: var(--status-failed); background: color-mix(in srgb, var(--status-failed) 11%, var(--surface)); }
+.badge[data-state="pending"], .badge[data-state="blocked"], .badge[data-state="cancelled"], .badge[data-state="paused"] { color: var(--muted); background: var(--hover); }
+.goal-description { margin: 0 0 18px; font-size: 11px; color: var(--muted); }
+.goal-description summary { display: inline-block; }
+.goal-description summary::after { content: " ↗"; }
+.goal-description[open] summary::after { content: " ↙"; }
+.goal-description p { max-width: 1100px; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.8; font-size: 12px; color: var(--text); }
+.progress { height: 5px; background: var(--track); border-radius: 5px; overflow: hidden; margin-bottom: 20px; }
+.progress span { display: block; height: 100%; background: var(--primary); border-radius: inherit; transition: width .3s; }
+.metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 22px; }
+.metric { text-align: left; padding: 16px 18px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow); }
+.metric[aria-pressed="true"] { border-color: var(--primary); background: var(--node-selected); }
+.metric-label { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--muted); }
+.metric strong { display: block; font-size: 29px; letter-spacing: -1px; font-weight: 600; margin-top: 7px; color: var(--text); }
+.dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+.dot.pending { background: var(--status-pending); } .dot.running, .dot.ready { background: var(--status-running); }
+.dot.waiting { background: var(--status-waiting); } .dot.completed { background: var(--status-completed); } .dot.failed { background: var(--status-failed); }
+.layout { display: grid; grid-template-columns: minmax(0, 1fr) 338px; gap: 18px; align-items: start; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 18px; box-shadow: var(--shadow); overflow: hidden; }
+.graph-card { padding: 0; min-width: 0; }
+.graph-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; gap: 12px; border-bottom: 1px solid var(--border-soft); flex-wrap: wrap; }
+.view-switch { display: flex; padding: 3px; gap: 3px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-raised); }
+.view-switch button { padding: 6px 10px; border-color: transparent; background: transparent; font-size: 11px; color: var(--muted); border-radius: 5px; }
+.view-switch button[aria-pressed="true"] { color: var(--text); border-color: var(--border); background: var(--surface); box-shadow: 0 1px 3px #00000008; font-weight: 550; }
+.node-tools { display: flex; align-items: center; gap: 9px; padding: 12px 16px; border-bottom: 1px solid var(--border-soft); }
+.node-tools input { margin: 0; flex: 1; min-width: 80px; padding-left: 11px; font-size: 12px; background: var(--surface-raised); }
+.node-tools select { max-width: 155px; font-size: 11px; }
+.node-tools output { font-size: 10px; color: var(--muted); white-space: nowrap; }
+.node-list { min-height: 300px; max-height: 600px; overflow-y: auto; }
+.node-columns, .node-row { display: grid; grid-template-columns: minmax(0, 1fr) 92px minmax(120px, .4fr) 104px; gap: 16px; align-items: center; padding: 12px 18px; }
+.node-columns { position: sticky; top: 0; z-index: 1; background: var(--surface-raised); font-size: 10px; color: var(--muted); border-bottom: 1px solid var(--border-soft); text-transform: uppercase; letter-spacing: .6px; }
+.node-columns span:last-child { text-align: right; }
+.node-row { width: 100%; min-height: 80px; text-align: left; border: 0; border-radius: 0; border-bottom: 1px solid var(--border-soft); background: transparent; }
+.node-row:last-child { border-bottom: 0; }
+.node-row:hover { background: var(--hover); }
+.node-row[aria-pressed="true"] { background: var(--node-selected); box-shadow: inset 3px 0 0 var(--primary); }
+.node-name { min-width: 0; }
+.node-name strong { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; line-height: 1.6; font-size: 12px; font-weight: 550; overflow-wrap: anywhere; }
+.node-name code { display: block; color: var(--soft-text); font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; margin-top: 5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.node-reason { color: var(--muted); font-size: 11px; line-height: 1.6; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; }
+.node-time { display: flex; flex-direction: column; align-items: flex-end; gap: 5px; color: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.node-time time { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.time-date { color: var(--soft-text); font-size: 9px; }
+.time-caption { display: none; }
+.node-timeline { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 9px 16px; margin: 17px 0 20px; padding: 14px 0; border-top: 1px solid var(--border-soft); border-bottom: 1px solid var(--border-soft); font-size: 10px; line-height: 1.6; }
+.node-timeline dt { color: var(--muted); }
+.node-timeline dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
+.graph { overflow: auto; height: 530px; min-height: 320px; background: radial-gradient(var(--grid) .75px, transparent .75px); background-size: 20px 20px; overscroll-behavior: contain; }
+.graph svg { display: block; max-width: none; }
+.graph g { cursor: pointer; outline: none; }
+.graph g:hover > rect:first-child, .graph g:focus-visible > rect:first-child { stroke: var(--focus); stroke-width: 2px; }
+.graph-node { color: var(--text); font-size: 12px; line-height: 1.6; overflow: hidden; height: 100%; }
+.graph-node strong { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; height: 39px; font-weight: 550; overflow-wrap: anywhere; }
+.graph-node code { display: block; font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin: 6px 0 7px; }
+.graph-node .badge { font-size: 9px; padding: 2px 6px; }
+.graph-footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 10px 16px; border-top: 1px solid var(--border-soft); }
+.legend { display: flex; gap: 12px; font-size: 10px; color: var(--muted); flex-wrap: wrap; }
+.legend span { display: inline-flex; gap: 5px; align-items: center; }
+.zoom-controls { display: flex; align-items: center; gap: 5px; }
+.zoom-controls button { padding: 4px 8px; font-size: 11px; }
+.zoom-controls output { min-width: 35px; text-align: center; color: var(--muted); font-size: 10px; }
+.details { position: sticky; top: 84px; max-height: calc(100vh - 106px); overflow-y: auto; padding: 21px; scroll-margin-top: 84px; }
+.details .eyebrow { margin-bottom: 15px; }
+.details h3 { font-size: 17px; line-height: 1.6; margin: 13px 0 7px; font-weight: 600; overflow-wrap: anywhere; }
+.details p { font-size: 12px; line-height: 1.8; }
+.details > p.muted { font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; line-height: 1.8; }
+.details ul { padding-left: 17px; line-height: 1.8; font-size: 12px; }
+.details b, .details h4 { font-size: 11px; font-weight: 600; }
+.details h4 { margin: 20px 0 8px; }
+.details pre { white-space: pre-wrap; overflow-wrap: anywhere; font: 11px ui-monospace, monospace; line-height: 1.7; background: var(--surface-raised); padding: 12px; border-radius: 7px; }
+.details .node-dependencies { display: flex; flex-wrap: wrap; gap: 6px; margin: 9px 0 20px; }
+.node-dependencies button { max-width: 100%; padding: 4px 7px; font: 10px ui-monospace, monospace; overflow: hidden; text-overflow: ellipsis; }
+.details .edit-node { border-top: 1px solid var(--border-soft); padding-top: 16px; margin-top: 20px; }
+.edit-node summary { font-size: 11px; color: var(--primary); font-weight: 550; }
 .muted { color: var(--muted); font-size: 11px; }
-label { display: block; font-size: 11px; color: var(--soft-text); margin-top: 14px; }
-input, textarea { display: block; width: 100%; padding: 8px 9px; border: 1px solid var(--input-border); border-radius: 6px; margin-top: 6px; background: var(--surface-raised); }
-textarea { min-height: 70px; resize: vertical; line-height: 1.6; }
-.actions { display: flex; gap: 8px; margin-top: 18px; }
-.events { margin-top: 16px; padding: 0; }
-.events summary { padding: 13px 17px; font-size: 12px; color: var(--soft-text); }
-.events summary::marker { color: var(--muted); }
-#events { padding: 0 17px 9px; max-height: 240px; overflow: auto; }
-.event { display: flex; gap: 20px; padding: 9px 0; border-top: 1px solid var(--border-soft); font-size: 11px; }
-.event time { color: var(--muted); min-width: 125px; font-variant-numeric: tabular-nums; }
-#error { padding: 10px 13px; margin-bottom: 15px; border: 1px solid var(--error-border); border-radius: 7px; background: var(--error-bg); color: var(--error-text); }
-dialog { color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 24px; width: 430px; max-width: 94vw; box-shadow: 0 20px 80px #0005; }
-dialog::backdrop { background: #253d3355; backdrop-filter: blur(3px); }
-dialog h2 { font-size: 18px; }
-dialog select { display: block; margin-top: 6px; width: 100%; }
-.empty { padding: 70px 20px; text-align: center; }
-@media (max-width: 800px) {
-  header { padding: 0 18px; }
-  main { padding: 18px; }
-  .layout { grid-template-columns: 1fr; }
-  .details { min-height: auto; }
-  .detail-placeholder { min-height: 100px; }
-  .goal-heading { gap: 10px; }
-}
-
-.mode-tabs { display: flex; gap: 5px; margin-bottom: 20px; border-bottom: 1px solid var(--border); }
-.mode-tabs button { border: 0; border-radius: 0; background: transparent; color: var(--muted); padding: 10px 16px; border-bottom: 2px solid transparent; }
-.mode-tabs button[aria-selected="true"] { color: var(--primary); border-bottom-color: var(--primary); }
+label { display: block; margin-top: 14px; color: var(--muted); font-size: 11px; }
+input, textarea { display: block; width: 100%; padding: 9px 10px; border: 1px solid var(--input-border); border-radius: 7px; margin-top: 6px; background: var(--surface-raised); }
+textarea { min-height: 80px; resize: vertical; line-height: 1.6; }
+.actions { display: flex; gap: 8px; margin-top: 20px; }
+.events { margin-top: 18px; padding: 0; }
+.events summary { padding: 15px 18px; color: var(--muted); font-size: 11px; }
+#events { padding: 0 18px 10px; max-height: 240px; overflow: auto; }
+.event { display: flex; gap: 20px; padding: 10px 0; border-top: 1px solid var(--border-soft); font-size: 11px; line-height: 1.6; }
+.event time { color: var(--muted); min-width: 140px; font-variant-numeric: tabular-nums; }
+#error { padding: 12px 15px; margin-bottom: 18px; border: 1px solid var(--error-border); border-radius: 8px; background: var(--error-bg); color: var(--error-text); }
+.notice { border-left: 3px solid var(--notice-border); background: var(--notice-bg); color: var(--notice-text); padding: 12px 15px; margin-bottom: 18px; font-size: 12px; line-height: 1.7; }
+dialog { color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 26px; width: 450px; max-width: 94vw; max-height: 90vh; overflow-y: auto; box-shadow: 0 24px 80px #0004; }
+dialog::backdrop { background: #14212d66; backdrop-filter: blur(3px); }
+dialog select { display: block; width: 100%; margin-top: 6px; }
+.empty { padding: 65px 24px; text-align: center; }
+.empty p { line-height: 1.8; }
 .task-card { margin-bottom: 12px; }
-.task-heading { display: flex; align-items: center; gap: 10px; }
-.task-heading h3 { font-size: 14px; font-weight: 550; margin: 0; flex: 1; overflow-wrap: anywhere; }
-.task-meta { display: flex; flex-wrap: wrap; gap: 8px 20px; margin-top: 12px; color: var(--soft-text); font-size: 11px; }
-.task-note { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.7; font-size: 12px; }
-.task-card details { margin-top: 12px; color: var(--soft-text); font-size: 11px; }
-.task-card pre { white-space: pre-wrap; overflow-wrap: anywhere; font: 11px system-ui; }
-.session-summary { padding: 2px 0 18px; }
-.eyebrow { display: block; font-size: 10px; color: var(--muted); letter-spacing: 2px; margin-bottom: 9px; }
-.session-summary h2 { font-size: 23px; }
-.session-summary p { color: var(--muted); font-size: 12px; line-height: 1.8; margin: 8px 0 0; }
-.notice { border-left: 3px solid var(--notice-border); background: var(--notice-bg); color: var(--notice-text); padding: 10px 13px; margin-bottom: 15px; font-size: 12px; line-height: 1.7; }
-.context-heading { font-size: 12px; font-weight: 500; color: var(--muted); margin: 22px 0 13px; }
-.task-card.focused { border-color: var(--focus); }
-.wait-context { margin-top: 17px; padding-top: 12px; border-top: 1px solid var(--border); }
+.task-heading { display: flex; align-items: center; gap: 12px; }
+.task-heading h3 { flex: 1; margin: 0; font-size: 14px; font-weight: 550; overflow-wrap: anywhere; }
+.task-meta { display: flex; flex-wrap: wrap; gap: 9px 20px; margin-top: 14px; font-size: 11px; color: var(--muted); }
+.task-note { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.8; font-size: 12px; }
+.task-card details { margin-top: 14px; color: var(--muted); font-size: 11px; }
+.task-card pre { white-space: pre-wrap; overflow-wrap: anywhere; font: 11px ui-monospace, monospace; }
+.context-heading { font-size: 12px; font-weight: 550; color: var(--muted); margin: 24px 0 13px; }
+.task-card.focused { border-color: var(--primary); }
+.wait-context { border-top: 1px solid var(--border-soft); padding-top: 17px; margin-top: 20px; }
 .wait-context p { white-space: pre-wrap; overflow-wrap: anywhere; }
-.task-history { margin: 13px 0; font-size: 12px; color: var(--soft-text); }
-@media (max-width: 500px) {
-  header { gap: 8px; padding: 0 12px; }
-  .header-controls { gap: 4px; }
-  .header-controls button { padding: 5px 6px; }
-  #scopeSwitch { display: none; }
+.task-history { margin: 15px 0; font-size: 12px; color: var(--muted); }
+@media (max-width: 1050px) {
+  .layout { grid-template-columns: minmax(0, 1fr) 300px; }
+  .node-columns, .node-row { grid-template-columns: minmax(0, 1fr) 90px 96px; gap: 12px; }
+  .node-reason, .node-columns span:nth-child(3) { display: none; }
+  .goal-heading { flex-direction: column; gap: 8px; }
 }
+@media (max-width: 760px) {
+  header { padding: 12px 18px; gap: 10px; flex-wrap: wrap; }
+  .settings-panel { right: 16px; }
+  main { padding: 24px 16px; }
+  h1 small { padding-left: 10px; margin-left: 0; }
+  #scopeSwitch { display: none; }
+  .layout { grid-template-columns: 1fr; }
+  .details { position: static; max-height: none; }
+  .metrics { gap: 8px; }
+  .metric { padding: 12px; }
+  .metric strong { font-size: 25px; }
+  .metric-label { font-size: 10px; gap: 5px; }
+  .node-tools { flex-wrap: wrap; }
+  .node-tools input { flex-basis: 100%; }
+  .node-tools select { flex: 1; max-width: none; }
+  .node-columns, .node-row { grid-template-columns: minmax(0, 1fr) 90px; }
+  .node-columns span:nth-child(4) { display: none; }
+  .node-time { grid-column: 1 / -1; flex-direction: row; align-items: center; gap: 7px; }
+  .time-caption { display: inline; }
+  .graph-footer { flex-wrap: wrap; gap: 10px; }
+  .toolbar { flex-wrap: wrap; }
+  #goals { max-width: 100%; flex: 1; min-width: 170px; }
+  .event { flex-direction: column; gap: 4px; }
+}
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; scroll-behavior: auto !important; } }
 </style>
 <header>
-  <h1>Wait<small id="scopeLabel"></small></h1><a id="scopeSwitch"></a>
+  <h1><span class="brand-mark" aria-hidden="true">↗</span>Wait<small id="scopeLabel"></small></h1><a id="scopeSwitch"></a>
   <div class="header-controls">
-    <button id="languageToggle" type="button" data-i18n="language.switch" data-i18n-aria-label="language.aria" aria-label="Switch language">中文</button>
-    <button id="themeToggle" type="button" aria-label="Switch color theme">Dark</button>
+    <button id="settingsToggle" type="button" popovertarget="settingsPanel">
+      <span class="settings-icon" aria-hidden="true">⚙︎</span><span data-i18n="settings.title">Settings</span>
+    </button>
+    <div id="settingsPanel" class="settings-panel" popover>
+      <h2 data-i18n="settings.title">Settings</h2>
+      <label for="languagePreference" data-i18n="language.label">Language</label>
+      <select id="languagePreference">
+        <option value="en">English</option>
+        <option value="zh">简体中文</option>
+      </select>
+      <label for="themePreference" data-i18n="theme.label">Appearance</label>
+      <select id="themePreference">
+        <option value="light" data-i18n="theme.light">Light</option>
+        <option value="dark" data-i18n="theme.dark">Dark</option>
+      </select>
+    </div>
   </div>
   <span id="connection" data-i18n="connection.connecting"></span>
 </header>
@@ -179,20 +268,64 @@ dialog select { display: block; margin-top: 6px; width: 100%; }
       <h2 id="objective"></h2>
       <div class="stats" id="stats"></div>
     </div>
+    <details class="goal-description">
+      <summary data-i18n="goal.description">Full objective</summary>
+      <p id="goalDescription"></p>
+    </details>
     <div class="progress"><span id="progress"></span></div>
+    <div id="nodeMetrics" class="metrics">
+      <button class="metric" data-state="ready" aria-pressed="false">
+        <span class="metric-label"><i class="dot ready"></i><span data-i18n="state.ready">Ready</span></span><strong>0</strong>
+      </button>
+      <button class="metric" data-state="running" aria-pressed="false">
+        <span class="metric-label"><i class="dot running"></i><span data-i18n="state.running">Running</span></span><strong>0</strong>
+      </button>
+      <button class="metric" data-state="waiting" aria-pressed="false">
+        <span class="metric-label"><i class="dot waiting"></i><span data-i18n="state.waiting">Waiting</span></span><strong>0</strong>
+      </button>
+      <button class="metric" data-state="completed" aria-pressed="false">
+        <span class="metric-label"><i class="dot completed"></i><span data-i18n="state.completed">Completed</span></span><strong>0</strong>
+      </button>
+    </div>
     <div class="layout">
       <section class="card graph-card">
         <div class="graph-head">
-          <b data-i18n="graph.title">Dependency graph</b>
+          <div class="view-switch" id="nodeViews" aria-label="Task display" data-i18n-aria-label="workspace.display">
+            <button data-view="list" data-i18n="workspace.list" aria-pressed="true">Task list</button>
+            <button data-view="graph" data-i18n="graph.title" aria-pressed="false">Dependency map</button>
+          </div>
           <button id="add" data-i18n="graph.add">+ Node</button>
         </div>
-        <div class="graph" id="graph"></div>
-        <div class="legend">
-          <span><i class="dot pending"></i><span data-i18n="state.pending">Pending</span></span>
-          <span><i class="dot running"></i><span data-i18n="state.running">Running</span></span>
-          <span><i class="dot waiting"></i><span data-i18n="state.waiting">Waiting</span></span>
-          <span><i class="dot completed"></i><span data-i18n="state.completed">Completed</span></span>
-          <span><i class="dot failed"></i><span data-i18n="state.failed">Failed</span></span>
+        <div class="node-tools">
+          <input id="nodeSearch" type="search" placeholder="Search tasks or IDs…" data-i18n-placeholder="workspace.search" aria-label="Search tasks" data-i18n-aria-label="workspace.search">
+          <select id="nodeFilter" aria-label="Filter tasks" data-i18n-aria-label="workspace.filter">
+            <option value="all" data-i18n="workspace.all">All tasks</option>
+            <option value="ready" data-i18n="state.ready">Ready</option>
+            <option value="running" data-i18n="state.running">Running</option>
+            <option value="waiting" data-i18n="state.waiting">Waiting</option>
+            <option value="blocked" data-i18n="state.blocked">Blocked</option>
+            <option value="pending" data-i18n="state.pending">Pending</option>
+            <option value="completed" data-i18n="state.completed">Completed</option>
+            <option value="failed" data-i18n="state.failed">Failed</option>
+            <option value="cancelled" data-i18n="state.cancelled">Cancelled</option>
+          </select>
+          <output id="nodeCount" aria-live="polite"></output>
+        </div>
+        <div id="nodeList" class="node-list"></div>
+        <div class="graph" id="graph" hidden></div>
+        <div id="graphFooter" class="graph-footer" hidden>
+          <div class="legend">
+            <span><i class="dot pending"></i><span data-i18n="state.blocked">Blocked</span></span>
+            <span><i class="dot running"></i><span data-i18n="state.running">Running</span></span>
+            <span><i class="dot waiting"></i><span data-i18n="state.waiting">Waiting</span></span>
+            <span><i class="dot completed"></i><span data-i18n="state.completed">Completed</span></span>
+          </div>
+          <div class="zoom-controls">
+            <button id="zoomOut" aria-label="Zoom out" data-i18n-aria-label="graph.zoomOut">−</button>
+            <output id="zoomLevel">100%</output>
+            <button id="zoomIn" aria-label="Zoom in" data-i18n-aria-label="graph.zoomIn">+</button>
+            <button id="fitGraph" data-i18n="graph.fit">Fit</button>
+          </div>
         </div>
       </section>
       <aside class="card details" id="details"></aside>
@@ -225,730 +358,5 @@ dialog select { display: block; margin-top: 6px; width: 100%; }
     </div>
   </form>
 </dialog>
-<script>
-(() => {
-  const $ = id => document.getElementById(id);
-  function createAppearance(onLanguageChange) {
-    const copy = {
-      en: {
-        "page.title": "Wait dashboard", "list.separator": ", ",
-        "scope.current": "Current session", "scope.all": "All sessions", "scope.openHint": "Open with waitctl dashboard --session",
-        "language.switch": "中文", "language.aria": "Switch language",
-        "theme.light": "Light", "theme.dark": "Dark", "theme.toLight": "Switch to light theme", "theme.toDark": "Switch to dark theme",
-        "connection.connecting": "Connecting", "connection.live": "● Live", "connection.reconnecting": "Reconnecting",
-        "session.tasks": "Session tasks", "session.connecting": "Connecting to the session…",
-        "status.attention": "Tasks need attention", "status.paused": "A goal is paused", "status.running": "Work in progress",
-        "status.waiting": "Waiting for an event", "status.verification": "Final verification pending", "status.ready": "Ready to continue",
-        "status.idle": "No active tasks", "status.start": "Ready when you are",
-        "guide.paused": "Paused goals will not dispatch new work; running tasks may continue.",
-        "guide.waiting": "{count} program-managed wait(s) will notify their session when an event arrives.",
-        "guide.failed": "Review the task result and evidence, then retry or adjust the plan.",
-        "guide.verification": "Nodes are complete; the agent still needs to verify the original goal and record evidence.",
-        "guide.progress": "The agent follows dependencies and acceptance criteria; the graph updates as work changes.",
-        "guide.idle": "Create a goal, wait, or loop in the conversation to see it here.",
-        "mode.session": "Session", "mode.goal": "Goals", "mode.wait": "Waits", "mode.loop": "Loops", "view.aria": "Task views",
-        "select.goal": "Select a goal", "goal.pause": "Pause", "goal.resume": "Resume", "common.cancel": "Cancel",
-        "empty.goals.title": "No goals yet", "empty.goals.body": "This session has no DAG. Create one with waitctl goal init.",
-        "graph.title": "Dependency graph", "graph.add": "+ Node", "events.recent": "Recent changes",
-        "state.open": "Active", "state.paused": "Paused", "state.completed": "Completed", "state.cancelled": "Cancelled",
-        "state.pending": "Pending", "state.dispatching": "Dispatching", "state.running": "Running", "state.waiting": "Waiting", "state.failed": "Failed",
-        "event.init": "Goal created", "event.add_node": "Node added", "event.edit_node": "Node updated", "event.start_node": "Node started",
-        "event.complete_node": "Node completed", "event.fail_node": "Node failed", "event.retry_node": "Node retried",
-        "event.pause_goal": "Goal paused", "event.resume_goal": "Goal resumed", "event.cancel_goal": "Goal cancelled",
-        "event.verify_goal": "Goal verified", "event.finish_goal": "Goal completed", "event.wake_node": "Event received", "event.unknown": "Change",
-        "event.actor.user": "You", "event.actor.event": "Event", "event.actor.agent": "Agent",
-        "notice.wait": "Cancellation requested. The waiting process will stop.",
-        "notice.loop": "The loop is cancelled; a task already running will continue.",
-        "notice.pause": "New work is paused; running tasks may continue.",
-        "notice.cancel": "The goal is cancelled; external jobs will not be stopped.",
-        "notice.saved": "Saved to task state. Scheduling will follow the change; the page will not wake the agent.",
-        "confirm.wait": "Cancel this wait? The waiting process will stop.", "confirm.loop": "Cancel this loop? Future iterations will stop.",
-        "confirm.goal": "Cancel this goal? Incomplete tasks will stop being scheduled.",
-        "empty.wait": "No waits", "empty.loop": "No loops", "state.active": "Active",
-        "common.add": "Add", "common.back": "Back", "common.details": "Details", "common.retry": "Retry node",
-        "common.edit": "Save changes",
-        "field.query": "Query {value}", "field.notification": "Notification {value}", "field.deadline": "Due {value}",
-        "field.session": "Session {value}", "field.triggered": "On trigger · {value}", "field.next": "Next {value}",
-        "field.iteration": "Iteration {value}", "field.interval": "Every {value}s",
-        "field.loopNext": "Next · {value}", "field.loopState": "{task} · iteration {iteration} · {status}",
-        "field.dependencies": "Dependencies: {value}",
-        "field.noDependencies": "None", "field.acceptance": "Acceptance criteria", "field.waitLoop": "Waits and loops",
-        "field.externalCondition": "External condition", "field.result": "Result", "field.waitDetails": "Wait details",
-        "field.selectNode": "Select a node to view its details", "field.nodeKind.local": "Main agent", "field.nodeKind.agent": "Subagent",
-        "field.nodeKind.external": "External event", "field.completeCount": "{done} of {total} completed",
-        "history.goals": "Goal history · {count}", "history.waits": "Wait history · {count}", "history.loops": "Loop history · {count}",
-        "section.independentWaits": "Independent waits", "section.independentLoops": "Independent loops",
-        "node.add": "Add node", "node.id": "Node ID", "node.title": "Task description", "node.kind": "Type",
-        "node.kind.local": "Main agent", "node.kind.agent": "Subagent", "node.kind.external": "External event",
-        "node.dependencies": "Dependencies (comma-separated IDs)", "node.acceptance": "Acceptance criteria (one per line)",
-        "node.write_paths": "Write paths (one per line; leave blank for read-only)"
-      },
-      zh: {
-        "page.title": "Wait · 看板", "list.separator": "、",
-        "scope.current": "当前会话", "scope.all": "全部会话", "scope.openHint": "通过 waitctl dashboard --session 打开",
-        "language.switch": "English", "language.aria": "切换语言",
-        "theme.light": "浅色", "theme.dark": "深色", "theme.toLight": "切换到浅色主题", "theme.toDark": "切换到深色主题",
-        "connection.connecting": "连接中", "connection.live": "● 实时", "connection.reconnecting": "重连中",
-        "session.tasks": "会话任务", "session.connecting": "正在连接会话…",
-        "status.attention": "有任务需要处理", "status.paused": "有目标已暂停", "status.running": "工作推进中",
-        "status.waiting": "等待外部事件", "status.verification": "等待最终验收", "status.ready": "有任务可以推进",
-        "status.idle": "当前没有待运行任务", "status.start": "准备开始",
-        "guide.paused": "已暂停的目标不会派发新任务；已有任务可能继续运行。",
-        "guide.waiting": "{count} 个等待由程序运行，事件到达后会通知所属会话。",
-        "guide.failed": "打开任务检查结果与证据，再决定重试或调整计划。",
-        "guide.verification": "节点已完成，Agent 仍需核对原始目标、记录证据并完成验收。",
-        "guide.progress": "Agent 按依赖和验收条件推进；任务图随工作变化实时更新。",
-        "guide.idle": "在对话中创建目标、普通等待或循环后，会自动出现在这里。",
-        "mode.session": "当前任务", "mode.goal": "目标", "mode.wait": "等待", "mode.loop": "循环", "view.aria": "任务视图",
-        "select.goal": "选择目标", "goal.pause": "暂停", "goal.resume": "恢复", "common.cancel": "取消",
-        "empty.goals.title": "还没有目标", "empty.goals.body": "本会话尚无 DAG。通过 waitctl goal init 创建。",
-        "graph.title": "依赖图", "graph.add": "+ 节点", "events.recent": "最近变更",
-        "state.open": "进行中", "state.paused": "已暂停", "state.completed": "已完成", "state.cancelled": "已取消",
-        "state.pending": "待处理", "state.dispatching": "分派中", "state.running": "执行中", "state.waiting": "等待事件", "state.failed": "失败",
-        "event.init": "创建目标", "event.add_node": "添加节点", "event.edit_node": "修改节点", "event.start_node": "开始节点",
-        "event.complete_node": "完成节点", "event.fail_node": "节点失败", "event.retry_node": "重试节点",
-        "event.pause_goal": "暂停目标", "event.resume_goal": "恢复目标", "event.cancel_goal": "取消目标",
-        "event.verify_goal": "目标验证", "event.finish_goal": "完成目标", "event.wake_node": "收到事件", "event.unknown": "变更",
-        "event.actor.user": "你", "event.actor.event": "事件", "event.actor.agent": "Agent",
-        "notice.wait": "已请求取消等待程序。", "notice.loop": "已取消后续轮次；已运行的任务不会被中断。",
-        "notice.pause": "已暂停新任务派发；已运行任务可能继续。", "notice.cancel": "目标已取消；不会终止外部作业。",
-        "notice.saved": "已保存到任务状态，后续调度按此执行。页面不会立即唤醒 Agent。",
-        "confirm.wait": "取消这个等待？等待程序将停止。", "confirm.loop": "取消这个循环？后续轮次将停止。",
-        "confirm.goal": "取消这个目标？未完成的任务将停止调度。",
-        "empty.wait": "暂无普通等待", "empty.loop": "暂无循环", "state.active": "进行中",
-        "common.add": "添加", "common.back": "返回", "common.details": "详情", "common.retry": "重试节点",
-        "common.edit": "保存修改",
-        "field.query": "查询 {value}", "field.notification": "通知 {value}", "field.deadline": "截止 {value}",
-        "field.session": "会话 {value}", "field.triggered": "触发后 · {value}", "field.next": "下次 {value}",
-        "field.iteration": "第 {value} 轮", "field.interval": "间隔 {value} 秒",
-        "field.loopNext": "下轮 · {value}", "field.loopState": "{task} · 第 {iteration} 轮 · {status}",
-        "field.dependencies": "依赖：{value}",
-        "field.noDependencies": "无", "field.acceptance": "验收条件", "field.waitLoop": "等待与循环",
-        "field.externalCondition": "外部条件", "field.result": "执行结果", "field.waitDetails": "等待详情",
-        "field.selectNode": "选择节点查看详情", "field.nodeKind.local": "主 Agent", "field.nodeKind.agent": "子 Agent",
-        "field.nodeKind.external": "外部事件", "field.completeCount": "{done} / {total} 完成",
-        "history.goals": "目标历史 · {count}", "history.waits": "等待历史 · {count}", "history.loops": "循环历史 · {count}",
-        "section.independentWaits": "独立等待", "section.independentLoops": "独立循环",
-        "node.add": "添加节点", "node.id": "节点 ID", "node.title": "任务说明", "node.kind": "类型",
-        "node.kind.local": "主 Agent 执行", "node.kind.agent": "子 Agent 执行", "node.kind.external": "外部事件",
-        "node.dependencies": "依赖节点 ID（逗号分隔）", "node.acceptance": "验收条件（每行一条）",
-        "node.write_paths": "写入路径（每行一条，留空表示只读）"
-      }
-    };
-    let language = localStorage.getItem("wait-dashboard-language") || "en";
-
-    function t(key, values = {}, fallback = key) {
-      const text = copy[language][key] || fallback;
-      return text.replace(/\{(\w+)\}/g, (placeholder, name) =>
-        name in values ? String(values[name]) : placeholder);
-    }
-
-    function translate(node, key) {
-      node.dataset.i18n = key;
-      node.textContent = t(key);
-    }
-
-    function applyLanguage() {
-      document.documentElement.lang = language === "en" ? "en" : "zh-CN";
-      document.querySelectorAll("[data-i18n]").forEach(node => {
-        node.textContent = t(node.dataset.i18n);
-      });
-      for (const attribute of ["aria-label", "title"]) {
-        document.querySelectorAll(`[data-i18n-${attribute}]`).forEach(node => {
-          node.setAttribute(attribute, t(node.getAttribute(`data-i18n-${attribute}`)));
-        });
-      }
-    }
-
-    function applyTheme(theme) {
-      document.documentElement.dataset.theme = theme;
-      const target = theme === "light" ? "Dark" : "Light";
-      const button = $("themeToggle");
-      translate(button, `theme.${target.toLowerCase()}`);
-      button.dataset.i18nAriaLabel = `theme.to${target}`;
-      button.setAttribute("aria-label", t(button.dataset.i18nAriaLabel));
-    }
-
-    function formatTime(value) {
-      if (!value) return "—";
-      const date = new Date(typeof value === "number" ? value * 1000 : value);
-      return date.toLocaleString(language === "en" ? "en-US" : "zh-CN");
-    }
-
-    $("languageToggle").onclick = () => {
-      language = language === "en" ? "zh" : "en";
-      localStorage.setItem("wait-dashboard-language", language);
-      applyLanguage();
-      onLanguageChange();
-    };
-    $("themeToggle").onclick = () => {
-      const theme = document.documentElement.dataset.theme === "light" ? "dark" : "light";
-      localStorage.setItem("wait-dashboard-theme", theme);
-      applyTheme(theme);
-    };
-
-    applyTheme(localStorage.getItem("wait-dashboard-theme") || "light");
-    applyLanguage();
-    return { t, formatTime, translate };
-  }
-
-  const scope = new URLSearchParams(location.search);
-  const scopeQuery = "?" + scope.toString();
-  const allSessions = scope.get("all") === "1";
-  $("scopeLabel").dataset.i18n = allSessions ? "scope.all" : "scope.current";
-  if (scope.get("session")) $("scopeLabel").title = scope.get("session");
-  else $("scopeLabel").dataset.i18nTitle = "scope.openHint";
-  $("scopeSwitch").dataset.i18n = allSessions ? "scope.current" : "scope.all";
-  const otherScope = new URLSearchParams(scope);
-  if (allSessions) otherScope.delete("all"); else otherScope.set("all", "1");
-  $("scopeSwitch").href = "/?" + otherScope.toString();
-  $("scopeSwitch").hidden = allSessions && !scope.get("session");
-  let tasks = {goals: [], watches: [], loops: [], linked_watches: []};
-  let mode = scope.get("mode") || "session";
-  const focus = scope.get("focus") || "";
-  let focusPending = !!focus;
-
-  let selected = mode === "goal" ? focus : "";
-  let nodeId = scope.get("node") || "";
-
-  const { t, formatTime, translate } = createAppearance(() => render({preserveEditor: true}));
-
-  function element(tag, text, className) {
-    const node = document.createElement(tag);
-    if (text !== undefined) node.textContent = text;
-    if (className) node.className = className;
-    return node;
-  }
-
-  function svgElement(tag, attributes) {
-    const node = document.createElementNS("http://www.w3.org/2000/svg", tag);
-    for (const [name, value] of Object.entries(attributes)) node.setAttribute(name, value);
-    return node;
-  }
-
-  const colors = {
-    pending: "var(--status-pending)", running: "var(--status-running)", dispatching: "var(--status-running)",
-    waiting: "var(--status-waiting)", completed: "var(--status-completed)", failed: "var(--status-failed)",
-    cancelled: "var(--status-failed)"
-  };
-
-  function currentGoal() {
-    return tasks.goals.find(goal => goal.path === selected);
-  }
-
-  function splitValues(value, separator) {
-    return value.split(separator).map(item => item.trim()).filter(Boolean);
-  }
-
-  function nodeFields(values) {
-    return {
-      title: values.get("title"),
-      depends_on: splitValues(values.get("depends_on"), ","),
-      acceptance: splitValues(values.get("acceptance"), "\n")
-    };
-  }
-
-  function showError(message) {
-    $("error").textContent = message;
-    $("error").hidden = false;
-  }
-
-  async function act(action, fields = {}) {
-    $("error").hidden = true;
-    try {
-      const response = await fetch("/api/action" + scopeQuery, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path: selected, action, ...fields })
-      });
-      const result = await response.json();
-      if (!response.ok) throw Error(result.error);
-      const notices = {
-        wait: "notice.wait",
-        loop: "notice.loop",
-        pause: "notice.pause",
-        cancel: "notice.cancel"
-      };
-      translate($("notice"), notices[fields.mode] || notices[action] || "notice.saved");
-      $("notice").hidden = false;
-      return true;
-    } catch (error) {
-      showError(error.message);
-      return false;
-    }
-  }
-
-  function renderEvents(events) {
-    $("events").replaceChildren(...events.slice(-30).reverse().map(event => {
-      const row = element("div", undefined, "event");
-      const name = t(`event.${event.operation}`, {}, event.operation || t("event.unknown"));
-      let actor = "agent";
-      if (event.source === "user") actor = "user";
-      else if (event.operation === "wake_node") actor = "event";
-      const parts = [t(`event.actor.${actor}`), name];
-      if (event.node_id) parts.push(event.node_id);
-      row.append(
-        element("time", formatTime(event.at)),
-        element("span", parts.join(" · "))
-      );
-      return row;
-    }));
-  }
-
-  async function cancelTask(task, kind) {
-    if (!confirm(t(kind === "wait" ? "confirm.wait" : "confirm.loop"))) return;
-    await act("cancel", kind === "wait"
-      ? {mode: "wait", watch_id: task.watch_id}
-      : {mode: "loop", path: task.path});
-  }
-
-  function renderTaskList(collection, kind, list) {
-    if (!collection.length) {
-      const empty = element("div", undefined, "card empty");
-      empty.append(element("h2", t(kind === "wait" ? "empty.wait" : "empty.loop")));
-      list.replaceChildren(empty);
-      return;
-    }
-    list.replaceChildren(...collection.map(task => {
-      const identity = kind === "wait" ? task.watch_id : task.path;
-      const card = element("article", undefined, "card task-card" + (identity === focus ? " focused" : ""));
-      if (identity === focus) card.id = "focusedTask";
-      if (task.error) {
-        card.append(element("p", task.error));
-        return card;
-      }
-      const state = kind === "wait" ? task.state : task.status;
-      const heading = element("div", undefined, "task-heading");
-      heading.append(element("h3", kind === "wait" ? task.label : task.task),
-        element("span", t(`state.${state}`), "badge"));
-      if (state === "active") {
-        const cancel = element("button", t("common.cancel"), "danger");
-        cancel.onclick = () => cancelTask(task, kind);
-        heading.append(cancel);
-      }
-      card.append(heading);
-      const meta = element("div", undefined, "task-meta");
-      if (kind === "loop") {
-        let phase = t(`state.${state}`);
-        if (task.phase === "waiting") phase = t("field.next", {value: formatTime(task.next_run_at)});
-        else if (task.phase === "running") phase = t("state.running");
-        meta.append(
-          element("span", t("field.iteration", {value: task.iteration + (task.max_iterations ? " / " + task.max_iterations : "")})),
-          element("span", t("field.interval", {value: task.interval_seconds})),
-          element("span", phase)
-        );
-      } else {
-        meta.append(element("span", task.watch_id.slice(0, 8)),
-          element("span", t("field.query", {value: task.query_status || "—"})),
-          element("span", t("field.notification", {value: task.result?.notification || task.notification_channel?.status || "—"})));
-      }
-      meta.append(element("span", t("field.deadline", {value: formatTime(task.deadline_at)})));
-      if (allSessions) meta.append(element("span", t("field.session", {value: task.session})));
-      card.append(meta);
-      if (task.event_note) {
-        card.append(element("p", t("field.triggered", {value: task.event_note}), "task-note"));
-      }
-      const more = element("details");
-      more.append(element("summary", t("common.details")));
-      const details = kind === "wait"
-        ? {result: task.result, log_file: task.log_file}
-        : {path: task.path, goal: task.goal, runs: task.runs, events: task.events};
-      more.append(element("pre", JSON.stringify(details, null, 2)));
-      card.append(more);
-      return card;
-    }));
-  }
-
-  function renderSummary() {
-    const validGoals = tasks.goals.filter(goal => !goal.error);
-    const running = validGoals.some(goal => Object.values(goal.nodes).some(node => ["running", "dispatching"].includes(node.status))) ||
-      tasks.loops.some(loop => loop.status === "active" && loop.phase === "running");
-    const ready = validGoals.some(goal => goal.status === "open" && goal.activity === "ready");
-    const waiting = tasks.watches.filter(watch => watch.state === "active").length +
-      tasks.linked_watches.filter(watch => {
-        if (watch.state !== "active") return false;
-        if (watch.owner.mode === "goal") {
-          const goal = validGoals.find(goal => goal.path === watch.owner.path);
-          return goal?.status === "open" && goal.nodes[watch.owner.node]?.wait?.watch_id === watch.watch_id;
-        }
-        const loop = tasks.loops.find(loop => loop.path === watch.owner.path);
-        return loop?.status === "active" && loop.watch_id === watch.watch_id;
-      }).length;
-    const paused = validGoals.some(goal => goal.status === "paused");
-    const verification = validGoals.some(goal => goal.status === "open" && goal.activity === "awaiting_verification");
-    const failed = validGoals.some(goal => Object.values(goal.nodes).some(node => node.status === "failed")) ||
-      tasks.watches.some(watch => watch.state === "failed");
-    const statuses = [
-      [failed, "status.attention"],
-      [paused, "status.paused"],
-      [running, "status.running"],
-      [waiting, "status.waiting"],
-      [verification, "status.verification"],
-      [ready, "status.ready"],
-      [validGoals.length || tasks.watches.length || tasks.loops.length, "status.idle"],
-      [true, "status.start"]
-    ];
-    const guidance = [
-      [paused, "guide.paused"],
-      [waiting, "guide.waiting", {count: waiting}],
-      [failed, "guide.failed"],
-      [verification, "guide.verification"],
-      [running || ready, "guide.progress"],
-      [true, "guide.idle"]
-    ];
-    translate($("sessionStatus"), statuses.find(([matches]) => matches)[1]);
-    const [, key, values = {}] = guidance.find(([matches]) => matches);
-    $("sessionNext").textContent = t(key, values);
-  }
-
-  function renderIndependent() {
-    const root = $("independentTasks");
-    root.replaceChildren();
-    root.hidden = mode !== "session";
-    if (root.hidden) return;
-    const finishedGoals = tasks.goals.filter(goal => ["completed", "cancelled"].includes(goal.status));
-    if (finishedGoals.length) {
-      const history = element("details", undefined, "task-history");
-      history.append(element("summary", t("history.goals", {count: finishedGoals.length})));
-      for (const goal of finishedGoals) {
-        const button = element("button", goal.objective);
-        button.onclick = () => { selected = goal.path; nodeId = ""; mode = "goal"; render(); };
-        history.append(button);
-      }
-      root.append(history);
-    }
-    const independent = [
-      ["wait", tasks.watches],
-      ["loop", tasks.loops.filter(loop => !loop.goal)]
-    ];
-    for (const [kind, collection] of independent) {
-      const past = [];
-      const active = [];
-      for (const task of collection) {
-        const status = kind === "wait" ? task.state : task.status;
-        (task.error || status !== "active" ? past : active).push(task);
-      }
-      if (active.length) {
-        root.append(element("h3", t(kind === "wait" ? "section.independentWaits" : "section.independentLoops"), "context-heading"));
-        const list = element("div");
-        renderTaskList(active, kind, list);
-        root.append(list);
-      }
-      if (past.length) {
-        const history = element("details", undefined, "task-history");
-        history.append(element("summary", t(kind === "wait" ? "history.waits" : "history.loops", {count: past.length})));
-        const list = element("div");
-        renderTaskList(past, kind, list);
-        history.append(list);
-        root.append(history);
-      }
-    }
-  }
-
-  function render({preserveEditor = false} = {}) {
-    renderSummary();
-    renderIndependent();
-    const counts = {session: tasks.goals.filter(goal => goal.status === "open").length +
-      tasks.watches.filter(task => task.state === "active").length +
-      tasks.loops.filter(task => task.status === "active" && !task.goal).length,
-      goal: tasks.goals.length, wait: tasks.watches.length, loop: tasks.loops.length};
-    for (const button of $("modes").querySelectorAll("button")) {
-      const kind = button.dataset.mode;
-      button.textContent = `${t(`mode.${kind}`)} · ${counts[kind]}`;
-      button.setAttribute("aria-selected", kind === mode);
-    }
-    const showingGoal = ["session", "goal"].includes(mode);
-    $("goalToolbar").hidden = !showingGoal || !tasks.goals.length;
-    $("taskList").hidden = showingGoal;
-    if (!showingGoal) {
-      $("empty").hidden = true;
-      $("content").hidden = true;
-      renderTaskList(mode === "wait" ? tasks.watches : tasks.loops, mode, $("taskList"));
-      return;
-    }
-    if (!currentGoal()) selected = (tasks.goals.find(goal => goal.status === "open") || tasks.goals[0])?.path || "";
-    $("goals").replaceChildren(...tasks.goals.map(goal => {
-      const option = element("option", goal.objective || goal.path);
-      option.value = goal.path;
-      return option;
-    }));
-    $("goals").value = selected;
-
-    const goal = currentGoal();
-    const historical = mode === "session" && goal && ["completed", "cancelled"].includes(goal.status);
-    $("empty").hidden = !!goal || mode === "session";
-    $("content").hidden = !goal || historical;
-    $("goalToolbar").hidden = historical || !goal;
-    for (const action of ["pause", "resume", "cancel"]) $(action).disabled = !goal;
-    if (!goal) return;
-    if (goal.error) {
-      showError(goal.error);
-      $("content").hidden = true;
-      return;
-    }
-
-    $("objective").textContent = goal.objective;
-    $("objective").title = goal.path;
-    const available = {
-      pause: goal.status === "open",
-      resume: goal.status === "paused",
-      cancel: ["open", "paused"].includes(goal.status)
-    };
-    for (const [action, enabled] of Object.entries(available)) {
-      $(action).hidden = !enabled;
-      $(action).disabled = !enabled;
-    }
-    $("add").disabled = goal.status !== "open";
-
-    const nodes = Object.values(goal.nodes);
-    const completed = nodes.filter(node => node.status === "completed").length;
-    $("stats").replaceChildren(
-      element("span", t(`state.${goal.status}`), "badge"),
-      element("span", t("field.completeCount", {done: completed, total: nodes.length}))
-    );
-    $("progress").style.width = (nodes.length ? completed / nodes.length * 100 : 0) + "%";
-    draw(goal);
-    if (!$("details").contains(document.activeElement)) {
-      renderDetails(goal, preserveEditor ? $("details").querySelector("form") : null);
-    } else {
-      const heading = $("details").querySelector("h3");
-      if (heading && goal.nodes[nodeId]) heading.textContent = goal.nodes[nodeId].title;
-    }
-    renderEvents(goal.events);
-  }
-
-  function layout(nodes, width) {
-    const positions = {};
-    const layers = {};
-    const vertical = width < 600;
-
-    function place(id) {
-      if (positions[id]) return positions[id].level;
-      const dependencies = nodes[id].depends_on;
-      const level = dependencies.length ? Math.max(...dependencies.map(place)) + 1 : 0;
-      const row = layers[level] || 0;
-      layers[level] = row + 1;
-      positions[id] = {
-        level,
-        x: vertical ? Math.max(24, (width - 200) / 2) + row * 225 : 24 + level * 245,
-        y: vertical ? 26 + level * 105 : 26 + row * 110
-      };
-      return level;
-    }
-
-    Object.keys(nodes).forEach(place);
-    return { positions, vertical };
-  }
-
-  function edgePath(from, to, vertical) {
-    if (vertical) {
-      return `M${from.x + 100} ${from.y + 76} C${from.x + 100} ${from.y + 92} ${to.x + 100} ${to.y - 16} ${to.x + 100} ${to.y}`;
-    }
-    return `M${from.x + 200} ${from.y + 36} C${from.x + 225} ${from.y + 36} ${to.x - 25} ${to.y + 36} ${to.x} ${to.y + 36}`;
-  }
-
-  function drawNode(id, node, position) {
-    const selectedNode = id === nodeId;
-    const group = svgElement("g", {
-      transform: `translate(${position.x},${position.y})`,
-      tabindex: 0, role: "button", "aria-label": node.title
-    });
-    group.append(
-      svgElement("rect", {
-        width: 200, height: 76, rx: 10,
-        fill: selectedNode ? "var(--node-selected)" : "var(--node)",
-        stroke: selectedNode ? "var(--node-selected-border)" : "var(--node-border)",
-        "stroke-width": selectedNode ? 2 : 1
-      }),
-      svgElement("rect", { x: 0, y: 12, width: 4, height: 52, rx: 2, fill: colors[node.status] })
-    );
-    const title = svgElement("text", { x: 15, y: 26 });
-    title.textContent = node.title.length > 13 ? node.title.slice(0, 13) + "…" : node.title;
-    const status = svgElement("text", { x: 15, y: 52, class: "small" });
-    status.textContent = id + " · " + t(`state.${node.status}`);
-    const tooltip = svgElement("title", {});
-    tooltip.textContent = node.title;
-    group.append(title, status, tooltip);
-
-    function select() {
-      nodeId = id;
-      const goal = currentGoal();
-      draw(goal);
-      if (!$("details").contains(document.activeElement)) renderDetails(goal);
-    }
-    group.onclick = select;
-    group.onkeydown = event => {
-      if (event.key === "Enter") select();
-    };
-    return group;
-  }
-
-  function draw(goal) {
-    const { positions, vertical } = layout(goal.nodes, $("graph").clientWidth);
-    const svg = svgElement("svg", {
-      width: Math.max(vertical ? 260 : 650, ...Object.values(positions).map(point => point.x + 230)),
-      height: Math.max(270, ...Object.values(positions).map(point => point.y + 100))
-    });
-    const definitions = svgElement("defs", {});
-    const marker = svgElement("marker", {
-      id: "arrow", viewBox: "0 0 10 10", refX: 9, refY: 5,
-      markerWidth: 6, markerHeight: 6, orient: "auto-start-reverse"
-    });
-    marker.append(svgElement("path", { d: "M 0 0 L 10 5 L 0 10 z", fill: "var(--edge)" }));
-    definitions.append(marker);
-    svg.append(definitions);
-
-    for (const [id, node] of Object.entries(goal.nodes)) {
-      for (const dependency of node.depends_on) {
-        svg.append(svgElement("path", {
-          d: edgePath(positions[dependency], positions[id], vertical),
-          fill: "none", stroke: "var(--edge)", "stroke-width": 1.5, "marker-end": "url(#arrow)"
-        }));
-      }
-    }
-    for (const [id, node] of Object.entries(goal.nodes)) {
-      svg.append(drawNode(id, node, positions[id]));
-    }
-    $("graph").replaceChildren(svg);
-  }
-
-  function editForm(node) {
-    const form = element("form");
-    const fields = [
-      ["title", "node.title", node.title],
-      ["depends_on", "node.dependencies", node.depends_on.join(", ")],
-      ["acceptance", "node.acceptance", node.acceptance.join("\n")]
-    ];
-    for (const [name, labelKey, value] of fields) {
-      const field = element("label");
-      const label = element("span");
-      translate(label, labelKey);
-      const input = element(name === "acceptance" ? "textarea" : "input");
-      input.name = name;
-      input.value = value;
-      input.required = name === "title";
-      field.append(label, input);
-      form.append(field);
-    }
-    const save = element("button", undefined, "primary");
-    translate(save, "common.edit");
-    save.style.marginTop = "16px";
-    form.append(save);
-    form.onsubmit = async event => {
-      event.preventDefault();
-      await act("edit", { id: nodeId, ...nodeFields(new FormData(form)) });
-    };
-    return form;
-  }
-
-  function renderDetails(goal, editor = null) {
-    const box = $("details");
-    box.replaceChildren();
-    const node = goal.nodes[nodeId];
-    if (!node) {
-      const placeholder = element("div", undefined, "detail-placeholder");
-      placeholder.append(element("div", "⌘", "symbol"), element("p", t("field.selectNode")));
-      box.append(placeholder);
-      return;
-    }
-    const kind = t(`field.nodeKind.${node.kind}`);
-    box.append(
-      element("span", t(`state.${node.status}`), "badge"),
-      element("h3", node.title),
-      element("p", nodeId + " · " + kind, "muted")
-    );
-    if (node.status === "pending" && goal.status === "open") {
-      box.append(editor || editForm(node));
-    } else {
-      const acceptance = element("ul");
-      acceptance.append(...node.acceptance.map(item => element("li", item)));
-      box.append(
-        element("p", t("field.dependencies", {value: node.depends_on.join(t("list.separator")) || t("field.noDependencies")})),
-        element("b", t("field.acceptance")), acceptance
-      );
-    }
-    const relatedLoops = tasks.loops.filter(loop => loop.goal?.state === goal.path && loop.goal?.node === nodeId);
-    const waits = tasks.linked_watches.filter(watch =>
-      watch.owner.mode === "goal" && watch.owner.path === goal.path && watch.owner.node === nodeId);
-    if (node.wait || relatedLoops.length || waits.length) {
-      const context = element("section", undefined, "wait-context");
-      context.append(element("b", t("field.waitLoop")));
-      if (node.wait) {
-        context.append(element("p", node.wait.label || t("field.externalCondition"), "task-note"));
-        if (node.wait.event_note) context.append(element("p", t("field.triggered", {value: node.wait.event_note}), "task-note"));
-      }
-      for (const wait of waits) {
-        context.append(element("p", `${t(`state.${wait.state}`)} · ${t("field.deadline", {value: formatTime(wait.deadline_at)})}`, "muted"));
-      }
-      for (const loop of relatedLoops) {
-        context.append(element("p", t("field.loopState", {task: loop.task, iteration: loop.iteration, status: t(`state.${loop.status}`)}), "task-note"));
-        if (loop.event_note) context.append(element("p", t("field.loopNext", {value: loop.event_note}), "task-note"));
-      }
-      box.append(context);
-    }
-    if (node.result) {
-      box.append(element("h4", t("field.result")),
-        element("p", typeof node.result === "string" ? node.result : node.result.summary || JSON.stringify(node.result), "task-note"));
-    }
-    if (node.wait) {
-      const metadata = element("details", undefined, "muted");
-      metadata.append(element("summary", t("field.waitDetails")), element("pre", JSON.stringify(node.wait, null, 2)));
-      box.append(metadata);
-    }
-    if (node.status === "failed" && goal.status === "open") {
-      const retry = element("button", t("common.retry"));
-      retry.onclick = () => act("retry", { id: nodeId });
-      box.append(retry);
-    }
-  }
-
-  $("goals").onchange = event => {
-    selected = event.target.value;
-    nodeId = "";
-    render();
-  };
-  $("pause").onclick = () => act("pause");
-  $("resume").onclick = () => act("resume");
-  $("cancel").onclick = () => {
-    if (confirm(t("confirm.goal"))) act("cancel");
-  };
-  $("add").onclick = () => $("addDialog").showModal();
-  $("dismiss").onclick = () => $("addDialog").close();
-  $("addForm").onsubmit = async event => {
-    event.preventDefault();
-    const form = event.target;
-    const values = new FormData(form);
-    const writes = splitValues(values.get("write_paths"), "\n");
-    const added = await act("add", {
-      id: values.get("id"), kind: values.get("kind"), ...nodeFields(values),
-      read_only: !writes.length, write_paths: writes
-    });
-    if (added) {
-      $("addDialog").close();
-      form.reset();
-    }
-  };
-
-  $("modes").onclick = event => {
-    const button = event.target.closest("button[data-mode]");
-    if (button) { mode = button.dataset.mode; render(); }
-  };
-
-  new ResizeObserver(() => {
-    const goal = currentGoal();
-    if (goal && !goal.error) draw(goal);
-  }).observe($("graph"));
-
-  const stream = new EventSource("/events" + scopeQuery);
-  stream.onmessage = event => {
-    tasks = JSON.parse(event.data);
-    translate($("connection"), "connection.live");
-    render();
-    if (focusPending) {
-      document.getElementById("focusedTask")?.scrollIntoView({block: "center", behavior: "smooth"});
-      focusPending = false;
-    }
-  };
-  stream.onerror = () => translate($("connection"), "connection.reconnecting");
-})();
-</script></html>
+<script type="module" src="/assets/dashboard.mjs"></script>
+</html>

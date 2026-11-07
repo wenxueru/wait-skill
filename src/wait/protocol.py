@@ -11,22 +11,15 @@ SOCKET_PATH = RUNTIME_DIR / "waitd.sock"
 REGISTRY_PATH = RUNTIME_DIR / "registry.json"
 PROTOCOL_VERSION = 1
 STATE_COMMANDS = ("goal", "loop")
-SERVICE_SOURCES = (
-    "protocol.py",
-    "waitd.py",
-    "runtime.py",
-    "loop.py",
-    "codex.py",
-    "goal.py",
-    "dashboard.py",
-)
 
 
 def source_fingerprint() -> str:
     digest = hashlib.sha256()
-    directory = Path(__file__).parent
-    for name in SERVICE_SOURCES:
-        digest.update((directory / name).read_bytes())
+    package = Path(__file__).resolve().parent
+    sources = [package.parent / "worker.py", *sorted(package.rglob("*.py"))]
+    for path in sources:
+        digest.update(path.relative_to(package.parent).as_posix().encode())
+        digest.update(path.read_bytes())
     return digest.hexdigest()[:16]
 
 

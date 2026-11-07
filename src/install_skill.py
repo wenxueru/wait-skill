@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Install the unified wait skill and remove its obsolete skill registrations."""
 
 from __future__ import annotations
@@ -9,8 +8,15 @@ import shutil
 from pathlib import Path
 
 PACKAGED = (
-    "SKILL.md", "SKILL.zh-CN.md", "README.md", "README.zh-CN.md", "LICENSE",
-    "src", "docs", "agents", "assets",
+    "SKILL.md",
+    "SKILL.zh-CN.md",
+    "README.md",
+    "README.zh-CN.md",
+    "LICENSE",
+    "src",
+    "docs",
+    "agents",
+    "assets",
 )
 
 

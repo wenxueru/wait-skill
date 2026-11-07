@@ -18,9 +18,9 @@ Wait for external events beyond a model turn.
 
 ## Dashboard
 
-![Wait dashboard demo](assets/dashboard-demo.svg)
+![Wait dashboard demo](assets/dashboard-demo.png)
 
-*Demo data, shown in English and light mode in both READMEs.*
+*Example tasks, shown in English and light mode.*
 
 Open the current session's dashboard with:
 
@@ -28,10 +28,10 @@ Open the current session's dashboard with:
 python ~/.codex/skills/wait/src/waitctl.py dashboard --session "$CODEX_THREAD_ID"
 ```
 
-- Wait, Loop, and Goal commands also return a `dashboard_url` focused on the current session. Use `--all-sessions` for a machine-wide view.
-- The page derives its task graph and Wait/Loop status from saved state and updates automatically; agents do not maintain a separate page.
-- English and light mode are the defaults. Header controls switch language and theme; this browser saves choices for the dashboard address, including its port. A new port after restart uses the defaults.
-- See [dashboard controls](docs/dashboard.md) for task actions and remote access.
+- Wait, Loop, and Goal commands return a `dashboard_url` for the owning session. Use `--all-sessions` when you want the machine-wide view.
+- The task list shows status and recorded update times; the dependency map automatically reduces crossings. Both update from saved task state, so agents only maintain their tasks.
+- English and light mode are the defaults. **Settings** offers Chinese and dark mode and saves the choice in this browser.
+- See [dashboard controls](docs/dashboard.md) for task actions, session scope and remote access.
 
 ## Try it
 
@@ -72,13 +72,27 @@ python /path/to/wait-skill/src/install_skill.py
 
 ## Development
 
-The scripts use only the Python standard library.
+The Python core uses only the standard library. Browser dependencies are [bundled locally](assets/vendor/README.md); Node is needed only for frontend tests.
+
+| Location | Responsibility |
+| --- | --- |
+| `src/` entry points | CLI, installer, waiting-program API, and shared subprocess worker |
+| `src/wait/tasks/` | Goal and Loop state engines |
+| `src/wait/service/` | Watcher supervision and dashboard HTTP service |
+| `src/wait/clients/` | Client delivery adapters |
+| Shared `src/wait/` modules | Runtime, service identity, and loopback address policy |
+| `assets/` | Dashboard rendering, appearance, task-derived display state, and graph layout |
+| `tests/` | Tests mirror source layers; `integration/` covers processes and documentation |
+
+Run from the repository root:
 
 ```sh
-python -m unittest discover -s tests -v
+python -m unittest discover -s tests -t . -v
+python -m unittest tests.tasks.test_goal -v
+node --test tests/service/*.test.mjs
 python /path/to/skill-creator/scripts/quick_validate.py .
 ```
 
 ## License
 
-MIT
+MIT. Bundled Dagre/Graphlib notices are in [assets/vendor/dagre.LICENSE.txt](assets/vendor/dagre.LICENSE.txt).

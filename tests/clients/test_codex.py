@@ -13,9 +13,8 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-SRC = Path(__file__).parents[1] / "src"
-sys.path.insert(0, str(SRC))
-import waitd
+from tests import SRC
+from wait.service import daemon as waitd
 
 
 class CodexDeliveryTest(unittest.IsolatedAsyncioTestCase):
@@ -124,7 +123,8 @@ class CodexDeliveryTest(unittest.IsolatedAsyncioTestCase):
     async def invoke(self, *extra, remote=None, env=None):
         process = await asyncio.create_subprocess_exec(
             sys.executable,
-            str(SRC / "codex.py"),
+            str(SRC / "worker.py"),
+            "codex",
             "--remote",
             remote or f"unix://{self.socket}",
             "--session",

@@ -7,7 +7,6 @@ import argparse
 import json
 import math
 import os
-import sys
 import time
 import uuid
 from collections import UserDict
@@ -15,7 +14,7 @@ from collections.abc import Generator, Mapping, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 
-import runtime
+from .. import runtime
 
 CLIENTS = runtime.CLIENTS
 DEFAULT_DURATION = 86400.0
@@ -350,14 +349,7 @@ def timer_argv(state: LoopState, path: Path) -> list[str]:
     return [
         *argv,
         "--",
-        sys.executable,
-        str(Path(__file__).resolve()),
-        "due",
-        "--wait",
-        "--state",
-        str(path),
-        "--watch-id",
-        watch_id,
+        *runtime.worker_command("loop", "due", "--wait", "--state", str(path), "--watch-id", watch_id),
     ]
 
 

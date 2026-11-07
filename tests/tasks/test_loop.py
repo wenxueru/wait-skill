@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import importlib.util
 import json
 import os
-import sys
 import tempfile
 import unittest
 from argparse import Namespace
@@ -11,14 +9,9 @@ from collections.abc import Callable
 from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
-sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
-SCRIPT = Path(__file__).parents[1] / "src" / "loop.py"
-SPEC = importlib.util.spec_from_file_location("loop", SCRIPT)
-assert SPEC and SPEC.loader
-loop = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(loop)
+from wait.tasks import loop
 
 
 class WaitLoopTest(unittest.TestCase):
@@ -37,8 +30,11 @@ class WaitLoopTest(unittest.TestCase):
             handler(Namespace(**arguments))
         return json.loads(output.getvalue())
 
+    def at_time(self, now: float):
+        return patch.object(loop, "time", Mock(wraps=loop.time, time=Mock(return_value=now)))
+
     def init(self, *, max_iterations: int | None = None) -> dict[str, object]:
-        with patch.object(loop.time, "time", return_value=100.0):
+        with self.at_time(100.0):
             return self.invoke(
                 loop.command_init,
                 state=self.state,
@@ -53,19 +49,19 @@ class WaitLoopTest(unittest.TestCase):
 
     def test_iteration_lifecycle_and_duplicate_event(self) -> None:
         self.init(max_iterations=2)
-        with patch.object(loop.time, "time", return_value=110.0):
+        with self.at_time(110.0):
             scheduled = self.invoke(loop.command_complete, state=self.state, summary="first")
         watch_id = str(scheduled["watch_id"])
         self.assertEqual(scheduled["phase"], "waiting")
         self.assertEqual(scheduled["next_run_at"], 170.0)
 
-        with patch.object(loop.time, "time", return_value=169.0):
+        with self.at_time(169.0):
             output = StringIO()
             with redirect_stdout(output):
                 loop.command_due(Namespace(state=self.state, watch_id=watch_id))
         self.assertEqual(output.getvalue().strip(), "Waiting")
 
-        with patch.object(loop.time, "time", return_value=170.0):
+        with self.at_time(170.0):
             resumed = self.invoke(
                 loop.command_begin,
                 state=self.state,
@@ -81,7 +77,7 @@ class WaitLoopTest(unittest.TestCase):
         )
         self.assertEqual(duplicate, {"duplicate": True, "iteration": 2})
 
-        with patch.object(loop.time, "time", return_value=180.0):
+        with self.at_time(180.0):
             completed = self.invoke(loop.command_complete, state=self.state, summary="second")
         self.assertEqual(completed["status"], "completed")
         self.assertIsNone(completed["phase"])
@@ -89,11 +85,11 @@ class WaitLoopTest(unittest.TestCase):
 
     def test_duration_expiry_is_bounded_and_idempotent(self) -> None:
         self.init()
-        with patch.object(loop.time, "time", return_value=100.0):
+        with self.at_time(100.0):
             scheduled = self.invoke(loop.command_complete, state=self.state, summary="first")
         watch_id = str(scheduled["watch_id"])
 
-        with patch.object(loop.time, "time", return_value=3700.0):
+        with self.at_time(3700.0):
             output = StringIO()
             with redirect_stdout(output):
                 loop.command_due(Namespace(state=self.state, watch_id=watch_id))
@@ -106,10 +102,10 @@ class WaitLoopTest(unittest.TestCase):
 
     def test_ready_event_delivered_after_deadline_completes_loop(self) -> None:
         self.init()
-        with patch.object(loop.time, "time", return_value=100.0):
+        with self.at_time(100.0):
             scheduled = self.invoke(loop.command_complete, state=self.state, summary="first")
 
-        with patch.object(loop.time, "time", return_value=3700.0):
+        with self.at_time(3700.0):
             completed = self.invoke(
                 loop.command_begin,
                 state=self.state,
@@ -123,7 +119,7 @@ class WaitLoopTest(unittest.TestCase):
         self.assertEqual(completed["events"][-1]["operation"], "expire")
 
     def test_remote_is_persisted_and_propagated_to_timers(self) -> None:
-        with patch.object(loop.time, "time", return_value=100.0):
+        with self.at_time(100.0):
             self.invoke(
                 loop.command_init,
                 state=self.state,

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import json
+import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 from install_skill import PACKAGED, install
+from tests import ROOT
 
 
 class InstallTest(unittest.TestCase):
@@ -46,4 +48,57 @@ class InstallTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             with self.assertRaisesRegex(ValueError, "not the wait skill"):
-                install(Path(__file__).parents[1], root)
+                install(ROOT, root)
+
+    def test_installed_entry_points_work_from_another_directory(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            destination = root / "installed"
+            workspace = root / "workspace"
+            workspace.mkdir()
+            install(ROOT, destination)
+            commands = [
+                ("waitctl.py", "--help"),
+                ("worker.py", "daemon", "--help"),
+                ("worker.py", "codex", "--help"),
+                (
+                    "worker.py",
+                    "goal",
+                    "init",
+                    "--objective",
+                    "Installed goal",
+                    "--session",
+                    "test",
+                    "--state",
+                    str(root / "goal.json"),
+                ),
+                (
+                    "worker.py",
+                    "loop",
+                    "init",
+                    "--task",
+                    "Installed loop",
+                    "--event-note",
+                    "Check again",
+                    "--session",
+                    "test",
+                    "--interval",
+                    "60",
+                    "--no-notify",
+                    "--state",
+                    str(root / "loop.json"),
+                ),
+            ]
+            for script, *arguments in commands:
+                with self.subTest(script=script, arguments=arguments):
+                    result = subprocess.run(
+                        [sys.executable, str(destination / "src" / script), *arguments],
+                        check=False,
+                        cwd=workspace,
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads((root / "goal.json").read_text())["objective"], "Installed goal")
+            self.assertEqual(json.loads((root / "loop.json").read_text())["task"], "Installed loop")

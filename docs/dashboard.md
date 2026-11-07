@@ -1,54 +1,83 @@
 # Wait dashboard
 
-## Open
+## Open your session
 
-Use Python 3.11 or newer:
+Use Python 3.11 or newer and the current conversation's session ID:
 
 ```sh
 python /path/to/wait/src/waitctl.py dashboard --session "$AGENT_SESSION_ID"
 ```
 
-- Normal Wait/Loop/Goal commands return `dashboard_url` focused on the session, task and node. Reuse the panel rather than opening a tab per command.
-- `dashboard` defaults to `CODEX_THREAD_ID` when set. Otherwise pass the current session explicitly; never infer it from the newest task or browser tab.
-- `dashboard --state /absolute/path/goal.json` registers an existing DAG and can infer its owner.
-- An unscoped URL shows no tasks. `--all-sessions` explicitly opens the machine-wide view.
-- Open the full returned URL. The port changes when waitd restarts.
-- The page defaults to English and light mode. Header controls switch language and theme; this browser saves the choices for the dashboard address, including its port. A new port after restart uses the defaults.
+- Wait/Loop/Goal commands also return a `dashboard_url` focused on their session, task and node. Reuse the panel and include its link when reporting progress, results or callback handling.
+- `dashboard` uses `CODEX_THREAD_ID` when set; otherwise pass the session explicitly. An unscoped URL shows no tasks. Use `--all-sessions` only for a machine-wide view.
+- To register a saved DAG, use `dashboard --state /absolute/path/goal.json`; its owner supplies the session when none was selected. Never infer ownership from the newest task or browser tab.
+- Keep the full returned URL. Add `&view=graph` to open the dependency map directly.
 
-## Tasks and controls
+The page defaults to English and light mode. **Settings** switches language and appearance; this browser remembers them for the current address, including its port. A new port uses the defaults.
 
-The session overview combines the current goal with independent waits and loops. It derives progress, waiting, pauses, failures and final verification from saved state; finished tasks fold into history.
+## Read progress
 
-| View | Display | Controls |
-| --- | --- | --- |
-| DAG | Dependencies, acceptance, results and events | Add/edit pending nodes, retry, pause/resume/cancel |
-| Wait | Status, deadline, delivery, full event note and result | Cancel the waiting program |
-| Loop | Task, iteration, interval, next run, deadline and history | Cancel future iterations |
+The session overview combines goals with independent waits and loops. Status and progress come from saved task state; finished tasks fold into history. Goal- and Loop-owned watchers appear with their parent, while Goal health-check loops remain accessible in Loop.
 
-Goal- and Loop-owned watchers appear with their parent instead of duplicating ordinary Wait cards. Goal health-check loops also remain accessible in Loop.
+| View | What you can see |
+| --- | --- |
+| Task list | Search titles/IDs, filter by status or click a status count; failed, running and ready tasks appear first |
+| Dependency map | Dagre reduces crossings and routes long dependencies through the graph; zoom or fit the whole map |
+| Task details | Full title, dependencies, acceptance criteria, recorded times, waits and results |
+| Wait | Query status, deadline, delivery, full event note and result |
+| Loop | Iteration, interval, next run, deadline and run history |
 
-Goal pause stops new dispatch; cancel marks unfinished nodes cancelled. Neither kills running agents or external jobs. Wait cancellation stops its program; Loop cancellation stops future iterations.
+- Select a task or dependency link to inspect it. A current task is selected automatically; expand the objective below the heading to read its full text.
+- **Updated** uses recorded node events and lifecycle times in your browser's timezone. Hover for the full timestamp. Details show available creation, start, waiting and end times; missing records show `—`.
+- Search and filters keep the dependency map's structure and dim other nodes. Layout and display state are computed in the browser using bundled assets; no CDN is needed.
 
-## How the skill and page cooperate
+## Change tasks
 
-- Use normal Wait/Loop/Goal commands. waitd derives the page automatically; agents do not write HTML, maintain summaries or acknowledge page changes.
-- CLI and page controls use the same task state and command queues. Reread state before dispatch and respect user edits, pause and cancellation.
-- SSE pushes changes without polling or starting model turns. Send a chat message when immediate agent action is needed.
-- For manual continuation, ordinary Wait accepts `start -- --session ID --no-notify ...`; Loop accepts `loop -- init --session ID --no-notify ...`. This preserves session visibility and disables automatic resume turns. Block with `waitctl follow ID --timeout SECONDS`, then continue the normal workflow, including Loop `begin`/`complete`.
+| Control | Effect |
+| --- | --- |
+| Add a DAG node | Save its title, kind, dependencies, acceptance criteria and read/write scope |
+| Edit a pending node | Replace its title, dependencies and acceptance criteria |
+| Retry a failed node | Return it to pending; the agent still checks whether retrying external work is authorized |
+| Pause/resume a Goal | Stop/allow new dispatch |
+| Cancel a Goal | Mark unfinished nodes cancelled; preserve completed results |
+| Cancel a Wait / Loop | Stop the waiting program / prevent future loop iterations |
 
-## Multiple sessions
+Goal pause/cancellation does not terminate running agents or external jobs. Page controls update saved state; send a chat message when you need immediate agent action.
 
-- HTTP state, SSE and actions use the session in the URL. Switch explicitly between Current session and All sessions.
-- One OS user shares one waitd. Session scope is a filter, not an authentication boundary.
-- Separate state files keep tasks independent. Sharing a file shares control; locks prevent partial writes, not conflicting intent.
-- Goal/Loop state commands are serialized by mode. Watcher programs run concurrently and retain their target session.
+## How the agent and page cooperate
 
-## Remote access
+- Use normal Wait/Loop/Goal commands. waitd derives the page; agents do not write HTML, maintain page summaries or perform extra acknowledgements.
+- CLI and page controls share task state and command queues. Reread before dispatch and respect user edits, pause and cancellation.
+- SSE pushes changes without model polling or starting new model turns.
+- HTTP state, SSE and actions use the URL's session. One OS user shares a default waitd; session scope is a filter, not an authentication boundary. Separate state files isolate tasks; shared files share control.
+- Goal/Loop commands are serialized by mode; watcher programs run concurrently and deliver to their owning session.
 
-Assets are bundled and the server binds 127.0.0.1. No hosting or native Codex Goal integration is required.
+For deliberate manual continuation, use `start -- --session ID --no-notify ...` or `loop -- init --session ID --no-notify ...`. These retain session visibility and disable automatic resume turns. Block on `waitctl follow ID --timeout SECONDS`, then continue the mode's normal event handling, including Loop `begin`/`complete`.
+
+## App preview and remote access
+
+The server binds `127.0.0.1`. App preview or SSH forwarding may map it to another loopback hostname and port. Keep all original query parameters, including session, mode, focus, node and view.
+
+For a known mapped address:
 
 ```sh
-ssh -L PORT:127.0.0.1:PORT HOST
+python /path/to/wait/src/waitctl.py dashboard --session "$AGENT_SESSION_ID" --base-url http://localhost:63671
 ```
 
-Open the full returned URL locally, preserving the session query. Use the same port on both ends and 127.0.0.1 for Host/Origin checks. There is no multi-user authentication.
+`--base-url` changes the printed URL only; it preserves the query and does not create forwarding or reconfigure waitd.
+
+For SSH, local and remote ports may differ. This forwards local port 63671 to the remote dashboard's port 35857:
+
+```sh
+ssh -N -L 127.0.0.1:63671:127.0.0.1:35857 HOST
+```
+
+Then open `http://localhost:63671/` with the original query, or generate the scoped URL with `--base-url` above.
+
+- Use HTTP with `localhost`, `127.0.0.1` or `[::1]`; explicit ports must be 1–65535.
+- When `Origin` is present, its scheme, hostname and effective port must match the request URL.
+- There is no multi-user authentication; keep forwarding listeners on loopback.
+
+## Updating a running installation
+
+Keep active waitd running when repairing preview access. A version mismatch leaves it untouched: use its matching installation until active watchers finish, then follow the [service lifecycle](waitd.md#service-lifecycle) to switch versions.

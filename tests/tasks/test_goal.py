@@ -3,7 +3,6 @@ from __future__ import annotations
 import copy
 import json
 import os
-import sys
 import tempfile
 import time
 import unittest
@@ -15,11 +14,8 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
-import goal
-import runtime
-
-SCRIPT = Path(__file__).parents[1] / "src" / "goal.py"
+from wait import runtime
+from wait.tasks import goal
 
 
 class WaitGoalTest(unittest.TestCase):

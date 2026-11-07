@@ -2,7 +2,7 @@
 
 [English](clients.md)
 
-`waitd` 只文档化两种投递方式。两者都绑定所属对话的准确会话 ID，并投递由服务生成的恢复指令；指令包含日志路径、event ID 和 Agent 编写的 `event_note`。
+`waitd` 文档化两种投递方式，都绑定所属对话的准确会话 ID。恢复消息展示事件 ID 前 8 位和 Agent 编写的完整 `event_note`；通过 `waitctl show SHORT_ID` 读取完整 ID、日志路径和模式状态。
 
 | 客户端 | 投递方式 | 调用 |
 | --- | --- | --- |
@@ -38,7 +38,13 @@ Codex Desktop 创建的 `~/.codex/ipc/ipc.sock` 不是 app-server 端点，服�
 
 ### 投递与恢复
 
-`waitd` 运行 `src/codex.py`，连接原端点和原会话 ID：先初始化 JSON-RPC 连接、读取线程运行状态，仅在线程未加载时执行 `thread/resume`，再通过 `turn/start` 发送 `$wait resume ...`、`$wait goal resume ...` 或 `$wait loop resume ...`。保持原会话的模型、工作目录、指令、沙箱和审批设置；不启动第二个 Codex 执行器，也不依赖桌面客户端消费队列。
+`waitd` 通过 `src/worker.py codex` 连接所属端点和准确的会话 ID。适配器依次：
+
+1. 初始化 JSON-RPC，读取线程运行状态。
+2. 仅在线程未加载时调用 `thread/resume`。
+3. 用生成的 `$wait [goal|loop] resume ...` 指令调用 `turn/start`。
+
+原模型、工作目录、指令、沙箱和审批设置随会话保留。事件直接投递给该 app-server，不启动第二个 Codex 执行器，也不依赖 Desktop 消费队列。
 
 - `notification: started` 表示 `turn/start` 已返回真实 turn ID，记录在 helper 的 JSON stdout 中。启动执行不代表业务成功，Root 仍须核对事件与结果。
 - 会话活跃时返回 `busy`，不主动 steer 正在进行的轮次；服务有界延迟重试。状态读取与 `turn/start` 之间存在竞争窗口，线程在窗口内变为活跃时仍可能接收该输入。
