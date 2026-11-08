@@ -1,30 +1,28 @@
+import {activityId, activityWorkspace, relationNodes, watchState} from "./activity-model.mjs";
+import {createGraphViewport} from "./graph-viewport.mjs";
+import {createStatusHelp} from "./status-help.mjs";
+import {createSessionPicker} from "./session-picker.mjs";
 import {createAppearance} from "./appearance.mjs";
 import {layoutGraph} from "./graph-layout.mjs";
-import {nodeRows, nodeState, nodeTimings} from "./task-model.mjs";
+import {durationRanges, nextSort, nodeRows, nodeState, nodeTimings, orderRows} from "./task-model.mjs";
 
 const $ = id => document.getElementById(id);
 const scope = new URLSearchParams(location.search);
 const scopeQuery = "?" + scope.toString();
-const allSessions = scope.get("all") === "1";
-$("scopeLabel").dataset.i18n = allSessions ? "scope.all" : "scope.current";
-if (scope.get("session")) $("scopeLabel").title = scope.get("session");
-else $("scopeLabel").dataset.i18nTitle = "scope.openHint";
-$("scopeSwitch").dataset.i18n = allSessions ? "scope.current" : "scope.all";
-const otherScope = new URLSearchParams(scope);
-if (allSessions) otherScope.delete("all"); else otherScope.set("all", "1");
-$("scopeSwitch").href = "/?" + otherScope.toString();
-$("scopeSwitch").hidden = allSessions && !scope.get("session");
 let tasks = {goals: [], watches: [], loops: [], linked_watches: []};
-let mode = scope.get("mode") || "session";
+let mode = ["wait", "loop", "goal"].includes(scope.get("mode")) ? scope.get("mode") : "wait";
 const focus = scope.get("focus") || "";
 let focusPending = !!focus;
 
 let selected = mode === "goal" ? focus : "";
-let nodeId = scope.get("node") || "";
+let nodeId = mode === "goal" ? scope.get("node") || "" : focus ? activityId(mode, focus) : "";
 let taskView = scope.get("view") === "graph" ? "graph" : "list";
-let graphZoom = 1;
+let sort = null;
 
-const { t, formatTime, translate } = createAppearance(() => render());
+const { t, formatTime, formatDuration, translate } = createAppearance(() => render());
+const help = createStatusHelp($("statusHelp"));
+const viewport = createGraphViewport($("graph"), $("graphTools"), help.hide);
+const sessionPicker = createSessionPicker(scope, t, () => ({mode, view: taskView}));
 
 function element(tag, text, className) {
   const node = document.createElement(tag);
@@ -46,8 +44,8 @@ const colors = {
   cancelled: "var(--status-failed)"
 };
 
-function currentGoal() {
-  return tasks.goals.find(goal => goal.path === selected);
+function currentWorkspace() {
+  return mode === "goal" ? tasks.goals.find(goal => goal.path === selected) : activityWorkspace(tasks, mode);
 }
 
 function splitValues(value, separator) {
@@ -116,82 +114,17 @@ async function cancelTask(task, kind) {
     : {mode: "loop", path: task.path});
 }
 
-function renderTaskList(collection, kind, list) {
-  if (!collection.length) {
-    const empty = element("div", undefined, "card empty");
-    empty.append(element("h2", t(kind === "wait" ? "empty.wait" : "empty.loop")));
-    list.replaceChildren(empty);
-    return;
-  }
-  list.replaceChildren(...collection.map(task => {
-    const identity = kind === "wait" ? task.watch_id : task.path;
-    const card = element("article", undefined, "card task-card" + (identity === focus ? " focused" : ""));
-    if (identity === focus) card.id = "focusedTask";
-    if (task.error) {
-      card.append(element("p", task.error));
-      return card;
-    }
-    const state = kind === "wait" ? task.state : task.status;
-    const heading = element("div", undefined, "task-heading");
-    heading.append(element("h3", kind === "wait" ? task.label : task.task),
-      statusBadge(state));
-    if (state === "active") {
-      const cancel = element("button", t("common.cancel"), "danger");
-      cancel.onclick = () => cancelTask(task, kind);
-      heading.append(cancel);
-    }
-    card.append(heading);
-    const meta = element("div", undefined, "task-meta");
-    if (kind === "loop") {
-      let phase = t(`state.${state}`);
-      if (task.phase === "waiting") phase = t("field.next", {value: formatTime(task.next_run_at)});
-      else if (task.phase === "running") phase = t("state.running");
-      meta.append(
-        element("span", t("field.iteration", {value: task.iteration + (task.max_iterations ? " / " + task.max_iterations : "")})),
-        element("span", t("field.interval", {value: task.interval_seconds})),
-        element("span", phase)
-      );
-    } else {
-      meta.append(element("span", task.watch_id.slice(0, 8)),
-        element("span", t("field.query", {value: task.query_status || "—"})),
-        element("span", t("field.notification", {value: task.result?.notification || task.notification_channel?.status || "—"})));
-    }
-    meta.append(element("span", t("field.deadline", {value: formatTime(task.deadline_at)})));
-    if (allSessions) meta.append(element("span", t("field.session", {value: task.session})));
-    card.append(meta);
-    if (task.event_note) {
-      card.append(element("p", t("field.triggered", {value: task.event_note}), "task-note"));
-    }
-    const more = element("details");
-    more.append(element("summary", t("common.details")));
-    const details = kind === "wait"
-      ? {result: task.result, log_file: task.log_file}
-      : {path: task.path, goal: task.goal, runs: task.runs, events: task.events};
-    more.append(element("pre", JSON.stringify(details, null, 2)));
-    card.append(more);
-    return card;
-  }));
-}
-
 function renderSummary() {
   const validGoals = tasks.goals.filter(goal => !goal.error);
+  const watches = [...tasks.watches, ...tasks.linked_watches];
   const running = validGoals.some(goal => Object.values(goal.nodes).some(node => ["running", "dispatching"].includes(node.status))) ||
-    tasks.loops.some(loop => loop.status === "active" && loop.phase === "running");
+    tasks.loops.some(loop => loop.status === "active" && loop.phase === "running") || watches.some(watch => watchState(watch) === "running");
   const ready = validGoals.some(goal => goal.status === "open" && goal.activity === "ready");
-  const waiting = tasks.watches.filter(watch => watch.state === "active").length +
-    tasks.linked_watches.filter(watch => {
-      if (watch.state !== "active") return false;
-      if (watch.owner.mode === "goal") {
-        const goal = validGoals.find(goal => goal.path === watch.owner.path);
-        return goal?.status === "open" && goal.nodes[watch.owner.node]?.wait?.watch_id === watch.watch_id;
-      }
-      const loop = tasks.loops.find(loop => loop.path === watch.owner.path);
-      return loop?.status === "active" && loop.watch_id === watch.watch_id;
-    }).length;
+  const waiting = watches.filter(watch => watch.state === "active").length;
   const paused = validGoals.some(goal => goal.status === "paused");
   const verification = validGoals.some(goal => goal.status === "open" && goal.activity === "awaiting_verification");
   const failed = validGoals.some(goal => Object.values(goal.nodes).some(node => node.status === "failed")) ||
-    tasks.watches.some(watch => watch.state === "failed");
+    watches.some(watch => watch.error || watch.state === "failed") || tasks.loops.some(loop => loop.error);
   const statuses = [
     [failed, "status.attention"],
     [paused, "status.paused"],
@@ -199,13 +132,13 @@ function renderSummary() {
     [waiting, "status.waiting"],
     [verification, "status.verification"],
     [ready, "status.ready"],
-    [validGoals.length || tasks.watches.length || tasks.loops.length, "status.idle"],
+    [validGoals.length || watches.length || tasks.loops.length, "status.idle"],
     [true, "status.start"]
   ];
   const guidance = [
+    [failed, "guide.failed"],
     [paused, "guide.paused"],
     [waiting, "guide.waiting", {count: waiting}],
-    [failed, "guide.failed"],
     [verification, "guide.verification"],
     [running || ready, "guide.progress"],
     [true, "guide.idle"]
@@ -215,84 +148,31 @@ function renderSummary() {
   $("sessionNext").textContent = t(key, values);
 }
 
-function renderIndependent() {
-  const root = $("independentTasks");
-  root.replaceChildren();
-  root.hidden = mode !== "session";
-  if (root.hidden) return;
-  const finishedGoals = tasks.goals.filter(goal => ["completed", "cancelled"].includes(goal.status));
-  if (finishedGoals.length) {
-    const history = element("details", undefined, "task-history");
-    history.append(element("summary", t("history.goals", {count: finishedGoals.length})));
-    for (const goal of finishedGoals) {
-      const button = element("button", goal.objective);
-      button.onclick = () => { selected = goal.path; nodeId = ""; mode = "goal"; render(); };
-      history.append(button);
-    }
-    root.append(history);
-  }
-  const independent = [
-    ["wait", tasks.watches],
-    ["loop", tasks.loops.filter(loop => !loop.goal)]
-  ];
-  for (const [kind, collection] of independent) {
-    const past = [];
-    const active = [];
-    for (const task of collection) {
-      const status = kind === "wait" ? task.state : task.status;
-      (task.error || status !== "active" ? past : active).push(task);
-    }
-    if (active.length) {
-      root.append(element("h3", t(kind === "wait" ? "section.independentWaits" : "section.independentLoops"), "context-heading"));
-      const list = element("div");
-      renderTaskList(active, kind, list);
-      root.append(list);
-    }
-    if (past.length) {
-      const history = element("details", undefined, "task-history");
-      history.append(element("summary", t(kind === "wait" ? "history.waits" : "history.loops", {count: past.length})));
-      const list = element("div");
-      renderTaskList(past, kind, list);
-      history.append(list);
-      root.append(history);
-    }
-  }
-}
-
 function render() {
+  help.hide();
+  sessionPicker.render();
   renderSummary();
-  renderIndependent();
-  const counts = {session: tasks.goals.filter(goal => goal.status === "open").length +
-    tasks.watches.filter(task => task.state === "active").length +
-    tasks.loops.filter(task => task.status === "active" && !task.goal).length,
-    goal: tasks.goals.length, wait: tasks.watches.length, loop: tasks.loops.length};
+  const counts = {goal: tasks.goals.length, wait: tasks.watches.length + tasks.linked_watches.length, loop: tasks.loops.length};
   for (const button of $("modes").querySelectorAll("button")) {
     const kind = button.dataset.mode;
     button.textContent = `${t(`mode.${kind}`)} · ${counts[kind]}`;
     button.setAttribute("aria-selected", kind === mode);
   }
-  const showingGoal = ["session", "goal"].includes(mode);
-  $("goalToolbar").hidden = !showingGoal || !tasks.goals.length;
-  $("taskList").hidden = showingGoal;
-  if (!showingGoal) {
-    $("empty").hidden = true;
-    $("content").hidden = true;
-    renderTaskList(mode === "wait" ? tasks.watches : tasks.loops, mode, $("taskList"));
-    return;
+  if (mode === "goal") {
+    if (!currentWorkspace()) selected = (tasks.goals.find(goal => goal.status === "open") || tasks.goals[0])?.path || "";
+    $("goals").replaceChildren(...tasks.goals.map(goal => {
+      const option = element("option", goal.objective?.trim().split(/[;；\n]/)[0] || goal.objective || goal.path);
+      option.value = goal.path;
+      return option;
+    }));
+    $("goals").value = selected;
   }
-  if (!currentGoal()) selected = (tasks.goals.find(goal => goal.status === "open") || tasks.goals[0])?.path || "";
-  $("goals").replaceChildren(...tasks.goals.map(goal => {
-    const option = element("option", goal.objective?.trim().split(/[;；\n]/)[0] || goal.objective || goal.path);
-    option.value = goal.path;
-    return option;
-  }));
-  $("goals").value = selected;
 
-  const goal = currentGoal();
-  const historical = mode === "session" && goal && ["completed", "cancelled"].includes(goal.status);
-  $("empty").hidden = !!goal || mode === "session";
-  $("content").hidden = !goal || historical;
-  $("goalToolbar").hidden = historical || !goal;
+  const goal = currentWorkspace();
+  $("empty").hidden = !!goal;
+  $("content").hidden = !goal;
+  $("goalToolbar").hidden = mode !== "goal" || !goal;
+  $("events").parentElement.hidden = mode !== "goal";
   for (const action of ["pause", "resume", "cancel"]) $(action).disabled = !goal;
   if (!goal) return;
   if (goal.error) {
@@ -301,9 +181,12 @@ function render() {
     return;
   }
 
-  $("objective").textContent = goal.objective.trim().split(/[;；\n]/)[0] || goal.objective;
-  $("objective").title = goal.objective;
-  $("goalDescription").textContent = goal.objective;
+  const objective = mode === "goal" ? goal.objective : t(`mode.${mode}`);
+  $("objective").textContent = objective.trim().split(/[;；\n]/)[0] || objective;
+  $("objective").title = objective;
+  $("goalDescription").textContent = objective;
+  $("goalDescription").parentElement.hidden = mode !== "goal";
+  $("progress").parentElement.hidden = mode !== "goal";
   const available = {
     pause: goal.status === "open",
     resume: goal.status === "paused",
@@ -313,12 +196,13 @@ function render() {
     $(action).hidden = !enabled;
     $(action).disabled = !enabled;
   }
+  $("add").hidden = mode !== "goal";
   $("add").disabled = goal.status !== "open";
 
-  const nodes = Object.values(goal.nodes);
+  const nodes = Object.values(goal.nodes).filter(node => !node.context);
   const completed = nodes.filter(node => node.status === "completed").length;
   $("stats").replaceChildren(
-    statusBadge(goal.status),
+    ...(mode === "goal" ? [statusBadge(goal.status, "goal")] : []),
     element("span", t("field.completeCount", {done: completed, total: nodes.length}))
   );
   $("progress").style.width = (nodes.length ? completed / nodes.length * 100 : 0) + "%";
@@ -327,26 +211,37 @@ function render() {
   const details = $("details");
   const editor = details.querySelector("form");
   const node = goal.nodes[nodeId];
-  const editable = node?.status === "pending" && goal.status === "open";
+  const editable = mode === "goal" && node?.status === "pending" && goal.status === "open";
   const sameTask = editor?.dataset.node === nodeId && editor?.dataset.goal === goal.path;
   if (!editable || !sameTask || !editor.contains(document.activeElement)) {
     renderDetails(goal, editable && sameTask ? editor : null, timings);
   } else {
     details.querySelector("h3").textContent = node.title;
-    details.querySelector(".badge").replaceWith(statusBadge(nodeState(goal, node)));
+    details.querySelector(".badge").replaceWith(nodeBadge(goal, node));
     details.querySelector(".node-timeline").replaceWith(nodeTimeline(timings.get(nodeId)));
   }
   renderEvents(goal.events);
 }
 
-function statusBadge(state) {
+function statusMeaning(state, kind = mode === "goal" ? "node" : mode) {
+  return t(`help.${kind}.${state}`, {}, t(`help.${state}`));
+}
+
+function statusBadge(state, kind = "node") {
   const badge = element("span", t(`state.${state}`), "badge");
   badge.dataset.state = state;
+  help.attach(badge, statusMeaning(state, kind));
+  badge.tabIndex = 0;
   return badge;
+}
+
+function nodeBadge(goal, node, state = nodeState(goal, node)) {
+  return statusBadge(state, node.taskKind === "goal" ? "node" : node.taskKind || "node");
 }
 
 function taskContext(goal, node) {
   const state = nodeState(goal, node);
+  if (node.taskKind) return node.summary || node.depends_on.map(id => goal.nodes[id].title).join(t("list.separator")) || t("workspace.noDependencies");
   if (state === "ready") return t("workspace.ready");
   if (state === "blocked") {
     return t("workspace.blocked", {count: node.depends_on.filter(id => goal.nodes[id].status !== "completed").length});
@@ -369,16 +264,42 @@ function timeElement(date, options) {
   return time;
 }
 
-function timeCell(date) {
+function elapsedElement(range) {
+  const span = element("span", "—", "elapsed");
+  if (range) {
+    span.dataset.elapsedStart = +range.start;
+    if (range.end) span.dataset.elapsedEnd = +range.end;
+    span.textContent = formatDuration((range.end || Date.now()) - range.start);
+  }
+  return span;
+}
+
+function phaseDuration(timing) {
+  const {total, phase} = durationRanges(timing);
+  if (["pending", "dispatching"].includes(timing.status) && !phase) return element("span", t("duration.pending"));
+  const span = element("span", undefined, "phase-duration");
+  span.title = t(phase ? `duration.${timing.status}` : "duration.total");
+  span.append(elapsedElement(phase || total));
+  return span;
+}
+
+function timeCell(timing) {
   const cell = element("span", undefined, "node-time");
-  cell.append(element("span", t("time.updated"), "time-caption"),
-    timeElement(date, {hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23"}));
-  if (date) cell.append(element("span", formatTime(date, {month: "short", day: "numeric"}), "time-date"));
+  cell.append(element("span", t("duration.title"), "time-caption"), phaseDuration(timing));
   return cell;
 }
 
 function nodeTimeline(timing) {
   const timeline = element("dl", undefined, "node-timeline");
+  const ranges = durationRanges(timing);
+  for (const key of ["phase", "total"]) {
+    if (!ranges[key]) continue;
+    const value = element("dd");
+    value.dataset.field = key;
+    value.append(elapsedElement(ranges[key]));
+    const label = key === "phase" ? t(`duration.${timing.status}`) : t("duration.total");
+    timeline.append(element("dt", label), value);
+  }
   for (const key of ["created", "started", "waiting", "finished", "updated"]) {
     if (!timing[key] && key !== "updated") continue;
     const value = element("dd");
@@ -395,7 +316,7 @@ function showNode(id) {
   const hadFocus = document.activeElement?.dataset.node === id;
   const editor = id === nodeId ? $("details").querySelector("form") : null;
   nodeId = id;
-  const goal = currentGoal();
+  const goal = currentWorkspace();
   const timings = nodeTimings(goal);
   renderWorkspace(goal, timings);
   renderDetails(goal, editor, timings);
@@ -410,25 +331,52 @@ function showNode(id) {
 }
 
 function renderWorkspace(goal, timings = nodeTimings(goal)) {
+  const firstMetric = $("nodeMetrics").querySelector("button");
+  firstMetric.dataset.state = mode === "goal" ? "ready" : "failed";
+  translate(firstMetric.querySelector(".metric-label span"), `state.${firstMetric.dataset.state}`);
+  firstMetric.querySelector("i").className = "dot " + firstMetric.dataset.state;
+  const graphTitle = mode === "goal" ? "graph.title" : "graph.relations";
+  translate($("nodeViews").querySelector('[data-view="graph"]'), graphTitle);
+  $("relationsHint").hidden = mode === "goal" || taskView !== "graph";
   const rows = nodeRows(goal);
   if (!Object.hasOwn(goal.nodes, nodeId)) nodeId = rows[0]?.id || "";
   const counts = {};
   for (const {state} of rows) counts[state] = (counts[state] || 0) + 1;
   const filter = $("nodeFilter").value;
   const search = $("nodeSearch").value.trim().toLowerCase();
-  const matching = rows.filter(({id, node, state}) =>
+  const matching = orderRows(rows.filter(({id, node, state}) =>
     (filter === "all" || state === filter) &&
-    `${id} ${node.title}`.toLowerCase().includes(search));
+    `${id} ${node.title}`.toLowerCase().includes(search)), timings, sort);
+  $("filterControl").dataset.active = filter !== "all";
+  for (const label of $("graphFooter").querySelectorAll(".legend > span")) {
+    help.attach(label, statusMeaning(label.dataset.state));
+    label.tabIndex = 0;
+  }
+  for (const button of $("nodeColumns").querySelectorAll("[data-sort]")) {
+    const direction = sort?.key === button.dataset.sort ? sort.direction : null;
+    button.setAttribute("aria-pressed", direction !== null);
+    const next = direction === "desc" ? "asc" : direction === "asc" ? "default" : "desc";
+    const column = t(button.dataset.sort === "duration" ? "duration.title" : "time.updated");
+    button.setAttribute("aria-label", t(`sort.${next}`, {column}));
+    button.querySelector("[data-sort-direction]").textContent = direction === "desc" ? "↓" : direction === "asc" ? "↑" : "↕";
+  }
+  const filterParent = taskView === "graph" ? $("graphFilter") : $("nodeColumns");
+  if ($("statusColumn").parentElement !== filterParent) {
+    if (taskView === "graph") filterParent.append($("statusColumn"));
+    else filterParent.insertBefore($("statusColumn"), $("durationColumn"));
+  }
   for (const option of $("nodeFilter").options) {
     const state = option.value;
     const label = t(state === "all" ? "workspace.all" : `state.${state}`);
     const count = counts[state] || 0;
     option.textContent = state === "all" ? label : `${label} · ${count}`;
+    if (state !== "all") option.title = statusMeaning(state);
   }
   $("nodeCount").textContent = t("workspace.count", {shown: matching.length, total: rows.length});
   for (const button of $("nodeMetrics").querySelectorAll("button")) {
     button.querySelector("strong").textContent = counts[button.dataset.state] || 0;
     button.setAttribute("aria-pressed", filter === button.dataset.state);
+    help.attach(button, statusMeaning(button.dataset.state));
   }
   for (const button of $("nodeViews").querySelectorAll("button")) {
     button.setAttribute("aria-pressed", button.dataset.view === taskView);
@@ -436,38 +384,42 @@ function renderWorkspace(goal, timings = nodeTimings(goal)) {
   $("nodeList").hidden = taskView !== "list";
   $("graph").hidden = taskView !== "graph";
   $("graphFooter").hidden = taskView !== "graph";
+  $("graphTools").hidden = taskView !== "graph";
   if (taskView === "graph") {
-    draw(goal, new Set(matching.map(({id}) => id)));
+    const selected = new Set(matching.map(({id}) => id));
+    draw(mode === "goal" ? goal : {...goal, nodes: relationNodes(goal.nodes, selected)}, selected, timings);
     return;
   }
   if (!matching.length) {
     const empty = element("div", undefined, "empty");
     empty.append(
-      element("h3", t(rows.length ? "workspace.empty" : "workspace.emptyGoal")),
-      element("p", t(rows.length ? "workspace.emptyHint" : "workspace.addFirst"), "muted")
+      element("h3", t(rows.length ? "workspace.empty" : mode === "goal" ? "workspace.emptyGoal" : `empty.${mode}`)),
+      element("p", t(rows.length ? "workspace.emptyHint" : mode === "goal" ? "workspace.addFirst" : "activity.emptyHint"), "muted")
     );
-    $("nodeList").replaceChildren(empty);
+    $("nodeRows").replaceChildren(empty);
     return;
   }
-  const columns = element("div", undefined, "node-columns");
-  columns.setAttribute("aria-hidden", "true");
-  columns.append(...["workspace.task", "workspace.state", "workspace.context", "time.updated"].map(key => element("span", t(key))));
-  $("nodeList").replaceChildren(columns, ...matching.map(({id, node, state}) => {
+  $("nodeRows").replaceChildren(...matching.map(({id, node, state}) => {
     const button = element("button", undefined, "node-row");
     button.dataset.node = id;
+    if (id === nodeId) button.id = "focusedTask";
     button.title = node.title;
     button.setAttribute("aria-pressed", id === nodeId);
     const name = element("span", undefined, "node-name");
-    name.append(element("strong", node.title), element("code", id));
+    name.append(element("strong", node.title), element("code", node.shortId || id));
     const status = element("span");
-    status.append(statusBadge(state));
-    button.append(name, status, element("span", taskContext(goal, node), "node-reason"), timeCell(timings.get(id).updated));
+    status.append(nodeBadge(goal, node, state));
+    const updated = element("span", undefined, "node-updated");
+    updated.append(timeElement(timings.get(id).updated, {
+      month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23"
+    }));
+    button.append(name, element("span", taskContext(goal, node), "node-reason"), status, timeCell(timings.get(id)), updated);
     button.onclick = () => showNode(id);
     return button;
   }));
 }
 
-function draw(goal, matching) {
+function draw(goal, matching, timings) {
   const {positions, edges, width, height} = layoutGraph(goal.nodes);
   const svg = svgElement("svg", {viewBox: `0 0 ${width} ${height}`, width, height, "aria-label": t("graph.title")});
   const definitions = svgElement("defs", {});
@@ -491,7 +443,7 @@ function draw(goal, matching) {
     const group = svgElement("g", {
       transform: `translate(${position.x},${position.y})`, tabindex: 0, role: "button",
       "aria-label": node.title, "aria-pressed": selectedNode, "data-node": id,
-      opacity: matching.has(id) ? 1 : .23
+      opacity: matching.has(id) || node.context ? 1 : .23
     });
     group.append(
       svgElement("rect", {width: 280, height: 114, rx: 10,
@@ -501,7 +453,9 @@ function draw(goal, matching) {
     );
     const content = svgElement("foreignObject", {x: 16, y: 11, width: 249, height: 98});
     const box = element("div", undefined, "graph-node");
-    box.append(element("strong", node.title), element("code", id), statusBadge(nodeState(goal, node)));
+    const meta = element("div", undefined, "graph-node-meta");
+    meta.append(nodeBadge(goal, node), phaseDuration(timings.get(id)));
+    box.append(element("strong", node.title), element("code", node.shortId || id), meta);
     content.append(box);
     const tooltip = svgElement("title", {});
     tooltip.textContent = node.title;
@@ -512,17 +466,7 @@ function draw(goal, matching) {
     };
     svg.append(group);
   }
-  $("graph").replaceChildren(svg);
-  applyZoom();
-}
-
-function applyZoom() {
-  const svg = $("graph").querySelector("svg");
-  if (!svg) return;
-  const bounds = svg.viewBox.baseVal;
-  svg.style.width = bounds.width * graphZoom + "px";
-  svg.style.height = bounds.height * graphZoom + "px";
-  $("zoomLevel").textContent = Math.round(graphZoom * 100) + "%";
+  viewport.render(svg);
 }
 
 function editForm(node) {
@@ -556,6 +500,70 @@ function editForm(node) {
   return form;
 }
 
+function openTask(nextMode, identity = "", nextNode = "") {
+  if (mode !== nextMode) sort = null;
+  mode = nextMode;
+  if (mode === "goal" && identity) selected = identity;
+  nodeId = mode === "goal" ? nextNode : identity ? activityId(mode, identity) : "";
+  $("nodeSearch").value = "";
+  $("nodeFilter").value = "all";
+  viewport.reset();
+  render();
+}
+
+function openOrigin(origin) {
+  const available = origin.mode === "goal" ? tasks.goals.some(goal => goal.path === origin.path)
+    : origin.mode === "loop" ? tasks.loops.some(loop => loop.path === origin.path)
+    : [...tasks.watches, ...tasks.linked_watches].some(watch => watch.watch_id === origin.watch_id);
+  if (!available) { showError(t("activity.parentUnavailable")); return; }
+  openTask(origin.mode, origin.watch_id || origin.path, origin.node);
+}
+
+function renderActivityDetails(workspace, node, box) {
+  if (node.context) {
+    const open = element("button", t("activity.open", {kind: t(`mode.${node.taskKind}`)}));
+    open.onclick = () => openOrigin(node.origin);
+    box.append(open);
+  }
+  if (node.summary) box.append(element("h4", t("workspace.context")), element("p", node.summary, "task-note"));
+  const related = [...node.depends_on, ...Object.keys(workspace.nodes).filter(id => workspace.nodes[id].depends_on.includes(nodeId))];
+  if (related.length) {
+    box.append(element("h4", t("activity.related")));
+    const links = element("div", undefined, "node-dependencies");
+    for (const id of related) {
+      const button = element("button", workspace.nodes[id].title);
+      button.onclick = () => showNode(id);
+      links.append(button);
+    }
+    box.append(links);
+  }
+  const task = node.task;
+  if (!task || task.error) return;
+  if (task.owner) box.append(element("p", t("activity.managed"), "muted"));
+  const meta = element("div", undefined, "task-meta");
+  meta.append(element("span", t("field.deadline", {value: formatTime(task.deadline_at)})));
+  if (node.taskKind === "wait") {
+    meta.append(element("span", t("field.query", {value: task.query_status || "—"})),
+      element("span", t("field.notification", {value: task.result?.notification || task.notification_channel?.status || "—"})));
+  } else {
+    meta.append(element("span", t("field.iteration", {value: task.iteration + (task.max_iterations ? " / " + task.max_iterations : "")})),
+      element("span", t("field.interval", {value: task.interval_seconds})));
+    if (task.next_run_at) meta.append(element("span", t("field.next", {value: formatTime(task.next_run_at)})));
+  }
+  box.append(meta);
+  const cancellable = !node.context && (node.taskKind === "loop" ? task.status === "active" : task.state === "active" && !task.owner);
+  if (cancellable) {
+    const cancel = element("button", t("common.cancel"), "danger");
+    cancel.onclick = () => cancelTask(task, node.taskKind);
+    box.append(cancel);
+  }
+  const more = element("details");
+  const detail = node.taskKind === "wait" ? {result: task.result, log_file: task.log_file}
+    : {path: task.path, goal: task.goal, runs: task.runs, events: task.events};
+  more.append(element("summary", t("common.details")), element("pre", JSON.stringify(detail, null, 2)));
+  box.append(more);
+}
+
 function renderDetails(goal, editor = null, timings = nodeTimings(goal)) {
   const box = $("details");
   const editing = editor?.parentElement?.open || false;
@@ -566,13 +574,14 @@ function renderDetails(goal, editor = null, timings = nodeTimings(goal)) {
     box.append(element("p", t("field.selectNode"), "muted"));
     return;
   }
-  const kind = t(`field.nodeKind.${node.kind}`);
+  const kind = node.taskKind ? t(`mode.${node.taskKind}`) : t(`field.nodeKind.${node.kind}`);
   box.append(
-    statusBadge(nodeState(goal, node)),
+    nodeBadge(goal, node),
     element("h3", node.title),
-    element("p", nodeId + " · " + kind, "muted")
+    element("p", (node.shortId || nodeId) + " · " + kind, "muted")
   );
   box.append(nodeTimeline(timings.get(nodeId)));
+  if (node.taskKind) { renderActivityDetails(goal, node, box); return; }
   const dependencies = element("div", undefined, "node-dependencies");
   if (node.depends_on.length) {
     for (const id of node.depends_on) {
@@ -629,14 +638,7 @@ function renderDetails(goal, editor = null, timings = nodeTimings(goal)) {
   }
 }
 
-$("goals").onchange = event => {
-  selected = event.target.value;
-  nodeId = "";
-  $("nodeSearch").value = "";
-  $("nodeFilter").value = "all";
-  graphZoom = 1;
-  render();
-};
+$("goals").onchange = event => openTask("goal", event.target.value);
 $("pause").onclick = () => act("pause");
 $("resume").onclick = () => act("resume");
 $("cancel").onclick = () => {
@@ -661,30 +663,54 @@ $("addForm").onsubmit = async event => {
 
 $("modes").onclick = event => {
   const button = event.target.closest("button[data-mode]");
-  if (button) { mode = button.dataset.mode; render(); }
+  if (button && mode !== button.dataset.mode) openTask(button.dataset.mode);
 };
 
-$("nodeSearch").oninput = () => renderWorkspace(currentGoal());
+function applyFilter() {
+  if (mode !== "goal" && taskView === "graph") viewport.reset();
+  renderWorkspace(currentWorkspace());
+}
+$("nodeSearch").oninput = applyFilter;
 $("nodeMetrics").onclick = event => {
   const button = event.target.closest("button[data-state]");
   if (!button) return;
   const filter = $("nodeFilter");
   filter.value = filter.value === button.dataset.state ? "all" : button.dataset.state;
-  renderWorkspace(currentGoal());
+  applyFilter();
 };
-$("nodeFilter").onchange = () => renderWorkspace(currentGoal());
+$("nodeFilter").onchange = applyFilter;
+$("nodeColumns").onclick = event => {
+  const button = event.target.closest("[data-sort]");
+  if (!button) return;
+  sort = nextSort(sort, button.dataset.sort);
+  renderWorkspace(currentWorkspace());
+};
 $("nodeViews").onclick = event => {
   const button = event.target.closest("button[data-view]");
-  if (button) { taskView = button.dataset.view; renderWorkspace(currentGoal()); }
+  if (button) { taskView = button.dataset.view; renderWorkspace(currentWorkspace()); }
 };
-$("zoomIn").onclick = () => { graphZoom = Math.min(2, graphZoom * 1.2); applyZoom(); };
-$("zoomOut").onclick = () => { graphZoom = Math.max(.15, graphZoom / 1.2); applyZoom(); };
-$("fitGraph").onclick = () => {
-  const bounds = $("graph").querySelector("svg").viewBox.baseVal;
-  graphZoom = Math.min(1, ($("graph").clientWidth - 16) / bounds.width, ($("graph").clientHeight - 16) / bounds.height);
-  applyZoom();
-  $("graph").scrollTo(0, 0);
-};
+function refreshDurations() {
+  if (document.hidden) return;
+  const now = Date.now();
+  document.querySelectorAll("[data-elapsed-start]:not([data-elapsed-end])").forEach(node => {
+    node.textContent = formatDuration(now - Number(node.dataset.elapsedStart));
+  });
+  if (sort?.key === "duration" && taskView === "list" && !$("content").hidden) {
+    const goal = currentWorkspace();
+    if (!goal || goal.error) return;
+    const root = $("nodeRows");
+    const visible = new Map([...root.querySelectorAll(".node-row")].map(row => [row.dataset.node, row]));
+    const ordered = orderRows(nodeRows(goal).filter(row => visible.has(row.id)), nodeTimings(goal), sort, now);
+    const focused = document.activeElement;
+    ordered.forEach(({id}, index) => {
+      const row = visible.get(id);
+      if (root.children[index] !== row) root.insertBefore(row, root.children[index]);
+    });
+    if (focused?.classList.contains("node-row") && document.activeElement !== focused) focused.focus({preventScroll: true});
+  }
+}
+setInterval(refreshDurations, 1000);
+document.addEventListener("visibilitychange", refreshDurations);
 
 const stream = new EventSource("/events" + scopeQuery);
 stream.onmessage = event => {

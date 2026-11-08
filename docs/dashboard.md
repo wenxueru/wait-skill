@@ -8,28 +8,60 @@ Use Python 3.11 or newer and the current conversation's session ID:
 python /path/to/wait/src/waitctl.py dashboard --session "$AGENT_SESSION_ID"
 ```
 
-- Wait/Loop/Goal commands also return a `dashboard_url` focused on their session, task and node. Reuse the panel and include its link when reporting progress, results or callback handling.
-- `dashboard` uses `CODEX_THREAD_ID` when set; otherwise pass the session explicitly. An unscoped URL shows no tasks. Use `--all-sessions` only for a machine-wide view.
-- To register a saved DAG, use `dashboard --state /absolute/path/goal.json`; its owner supplies the session when none was selected. Never infer ownership from the newest task or browser tab.
-- Keep the full returned URL. Add `&view=graph` to open the dependency map directly.
+Open the returned HTTP URL; `assets/dashboard.html` needs the service and cannot be opened as a `file://` page. Add `&view=graph` to open the map directly.
 
-The page defaults to English and light mode. **Settings** switches language and appearance; this browser remembers them for the current address, including its port. A new port uses the defaults.
+The page defaults to English and light mode. **Settings** changes language and appearance; preferences belong to this browser address, including its port.
 
-## Read progress
+## Session scope
 
-The session overview combines goals with independent waits and loops. Status and progress come from saved task state; finished tasks fold into history. Goal- and Loop-owned watchers appear with their parent, while Goal health-check loops remain accessible in Loop.
-
-| View | What you can see |
+| Header choice | Shows |
 | --- | --- |
-| Task list | Search titles/IDs, filter by status or click a status count; failed, running and ready tasks appear first |
-| Dependency map | Dagre reduces crossings and routes long dependencies through the graph; zoom or fit the whole map |
-| Task details | Full title, dependencies, acceptance criteria, recorded times, waits and results |
-| Wait | Query status, deadline, delivery, full event note and result |
-| Loop | Iteration, interval, next run, deadline and run history |
+| **Current session** | The original session from the opened URL |
+| A session ID | Only that session's Waits, Loops and Goals |
+| **All sessions** | Every registered task on this waitd |
 
-- Select a task or dependency link to inspect it. A current task is selected automatically; expand the objective below the heading to read its full text.
-- **Updated** uses recorded node events and lifecycle times in your browser's timezone. Hover for the full timestamp. Details show available creation, start, waiting and end times; missing records show `—`.
-- Search and filters keep the dependency map's structure and dim other nodes. Layout and display state are computed in the browser using bundled assets; no CDN is needed.
+- Open the picker to load known session IDs and task counts; search by ID. Other sessions' task content stays outside the selected state and event stream.
+- Switching preserves the active tab and list/map view, clears task focus, and keeps a route back to the original session.
+- `dashboard` uses `CODEX_THREAD_ID` or an explicit `--session`. An unscoped URL shows no tasks; `--all-sessions` opts into the machine-wide view.
+- `dashboard --state /absolute/path/goal.json` registers a saved DAG and uses its owner when no session was selected. Never infer ownership from recent tasks or tabs.
+
+## Share updates
+
+- Wait/Loop/Goal commands return a `dashboard_url` focused on their session, task and node. Keep its full query and reuse a working forwarded address.
+- Share the link on first task presentation, substantive progress/state/result/blocker changes, or user request. Ordinary replies and unchanged callbacks need no repeated link.
+
+## Three task views
+
+| View | Records and details | Map |
+| --- | --- | --- |
+| **Waits** | Independent and parent-owned watchers; query, delivery, result and full event note | Recorded Goal/Loop ownership and known Goal dependencies |
+| **Loops** | Iteration, schedule, deadline and run history | Parent Goal and current timer |
+| **Goals** | DAG nodes, acceptance criteria, results and final verification | Actual task dependencies |
+
+- The header has only these three tabs. Counts include saved history; without `mode`, the page opens Waits.
+- All views share the same list, filters, sorting and details. Context nodes in maps are inspectable but do not count as extra tasks.
+- Independent waits have no inferred connections. The relationship map creates no new scheduler state.
+
+## List and details
+
+- Search titles or IDs. Filter beside **Status**, or click a state count; clear the filter from the header even when nothing matches.
+- Default order prioritizes failed, running and ready work. **Duration** and **Updated** cycle descending → ascending → default; switching columns starts descending. Unknown values stay last.
+- Live updates keep the selected filter and sort. Duration ordering follows the live timer without rebuilding details or discarding an editable draft.
+- Select a row or map node for its full note, recorded times, evidence and related tasks. Parent links open the corresponding task view. Parent-owned watchers are controlled through their Goal or Loop.
+- Hover/focus a badge, state count or legend for its meaning, or tap on touchscreens; Escape dismisses it. Help and filter descriptions follow the task type: a waiting program's successful exit differs from node acceptance and final Goal verification.
+
+## Timing
+
+- Duration emphasizes the current running or waiting phase; details also show total lifetime, including waits. Timers update locally each second, without network polling or agent turns.
+- Goal node execution restarts its phase clock on a handled wake while retaining the original total start. Wait lifetime starts at submission; Loop lifetime starts at initialization and its phase clock follows iteration/schedule events.
+- Terminal times stop counting. Missing records show Not started or `—`; timestamps use the browser's timezone and show their full value on hover.
+
+## Map controls
+
+- Dagre reduces crossings. Goal filters dim other nodes without moving the layout. Relationship filters show matching records with their parent chain and current timers, fitting that subset so history does not overwhelm the map.
+- Zoom with the slider, +/−, Ctrl + scroll or trackpad pinch. Drag anywhere, including nodes, with mouse, touch or pen to pan; ordinary scrolling also pans. A tap/click selects a node, while dragging does not.
+- Panning works even when the map fits and survives live updates. **Fit** recenters it; **100%** restores natural size. With the map focused, use `+`/`−`, `0` for 100%, or `f` to fit.
+- Assets are bundled locally; no CDN or page maintenance by the agent is needed.
 
 ## Change tasks
 

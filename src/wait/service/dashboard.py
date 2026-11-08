@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Iterator
 from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -76,8 +77,7 @@ class Dashboard:
             }
         return item
 
-    def snapshot(self, session: str | None = None) -> dict[str, Any]:
-        view = {"goals": [], "loops": [], "watches": [], "linked_watches": []}
+    def iter_tasks(self, session: str | None = None) -> Iterator[tuple[str, dict[str, Any]]]:
         for mode, registry, collection, session_field in (
             ("goal", self.daemon.goals, "goals", "thread"),
             ("loop", self.daemon.loops, "loops", "session"),
@@ -90,13 +90,30 @@ class Dashboard:
                     item = self.task(mode, identity)
                 except (OSError, ValueError) as exc:
                     if session is None:
-                        view[collection].append({"path": identity, "error": str(exc)})
+                        yield collection, {"path": identity, "error": str(exc)}
                     continue
                 if session is not None and item[session_field] != session:
                     continue
                 destination = "linked_watches" if mode == "wait" and "owner" in item else collection
-                view[destination].append(item)
+                yield destination, item
+
+    def snapshot(self, session: str | None = None) -> dict[str, Any]:
+        view = {"goals": [], "loops": [], "watches": [], "linked_watches": []}
+        for collection, item in self.iter_tasks(session):
+            view[collection].append(item)
         return view
+
+    def sessions(self) -> list[dict[str, Any]]:
+        sessions = {}
+        kinds = {"goals": "goal", "loops": "loop", "watches": "wait", "linked_watches": "wait"}
+        for collection, item in self.iter_tasks():
+            kind = kinds[collection]
+            identity = item.get("thread" if kind == "goal" else "session")
+            if not identity:
+                continue
+            counts = sessions.setdefault(identity, {"id": identity, "wait": 0, "loop": 0, "goal": 0})
+            counts[kind] += 1
+        return [sessions[identity] for identity in sorted(sessions)]
 
     async def action(self, body: dict[str, Any], session: str | None = None) -> dict[str, Any]:
         mode = body.get("mode", "goal")
@@ -191,14 +208,24 @@ class Dashboard:
                 "/",
                 "/assets/dashboard.mjs",
                 "/assets/appearance.mjs",
+                "/assets/activity-model.mjs",
+                "/assets/graph-viewport.mjs",
+                "/assets/status-help.mjs",
+                "/assets/session-picker.mjs",
                 "/assets/task-model.mjs",
                 "/assets/graph-layout.mjs",
                 "/assets/vendor/dagre.mjs",
+                "/assets/icon.svg",
+                "/assets/logo.svg",
             ):
                 filename = "dashboard.html" if target == "/" else target.removeprefix("/assets/")
                 content_type = "text/html" if target == "/" else "text/javascript"
+                if filename.endswith(".svg"):
+                    content_type = "image/svg+xml"
                 content = await asyncio.to_thread((self.assets / filename).read_bytes)
                 await self.respond(writer, 200, content, f"{content_type}; charset=utf-8")
+            elif method == "GET" and target == "/api/sessions":
+                await self.respond(writer, 200, self.sessions())
             elif method == "GET" and target == "/api/state":
                 await self.respond(writer, 200, self.snapshot(session))
             elif method == "POST" and target == "/api/action":

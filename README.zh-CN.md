@@ -1,6 +1,6 @@
 # wait-skill
 
-![wait-skill — 等到真正重要时再唤醒](assets/readme-hero.png)
+![Wait](assets/logo.svg)
 
 [English](README.md) | 简体中文
 
@@ -28,8 +28,8 @@
 python ~/.codex/skills/wait/src/waitctl.py dashboard --session "$CODEX_THREAD_ID"
 ```
 
-- Wait、Loop 和 Goal 命令返回所属会话的 `dashboard_url`；需要本机总览时使用 `--all-sessions`。
-- 任务列表展示状态和已有的更新时间，依赖图自动减少交叉；页面随任务状态更新，Agent 只需维护任务。
+- Wait、Loop 和 Goal 命令返回所属会话的 `dashboard_url`；页头可搜索、切换会话；`--all-sessions` 打开本机总览。
+- 等待、循环、目标共用状态筛选、耗时／更新时间排序和详情。目标展示依赖，等待和循环展示已有归属及计时器关系；Agent 只需维护任务状态。
 - 默认英文、浅色主题，可在「设置」中选择中文和深色主题，浏览器会保存选择。
 - 任务操作、会话范围与远程访问见[看板操作](docs/dashboard.zh-CN.md)。
 
@@ -81,7 +81,7 @@ Python 核心仅依赖标准库，浏览器依赖[随仓库本地打包](assets/
 | `src/wait/service/` | watcher 监管与看板 HTTP 服务 |
 | `src/wait/clients/` | 客户端投递适配器 |
 | `src/wait/` 共享模块 | 运行逻辑、服务身份与回环地址策略 |
-| `assets/` | 看板渲染、外观、从任务派生的展示状态与图布局 |
+| `assets/` | 共用任务视图、纯状态／归属模型、外观、画布／提示控制器与本地图布局 |
 | `tests/` | 按源码分层测试，`integration/` 覆盖跨进程流程和文档 |
 
 在仓库根目录运行：

@@ -1,6 +1,6 @@
 # wait-skill
 
-![wait-skill — Sleep until it matters](assets/readme-hero.png)
+![Wait](assets/logo.svg)
 
 English | [简体中文](README.zh-CN.md)
 
@@ -28,8 +28,8 @@ Open the current session's dashboard with:
 python ~/.codex/skills/wait/src/waitctl.py dashboard --session "$CODEX_THREAD_ID"
 ```
 
-- Wait, Loop, and Goal commands return a `dashboard_url` for the owning session. Use `--all-sessions` when you want the machine-wide view.
-- The task list shows status and recorded update times; the dependency map automatically reduces crossings. Both update from saved task state, so agents only maintain their tasks.
+- Wait, Loop, and Goal commands return a `dashboard_url` for the owning session. Use the header picker to search/switch sessions; `--all-sessions` opens the machine-wide view.
+- Waits, Loops and Goals share status filters, duration/update sorting and task details. Goals show dependencies; Waits and Loops show recorded ownership and timer relationships. Agents only maintain task state.
 - English and light mode are the defaults. **Settings** offers Chinese and dark mode and saves the choice in this browser.
 - See [dashboard controls](docs/dashboard.md) for task actions, session scope and remote access.
 
@@ -81,7 +81,7 @@ The Python core uses only the standard library. Browser dependencies are [bundle
 | `src/wait/service/` | Watcher supervision and dashboard HTTP service |
 | `src/wait/clients/` | Client delivery adapters |
 | Shared `src/wait/` modules | Runtime, service identity, and loopback address policy |
-| `assets/` | Dashboard rendering, appearance, task-derived display state, and graph layout |
+| `assets/` | Shared task views, pure state/ownership models, appearance, viewport/help controllers, and bundled graph layout |
 | `tests/` | Tests mirror source layers; `integration/` covers processes and documentation |
 
 Run from the repository root:

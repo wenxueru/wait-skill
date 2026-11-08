@@ -112,6 +112,17 @@ class DashboardTest(unittest.IsolatedAsyncioTestCase):
     async def test_two_sessions_keep_goal_changes_separate(self):
         other = self.root / "other-goal.json"
         await self.command("init", "--objective", "Second goal", "--session", "session-b", path=other)
+        code, sessions = await self.response(target="/api/sessions?session=session-a")
+        self.assertEqual(code, 200)
+        self.assertEqual(
+            sessions,
+            [
+                {"id": "session-a", "wait": 0, "loop": 0, "goal": 1},
+                {"id": "session-b", "wait": 0, "loop": 0, "goal": 1},
+            ],
+        )
+        _, scoped = await self.response(target="/api/state?session=session-a")
+        self.assertEqual([item["thread"] for item in scoped["goals"]], ["session-a"])
         responses = await asyncio.gather(
             self.action("pause"),
             self.response(
@@ -184,6 +195,14 @@ class DashboardTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([loop["path"] for loop in state["loops"]], [loops["session-a"]])
         self.assertTrue(state["loops"][0]["no_notify"])
         self.assertIn("--no-notify", timer_argv(state["loops"][0], Path(loops["session-a"])))
+        _, sessions = await self.response(target="/api/sessions")
+        self.assertEqual(
+            sessions,
+            [
+                {"id": "session-a", "wait": 2, "loop": 1, "goal": 1},
+                {"id": "session-b", "wait": 2, "loop": 1, "goal": 0},
+            ],
+        )
         _, blank = await self.response(target="/api/state?session=")
         self.assertTrue(all(not rows for rows in blank.values()))
 
@@ -267,7 +286,17 @@ class DashboardTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(header.split()[1], b"200")
         self.assertIn(b"text/html", header)
         self.assertIn(b"<!doctype html>", html)
-        for asset in ("dashboard.mjs", "appearance.mjs", "task-model.mjs", "graph-layout.mjs", "vendor/dagre.mjs"):
+        for asset in (
+            "dashboard.mjs",
+            "appearance.mjs",
+            "task-model.mjs",
+            "activity-model.mjs",
+            "graph-viewport.mjs",
+            "status-help.mjs",
+            "session-picker.mjs",
+            "graph-layout.mjs",
+            "vendor/dagre.mjs",
+        ):
             async with self.http(f"/assets/{asset}", **headers) as reader:
                 response = await asyncio.wait_for(reader.read(), 2)
             header, script = response.split(b"\r\n\r\n", 1)
@@ -277,6 +306,13 @@ class DashboardTest(unittest.IsolatedAsyncioTestCase):
         for target in ("/assets/../SKILL.md", "/assets/vendor/unknown.mjs"):
             code, _ = await self.response(target=target, **headers)
             self.assertEqual(code, 404)
+        for asset in ("icon.svg", "logo.svg"):
+            async with self.http(f"/assets/{asset}", **headers) as reader:
+                response = await asyncio.wait_for(reader.read(), 2)
+            header, content = response.split(b"\r\n\r\n", 1)
+            self.assertEqual(header.split()[1], b"200")
+            self.assertIn(b"image/svg+xml", header)
+            self.assertIn(b"<svg", content)
         code, state = await self.response(
             target="/api/state?session=session-b",
             **headers,
@@ -348,7 +384,7 @@ class DashboardTest(unittest.IsolatedAsyncioTestCase):
             "http://localhost:63671#x",
         )
         body = {"path": str(self.path), "action": "cancel"}
-        for target in ("/", "/api/state", "/events", "/api/action"):
+        for target in ("/", "/api/state", "/api/sessions", "/events", "/api/action"):
             for fields in ({"host": "evil:63671"}, {"host": "localhost:63671", "origin": "http://localhost:63670"}):
                 with self.subTest(target=target, fields=fields):
                     code, _ = await self.response(target=target, body=body if target == "/api/action" else None, **fields)
