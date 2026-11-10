@@ -2,6 +2,6 @@ interface:
   display_name: "Wait"
   icon_small: "./assets/brand/icon.svg"
   icon_large: "./assets/brand/logo.svg"
-  brand_color: "#286852"
+  brand_color: "#4974a8"
   short_description: "External waits, bounded loops, and durable goals"
   default_prompt: "Use $wait for external state, $wait loop for bounded repetition, or $wait goal for a requested durable objective."

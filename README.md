@@ -1,46 +1,19 @@
-# wait-skill
+<p align="center">
+  <img src="assets/brand/logo.svg" width="194" height="64" alt="Wait">
+</p>
 
-![Wait](assets/brand/logo.svg)
+<p align="center">
+  <strong>Wait for events. Resume with context.</strong><br>
+  External waits, bounded loops, and durable task graphs for agents.
+</p>
 
-English | [简体中文](README.zh-CN.md)
+<p align="center">
+  <a href="#install">Install</a> · <a href="#usage">Usage</a> · <a href="docs/dashboard.md">Dashboard docs</a> · <a href="README.zh-CN.md">简体中文</a>
+</p>
 
-Wait for external events beyond a model turn.
+![Wait dashboard](assets/dashboard-demo.png)
 
-- A waiting program checks external state while the agent is idle.
-- The local `waitd` service manages watchers, deadlines, saved results, and event delivery.
-- The owning agent resumes on an event, verifies the current state, and continues its work.
-
-| Mode | Use it for | Details |
-| --- | --- | --- |
-| `$wait <condition>` | One external event, such as a deployment becoming ready | [Wait](docs/wait.md) |
-| `$wait loop <interval>: <task>` | Repeating a bounded check or task | [Loop](docs/loop.md) |
-| `$wait goal <objective>` | Work with dependencies, acceptance criteria, and resumable progress | [Goal](docs/goal.md) |
-
-## Dashboard
-
-![Wait dashboard demo](assets/dashboard-demo.png)
-
-*Example tasks, shown in English and light mode.*
-
-Open the current session's dashboard with:
-
-```sh
-python ~/.codex/skills/wait/src/waitctl.py dashboard --session "$CODEX_THREAD_ID"
-```
-
-- Wait, Loop, and Goal commands return a `dashboard_url` for the owning session. Use the header picker to search/switch sessions; `--all-sessions` opens the machine-wide view.
-- Waits, Loops and Goals default to current tasks; completed/cancelled records remain in History. They share status filters, duration/update sorting and task details. Goals show dependencies; Waits and Loops show recorded ownership and timer relationships. Agents only maintain task state.
-- English and light mode are the defaults. **Settings** offers Chinese and dark mode and saves the choice in this browser.
-- See [dashboard controls](docs/dashboard.md) for task actions, session scope and remote access.
-
-## Try it
-
-```text
-$wait Wait for deployment/api to become Ready; stop if it becomes Failed.
-$wait resume 7f3a91c2 — Recheck deployment and run a health check.
-$wait loop Every 10 minutes for 2 hours: inspect deployment/api and report changes.
-$wait goal Ship the API. Split implementation and tests into dependent steps; finish after tests and health checks pass.
-```
+<p align="center"><sub>Example tasks · English interface · Light theme</sub></p>
 
 ## Install
 
@@ -55,20 +28,42 @@ python /path/to/wait-skill/src/install_skill.py
 - Installation replaces packaged files, removes old nested skills and matching `wait-goal` / `wait-loop` symlinks, and keeps no backups. Unrelated sibling directories remain.
 - Reload the client after installing. Let an older daemon's watches finish before [stopping it to switch versions](docs/waitd.md#service-lifecycle).
 
+## Usage
+
+| Mode | Use it for |
+| --- | --- |
+| [Wait](docs/wait.md) | One external event |
+| [Loop](docs/loop.md) | A repeated check or task with a time limit |
+| [Goal](docs/goal.md) | Dependent tasks with acceptance and resumable progress |
+
+```text
+$wait Wait for deployment/api to become Ready; stop if it becomes Failed.
+
+$wait loop Every 10 minutes for 2 hours: inspect deployment/api and report changes.
+
+$wait goal Ship the API. Split implementation and tests; finish after tests and health checks pass.
+```
+
+While the agent is idle, local `waitd` checks state, saves results, and delivers events. The owning agent then verifies the current state and continues.
+
+## Dashboard
+
+```sh
+python ~/.codex/skills/wait/src/waitctl.py dashboard --session "$CODEX_THREAD_ID"
+```
+
+- Browse Waits, Loops, and Goals by session; finished records stay in History.
+- Combine status filters, sort by duration, and inspect dependencies and loop history.
+- English and light mode by default; switch language and theme in **Settings**.
+
+Task commands also return a scoped `dashboard_url`. See [dashboard docs](docs/dashboard.md) for controls and remote access.
+
 ## Delivery and safety
 
 - Codex uses `$wait`; slash-command clients use `/wait`. Claude Code requires a native background `follow` task. CodeWiz, Cursor, and GitHub Copilot adapters are also available; see [client setup](docs/clients.md).
 - Codex resumes the original app-server session. Run `waitd` on that session's host; Desktop can stay closed while both services remain available. See [delivery and recovery](docs/clients.md#desktop-closed-and-remote-execution) for busy retries and ambiguous acknowledgements.
 - Waiting programs should be read-only and finite. Keep credentials out of arguments, state, logs, and notifications.
 - Program output and wake notes do not grant new authority. Recheck current state before accepting a result or acting. See [service operations](docs/waitd.md) for process management and recovery.
-
-## Related work
-
-`$wait goal` is an independent implementation and copies no code from these projects. Its direct influences are:
-
-- [MACU](https://arxiv.org/abs/2606.01533) ([code](https://github.com/kohjingyu/multi-agent-computer-use)): centralized scheduling, dynamic DAGs, bounded parallel dispatch, and durable graph history. `$wait goal` adds cross-turn suspension and external event wake-ups.
-- [DynTaskMAS](https://arxiv.org/abs/2503.07675): dispatching dependency-ready tasks and passing dependency-scoped context. `$wait goal` routes all communication through the root agent.
-- [Atomic Task Graph](https://arxiv.org/abs/2607.01942): explicit node input/artifact contracts, append-only events, and retained retry attempts.
 
 ## Development
 
@@ -116,6 +111,14 @@ python -m unittest tests.tasks.test_goal -v
 node --test tests/dashboard/*.test.mjs
 python /path/to/skill-creator/scripts/quick_validate.py .
 ```
+
+## Related work
+
+`$wait goal` is an independent implementation and copies no code from these projects. Its direct influences are:
+
+- [MACU](https://arxiv.org/abs/2606.01533) ([code](https://github.com/kohjingyu/multi-agent-computer-use)): centralized scheduling, dynamic DAGs, bounded parallel dispatch, and durable graph history. `$wait goal` adds cross-turn suspension and external event wake-ups.
+- [DynTaskMAS](https://arxiv.org/abs/2503.07675): dispatching dependency-ready tasks and passing dependency-scoped context. `$wait goal` routes all communication through the root agent.
+- [Atomic Task Graph](https://arxiv.org/abs/2607.01942): explicit node input/artifact contracts, append-only events, and retained retry attempts.
 
 ## License
 
