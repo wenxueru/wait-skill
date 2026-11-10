@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {layoutGraph} from "../../assets/graph-layout.mjs";
+import {layoutGraph} from "../../src/wait/dashboard/graph/layout.mjs";
 
 const nodesFrom = dependencies => Object.fromEntries(
   Object.entries(dependencies).map(([id, depends_on]) => [id, {depends_on}])

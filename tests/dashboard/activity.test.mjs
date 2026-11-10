@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {activityId, activityWorkspace, relationNodes, watchState} from "../../assets/activity-model.mjs";
-import {durationRanges, nodeRows, nodeTimings} from "../../assets/task-model.mjs";
-import {layoutGraph} from "../../assets/graph-layout.mjs";
+import {activityId, activityWorkspace, collapseLoopTimers, relationNodes, watchState} from "../../src/wait/dashboard/models/activity.mjs";
+import {durationRanges, nodeRows, nodeTimings} from "../../src/wait/dashboard/models/tasks.mjs";
+import {layoutGraph} from "../../src/wait/dashboard/graph/layout.mjs";
 
 function fixture() {
   return {goals: [{path: "/g.json", status: "open", objective: "Release", nodes: {
@@ -94,4 +94,31 @@ test("empty and unreadable records stay inspectable without fabricating start ti
     assert.equal(row.state, "failed");
     assert.equal(durationRanges(nodeTimings(workspace).get(row.id)).total, null);
   }
+});
+
+test("loop timers collapse only in the graph, preserving ownership, raw records and filtered membership", () => {
+  const tasks = fixture();
+  for (let i = 0; i < 40; i++) tasks.linked_watches.push({
+    watch_id: "past-" + i, label: "Loop timer", state: i === 0 ? "failed" : "completed",
+    owner: {mode: "loop", path: "/loop.json"}
+  });
+  const workspace = activityWorkspace(tasks, "wait");
+  const grouped = collapseLoopTimers(workspace.nodes);
+  const loopId = activityId("loop", "/loop.json");
+  assert.equal(nodeRows(workspace).length, 43);
+  assert.equal(Object.keys(grouped.nodes).length, 5);
+  assert.equal(grouped.nodes[loopId].timerCount, 41);
+  assert.equal(grouped.nodes[loopId].failedTimers, 1);
+  assert.deepEqual(grouped.nodes[loopId].depends_on, [activityId("goal", "/g.json", "deploy")]);
+  assert.ok(grouped.nodes[activityId("wait", "independent")]);
+  assert.ok(grouped.nodes[activityId("wait", "direct")]);
+  assert.equal(workspace.nodes[loopId].timerCount, undefined);
+  assert.equal(grouped.members.get(activityId("wait", "past-3")), loopId);
+  const subset = collapseLoopTimers(relationNodes(workspace.nodes, new Set([activityId("wait", "past-3")])));
+  assert.equal(subset.nodes[loopId].timerCount, 1);
+  assert.equal(Object.keys(subset.nodes).length, 3);
+  assert.equal(layoutGraph(subset.nodes).edges.length, 2);
+  const loopView = collapseLoopTimers(activityWorkspace(tasks, "loop").nodes);
+  assert.equal(Object.keys(loopView.nodes).length, 3);
+  assert.equal(loopView.nodes[loopId].timerCount, 1);
 });

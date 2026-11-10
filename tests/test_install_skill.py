@@ -57,6 +57,14 @@ class InstallTest(unittest.TestCase):
             workspace = root / "workspace"
             workspace.mkdir()
             install(ROOT, destination)
+            for resource in (
+                "src/wait/dashboard/index.html",
+                "src/wait/dashboard/styles.css",
+                "src/wait/dashboard/app.mjs",
+                "assets/vendor/dagre.mjs",
+                "assets/brand/icon.svg",
+            ):
+                self.assertTrue((destination / resource).is_file(), resource)
             commands = [
                 ("waitctl.py", "--help"),
                 ("worker.py", "daemon", "--help"),

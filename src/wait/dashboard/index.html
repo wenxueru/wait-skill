@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title data-i18n="page.title">Wait dashboard</title>
+<link rel="icon" type="image/svg+xml" href="/assets/brand/icon.svg">
+<link rel="stylesheet" href="/assets/dashboard/styles.css">
+<header>
+  <h1><img class="brand-mark" src="/assets/brand/icon.svg" alt="">Wait</h1>
+  <button id="sessionToggle" type="button" popovertarget="sessionPanel" aria-label="Switch session" data-i18n-aria-label="scope.select"><span id="scopeLabel">Current session</span><span aria-hidden="true">⌄</span></button>
+  <div id="sessionPanel" class="session-panel" popover>
+    <input id="sessionSearch" type="search" placeholder="Search session ID…" aria-label="Search session ID" data-i18n-placeholder="scope.search" data-i18n-aria-label="scope.search">
+    <nav id="sessionOptions" aria-label="Sessions" data-i18n-aria-label="scope.select"></nav>
+    <p id="sessionError" hidden></p>
+  </div>
+  <div class="header-controls">
+    <button id="settingsToggle" type="button" popovertarget="settingsPanel">
+      <span class="settings-icon" aria-hidden="true">⚙︎</span><span data-i18n="settings.title">Settings</span>
+    </button>
+    <div id="settingsPanel" class="settings-panel" popover>
+      <h2 data-i18n="settings.title">Settings</h2>
+      <label for="languagePreference" data-i18n="language.label">Language</label>
+      <select id="languagePreference">
+        <option value="en">English</option>
+        <option value="zh">简体中文</option>
+      </select>
+      <label for="themePreference" data-i18n="theme.label">Appearance</label>
+      <select id="themePreference">
+        <option value="light" data-i18n="theme.light">Light</option>
+        <option value="dark" data-i18n="theme.dark">Dark</option>
+      </select>
+    </div>
+  </div>
+  <span id="connection" data-i18n="connection.connecting"></span>
+</header>
+<main>
+  <div id="error" hidden></div>
+  <section class="session-summary" aria-live="polite">
+    <h2 id="sessionStatus" data-i18n="session.connecting"></h2>
+  </section>
+  <div id="notice" class="notice" hidden></div>
+  <nav id="modes" class="mode-tabs" data-i18n-aria-label="view.aria" aria-label="Task views">
+    <button data-mode="wait" data-i18n="mode.wait"></button>
+    <button data-mode="loop" data-i18n="mode.loop"></button>
+    <button data-mode="goal" data-i18n="mode.goal"></button>
+  </nav>
+  <div class="toolbar" id="goalToolbar">
+    <select id="goals" data-i18n-aria-label="select.goal" aria-label="Select a goal"></select>
+    <div class="spacer"></div>
+    <button id="pause" data-i18n="goal.pause">Pause</button>
+    <button id="resume" data-i18n="goal.resume">Resume</button>
+    <button class="danger" id="cancel" data-i18n="common.cancel">Cancel</button>
+  </div>
+  <div id="empty" class="card empty" hidden>
+    <h2 data-i18n="empty.goals.title">No goals yet</h2>
+    <p class="muted" data-i18n="empty.goals.body">This session has no DAG. Create one with waitctl goal init.</p>
+  </div>
+  <div id="content" hidden>
+    <div class="goal-heading">
+      <h2 id="objective"></h2>
+      <div class="stats" id="stats"></div>
+    </div>
+    <details class="goal-description">
+      <summary data-i18n="goal.description">Full objective</summary>
+      <p id="goalDescription"></p>
+    </details>
+    <div class="progress"><span id="progress"></span></div>
+    <div id="nodeMetrics" class="metrics">
+      <button class="metric" data-state="ready" aria-pressed="false">
+        <span class="metric-label"><i class="dot ready"></i><span data-i18n="state.ready">Ready</span></span><strong>0</strong>
+      </button>
+      <button class="metric" data-state="running" aria-pressed="false">
+        <span class="metric-label"><i class="dot running"></i><span data-i18n="state.running">Running</span></span><strong>0</strong>
+      </button>
+      <button class="metric" data-state="waiting" aria-pressed="false">
+        <span class="metric-label"><i class="dot waiting"></i><span data-i18n="state.waiting">Waiting</span></span><strong>0</strong>
+      </button>
+      <button class="metric" data-state="completed" aria-pressed="false">
+        <span class="metric-label"><i class="dot completed"></i><span data-i18n="state.completed">Completed</span></span><strong>0</strong>
+      </button>
+    </div>
+    <div class="layout">
+      <section class="card graph-card">
+        <div class="graph-head">
+          <div class="view-switch" id="nodeViews" aria-label="Task display" data-i18n-aria-label="workspace.display">
+            <button data-view="list" data-i18n="workspace.list" aria-pressed="true">Task list</button>
+            <button data-view="graph" data-i18n="graph.title" aria-pressed="false">Dependency map</button>
+          </div>
+          <button id="add" data-i18n="graph.add">+ Node</button>
+        </div>
+        <div class="node-tools">
+          <input id="nodeSearch" type="search" placeholder="Search tasks or IDs…" data-i18n-placeholder="workspace.search" aria-label="Search tasks" data-i18n-aria-label="workspace.search">
+          <select id="taskScope" aria-label="Task visibility" data-i18n-aria-label="workspace.visibility">
+            <option value="current" data-i18n="workspace.current">Current tasks</option>
+            <option value="history" data-i18n="workspace.history">History</option>
+            <option value="all" data-i18n="workspace.all">All tasks</option>
+          </select>
+          <output id="nodeCount" aria-live="polite"></output>
+        </div>
+        <div id="nodeList" class="node-list">
+          <div id="nodeColumns" class="node-columns">
+            <span data-i18n="workspace.task">Task</span>
+            <span class="dependency-column" data-i18n="workspace.dependencies">Dependencies</span>
+            <span class="next-column" data-i18n="workspace.next">Next step</span>
+            <div id="statusColumn" class="status-column">
+              <span data-i18n="workspace.state">Status</span>
+              <button class="column-filter" id="filterControl" type="button" popovertarget="nodeFilter" aria-expanded="false" aria-label="Filter tasks" title="Filter tasks" data-i18n-title="workspace.filter">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 5h16l-6 7v6l-4 2v-8z"/></svg><span hidden aria-hidden="true"></span>
+              </button>
+            </div>
+            <button id="durationColumn" class="column-sort duration-column" data-sort="duration" aria-pressed="false"><span data-i18n="duration.title">Duration</span><span id="durationDirection" data-sort-direction aria-hidden="true">↕</span></button>
+            <button id="updatedSort" class="column-sort" data-sort="updated" aria-pressed="false"><span data-i18n="time.updated">Updated</span><span id="sortDirection" data-sort-direction aria-hidden="true">↕</span></button>
+          </div>
+          <div id="nodeRows"></div>
+        </div>
+        <div id="graphTools" class="graph-tools" hidden>
+          <span id="graphFilter"></span>
+          <span id="graphHelp" class="graph-help" role="button" tabindex="0" aria-label="Map help" data-i18n-aria-label="graph.helpLabel">?</span>
+          <div class="zoom-controls">
+            <button id="zoomOut" aria-label="Zoom out" data-i18n-aria-label="graph.zoomOut">−</button>
+            <input id="zoomRange" type="range" min="1" max="400" value="100" aria-label="Zoom" data-i18n-aria-label="graph.zoom">
+            <output id="zoomLevel">100%</output>
+            <button id="zoomIn" aria-label="Zoom in" data-i18n-aria-label="graph.zoomIn">+</button>
+            <button id="zoomReset">100%</button>
+            <button id="fitGraph" data-i18n="graph.fit">Fit</button>
+          </div>
+        </div>
+        <div class="graph" id="graph" tabindex="0" aria-label="Dependency map" data-i18n-aria-label="graph.title" hidden></div>
+        <div id="graphFooter" class="graph-footer" hidden>
+          <div class="legend">
+            <span data-state="blocked"><i class="dot pending"></i><span data-i18n="state.blocked">Blocked</span></span>
+            <span data-state="running"><i class="dot running"></i><span data-i18n="state.running">Running</span></span>
+            <span data-state="waiting"><i class="dot waiting"></i><span data-i18n="state.waiting">Waiting</span></span>
+            <span data-state="completed"><i class="dot completed"></i><span data-i18n="state.completed">Completed</span></span>
+          </div>
+        </div>
+      </section>
+      <aside class="card details" id="details"></aside>
+    </div>
+    <details class="card events">
+      <summary data-i18n="events.recent">Recent changes</summary>
+      <div id="events"></div>
+    </details>
+  </div>
+</main>
+<dialog id="addDialog">
+  <form id="addForm">
+    <h2 data-i18n="node.add">Add node</h2>
+    <label><span data-i18n="node.id">Node ID</span><input name="id" required pattern="[a-zA-Z0-9_.-]+"></label>
+    <label><span data-i18n="node.title">Task description</span><input name="title" required></label>
+    <label><span data-i18n="node.kind">Type</span>
+      <select name="kind">
+        <option value="local" data-i18n="node.kind.local">Main agent</option>
+        <option value="agent" data-i18n="node.kind.agent">Subagent</option>
+        <option value="external" data-i18n="node.kind.external">External event</option>
+      </select>
+    </label>
+    <label><span data-i18n="node.dependencies">Dependencies (comma-separated IDs)</span><input name="depends_on"></label>
+    <label><span data-i18n="node.acceptance">Acceptance criteria (one per line)</span><textarea name="acceptance"></textarea></label>
+    <label><span data-i18n="node.write_paths">Write paths (one per line; leave blank for read-only)</span><textarea name="write_paths"></textarea></label>
+    <div class="actions">
+      <button class="primary" data-i18n="common.add">Add</button>
+      <button type="button" id="dismiss" data-i18n="common.back">Back</button>
+    </div>
+  </form>
+</dialog>
+<div id="nodeFilter" class="filter-panel" popover role="group" aria-label="Filter tasks" data-i18n-aria-label="workspace.filter"></div>
+<div id="statusHelp" class="status-help" popover="manual" role="tooltip"></div>
+<script>
+if (location.protocol === "file:") {
+  document.querySelector(".brand-mark").hidden = true;
+  const notice = document.createElement("section");
+  notice.className = "card empty";
+  const title = document.createElement("h2");
+  title.textContent = "请通过 HTTP 打开看板 / Open the HTTP dashboard";
+  const message = document.createElement("p");
+  message.textContent = "此页面需要 waitd 提供实时数据，不能直接打开 HTML 文件。运行下方命令后，打开返回的 http:// 地址。 / Run the command below and open its returned HTTP URL.";
+  const command = document.createElement("pre");
+  command.textContent = "python /path/to/wait/src/waitctl.py dashboard --session SESSION_ID";
+  notice.append(title, message, command);
+  document.querySelector("main").replaceChildren(notice);
+} else {
+  import("/assets/dashboard/app.mjs").catch(error => {
+    document.getElementById("content").hidden = true;
+    document.getElementById("goalToolbar").hidden = true;
+    const message = document.getElementById("error");
+    message.hidden = false;
+    message.textContent = "看板资源加载失败，请通过 waitctl dashboard 重新打开。 / Unable to load the dashboard. " + error.message;
+  });
+}
+</script>
+</html>

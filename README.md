@@ -1,6 +1,6 @@
 # wait-skill
 
-![Wait](assets/logo.svg)
+![Wait](assets/brand/logo.svg)
 
 English | [简体中文](README.zh-CN.md)
 
@@ -29,7 +29,7 @@ python ~/.codex/skills/wait/src/waitctl.py dashboard --session "$CODEX_THREAD_ID
 ```
 
 - Wait, Loop, and Goal commands return a `dashboard_url` for the owning session. Use the header picker to search/switch sessions; `--all-sessions` opens the machine-wide view.
-- Waits, Loops and Goals share status filters, duration/update sorting and task details. Goals show dependencies; Waits and Loops show recorded ownership and timer relationships. Agents only maintain task state.
+- Waits, Loops and Goals default to current tasks; completed/cancelled records remain in History. They share status filters, duration/update sorting and task details. Goals show dependencies; Waits and Loops show recorded ownership and timer relationships. Agents only maintain task state.
 - English and light mode are the defaults. **Settings** offers Chinese and dark mode and saves the choice in this browser.
 - See [dashboard controls](docs/dashboard.md) for task actions, session scope and remote access.
 
@@ -81,15 +81,39 @@ The Python core uses only the standard library. Browser dependencies are [bundle
 | `src/wait/service/` | Watcher supervision and dashboard HTTP service |
 | `src/wait/clients/` | Client delivery adapters |
 | Shared `src/wait/` modules | Runtime, service identity, and loopback address policy |
-| `assets/` | Shared task views, pure state/ownership models, appearance, viewport/help controllers, and bundled graph layout |
+| `src/wait/dashboard/` | Shared task views, pure task/navigation models, appearance, interaction controllers, and bundled graph layout |
+| `agents/openai.yaml` | Skill name, icons, brand color, and default prompt |
 | `tests/` | Tests mirror source layers; `integration/` covers processes and documentation |
+
+```text
+src/wait/
+  dashboard/
+    app.mjs          View composition
+    models/          State, relationships, links
+    controls/        Filters, sessions, viewport, help
+    graph/           Dagre layout
+    styles.css       Shared appearance
+assets/
+  brand/             SVG marks
+  vendor/            Bundled dependencies
+```
+
+`WaitDaemon` owns the command runner; `Dashboard` delegates task reads and actions to it. JSON contracts live in `tasks/schema.py`, outside the runtime class hierarchy.
+
+```mermaid
+classDiagram
+  WaitDaemon *-- StateCommandRunner
+  Dashboard --> WaitDaemon : reads and actions
+  GoalStore --> GoalGraph : loads
+  LoopStore --> LoopState : loads
+```
 
 Run from the repository root:
 
 ```sh
 python -m unittest discover -s tests -t . -v
 python -m unittest tests.tasks.test_goal -v
-node --test tests/service/*.test.mjs
+node --test tests/dashboard/*.test.mjs
 python /path/to/skill-creator/scripts/quick_validate.py .
 ```
 

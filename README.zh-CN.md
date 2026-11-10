@@ -1,6 +1,6 @@
 # wait-skill
 
-![Wait](assets/logo.svg)
+![Wait](assets/brand/logo.svg)
 
 [English](README.md) | 简体中文
 
@@ -29,7 +29,7 @@ python ~/.codex/skills/wait/src/waitctl.py dashboard --session "$CODEX_THREAD_ID
 ```
 
 - Wait、Loop 和 Goal 命令返回所属会话的 `dashboard_url`；页头可搜索、切换会话；`--all-sessions` 打开本机总览。
-- 等待、循环、目标共用状态筛选、耗时／更新时间排序和详情。目标展示依赖，等待和循环展示已有归属及计时器关系；Agent 只需维护任务状态。
+- 等待、循环、目标默认展示当前任务，已完成／已取消记录保留在历史中；共用状态筛选、耗时／更新时间排序和详情。目标展示依赖，等待和循环展示已有归属及计时器关系；Agent 只需维护任务状态。
 - 默认英文、浅色主题，可在「设置」中选择中文和深色主题，浏览器会保存选择。
 - 任务操作、会话范围与远程访问见[看板操作](docs/dashboard.zh-CN.md)。
 
@@ -81,15 +81,39 @@ Python 核心仅依赖标准库，浏览器依赖[随仓库本地打包](assets/
 | `src/wait/service/` | watcher 监管与看板 HTTP 服务 |
 | `src/wait/clients/` | 客户端投递适配器 |
 | `src/wait/` 共享模块 | 运行逻辑、服务身份与回环地址策略 |
-| `assets/` | 共用任务视图、纯状态／归属模型、外观、画布／提示控制器与本地图布局 |
+| `src/wait/dashboard/` | 共用任务视图、纯任务／导航模型、外观、交互控制器与本地图布局 |
+| `agents/openai.yaml` | Skill 名称、图标、品牌色和默认提示词 |
 | `tests/` | 按源码分层测试，`integration/` 覆盖跨进程流程和文档 |
+
+```text
+src/wait/
+  dashboard/
+    app.mjs          视图组合
+    models/          状态、关系、链接
+    controls/        筛选、会话、画布、帮助
+    graph/           Dagre 布局
+    styles.css       共用样式
+assets/
+  brand/             SVG 标志
+  vendor/            本地依赖
+```
+
+`WaitDaemon` 持有命令执行器，`Dashboard` 向它查询和提交操作。JSON 类型归入 `tasks/schema.py`，不充当运行时继承基类。
+
+```mermaid
+classDiagram
+  WaitDaemon *-- StateCommandRunner
+  Dashboard --> WaitDaemon : reads and actions
+  GoalStore --> GoalGraph : loads
+  LoopStore --> LoopState : loads
+```
 
 在仓库根目录运行：
 
 ```sh
 python -m unittest discover -s tests -t . -v
 python -m unittest tests.tasks.test_goal -v
-node --test tests/service/*.test.mjs
+node --test tests/dashboard/*.test.mjs
 python /path/to/skill-creator/scripts/quick_validate.py .
 ```
 

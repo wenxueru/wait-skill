@@ -22,6 +22,7 @@ class Dashboard:
     def __init__(self, daemon: WaitDaemon) -> None:
         self.daemon = daemon
         self.assets = Path(__file__).resolve().parents[3] / "assets"
+        self.web = Path(__file__).resolve().parents[1] / "dashboard"
         self.server: asyncio.Server
         self.clients: set[asyncio.Task[None]] = set()
         self.stopping = False
@@ -206,23 +207,31 @@ class Dashboard:
                 await self.stream(writer, session)
             elif method == "GET" and target in (
                 "/",
-                "/assets/dashboard.mjs",
-                "/assets/appearance.mjs",
-                "/assets/activity-model.mjs",
-                "/assets/graph-viewport.mjs",
-                "/assets/status-help.mjs",
-                "/assets/session-picker.mjs",
-                "/assets/task-model.mjs",
-                "/assets/graph-layout.mjs",
+                "/assets/dashboard/app.mjs",
+                "/assets/dashboard/styles.css",
+                "/assets/dashboard/appearance.mjs",
+                "/assets/dashboard/models/activity.mjs",
+                "/assets/dashboard/controls/viewport.mjs",
+                "/assets/dashboard/controls/status-help.mjs",
+                "/assets/dashboard/controls/status-filter.mjs",
+                "/assets/dashboard/models/links.mjs",
+                "/assets/dashboard/controls/session-picker.mjs",
+                "/assets/dashboard/models/tasks.mjs",
+                "/assets/dashboard/graph/layout.mjs",
                 "/assets/vendor/dagre.mjs",
-                "/assets/icon.svg",
-                "/assets/logo.svg",
+                "/assets/brand/icon.svg",
+                "/assets/brand/logo.svg",
             ):
-                filename = "dashboard.html" if target == "/" else target.removeprefix("/assets/")
-                content_type = "text/html" if target == "/" else "text/javascript"
-                if filename.endswith(".svg"):
-                    content_type = "image/svg+xml"
-                content = await asyncio.to_thread((self.assets / filename).read_bytes)
+                if target == "/":
+                    path = self.web / "index.html"
+                elif target.startswith("/assets/dashboard/"):
+                    path = self.web / target.removeprefix("/assets/dashboard/")
+                else:
+                    path = self.assets / target.removeprefix("/assets/")
+                content_type = {".html": "text/html", ".css": "text/css", ".mjs": "text/javascript", ".svg": "image/svg+xml"}[
+                    path.suffix
+                ]
+                content = await asyncio.to_thread(path.read_bytes)
                 await self.respond(writer, 200, content, f"{content_type}; charset=utf-8")
             elif method == "GET" and target == "/api/sessions":
                 await self.respond(writer, 200, self.sessions())

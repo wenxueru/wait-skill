@@ -1,4 +1,4 @@
-import {nodeState, nodeTimings} from "./task-model.mjs";
+import {nodeState, nodeTimings} from "./tasks.mjs";
 
 export function activityId(mode, identity, node = null) {
   return JSON.stringify([mode, identity, node]);
@@ -113,4 +113,21 @@ export function activityWorkspace(tasks, mode) {
     }
   }
   return {path: mode, status: "open", nodes, events: []};
+}
+
+// Timer records remain in lists/state; only the graph folds them into their owner.
+export function collapseLoopTimers(nodes) {
+  const graph = {...nodes};
+  const members = new Map();
+  for (const [id, node] of Object.entries(nodes)) {
+    if (node.taskKind !== "wait" || node.task?.owner?.mode !== "loop") continue;
+    const owner = node.depends_on.find(parent => nodes[parent]?.taskKind === "loop");
+    if (!owner) continue;
+    if (graph[owner].timerCount === undefined) graph[owner] = {...graph[owner], timerCount: 0, failedTimers: 0};
+    graph[owner].timerCount++;
+    if (node.status === "failed") graph[owner].failedTimers++;
+    members.set(id, owner);
+    delete graph[id];
+  }
+  return {nodes: graph, members};
 }

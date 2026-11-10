@@ -30,11 +30,11 @@ from ..protocol import (
     STATE_COMMANDS,
 )
 from ..tasks import goal, loop
+from .commands import StateCommandRunner
 
 MAX_FINISHED_WATCHES = 256
 MAX_PROGRAM_OUTPUT_BYTES = 64 * 1024
 PATH_OPTIONS = {"--goal-state", "--loop-state", "--startup-file", "--log-file", "--lock-file"}
-STATE_COMMAND_TIMEOUT = 30.0
 DELIVERED_NOTIFICATIONS = {"started", "queued", "completed", "native_pending"}
 
 
@@ -55,52 +55,6 @@ def watcher_failure(exc: BaseException, **context: object) -> dict[str, object]:
         "exception_repr": repr(exc),
         "traceback": traceback.format_exc(),
     }
-
-
-class StateCommandRunner:
-    """Run goal and loop state engines with independent serialization."""
-
-    def __init__(self, socket_path: Path = SOCKET_PATH) -> None:
-        # State commands reach back through this socket, e.g. to submit a watcher.
-        self.socket_path = socket_path
-        self.locks = {name: asyncio.Lock() for name in STATE_COMMANDS}
-
-    async def run(self, name: str, argv: list[str], cwd: Path) -> dict[str, object]:
-        async def execute() -> tuple[bytes, bytes, int]:
-            async with self.locks[name]:
-                process = await asyncio.create_subprocess_exec(
-                    *runtime.worker_command(name, *argv),
-                    cwd=cwd,
-                    env={**os.environ, "WAITD_SOCKET": str(self.socket_path)},
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                )
-                communication = asyncio.create_task(process.communicate())
-                try:
-                    stdout, stderr = await asyncio.shield(communication)
-                except asyncio.CancelledError:
-                    with suppress(ProcessLookupError):
-                        process.kill()
-                    await communication
-                    raise
-                assert process.returncode is not None
-                return stdout, stderr, process.returncode
-
-        try:
-            stdout, stderr, returncode = await asyncio.wait_for(execute(), STATE_COMMAND_TIMEOUT)
-        except TimeoutError:
-            return {
-                "code": 124,
-                "output": "",
-                "error": f"{name} command exceeded {STATE_COMMAND_TIMEOUT:g} seconds",
-            }
-        output = stdout.decode("utf-8", errors="replace").strip()
-        error = stderr.decode("utf-8", errors="replace").strip()
-        try:
-            parsed: object = json.loads(output)
-        except json.JSONDecodeError:
-            parsed = output
-        return {"code": returncode, "output": parsed, "error": error}
 
 
 def absolute_wait_argv(argv: list[str], cwd: Path) -> list[str]:

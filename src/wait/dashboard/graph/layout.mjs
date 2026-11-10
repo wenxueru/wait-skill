@@ -1,4 +1,4 @@
-import {Graph, layout} from "./vendor/dagre.mjs";
+import {Graph, layout} from "../../../../assets/vendor/dagre.mjs";
 
 export function layoutGraph(nodes) {
   const graph = new Graph()

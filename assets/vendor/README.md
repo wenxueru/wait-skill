@@ -5,4 +5,4 @@
 - `dagre.mjs` retains the published code; only the license reference and source-map footer were replaced with the local license reference.
 - License: [MIT notices](dagre.LICENSE.txt).
 
-To update, replace the bundle and notices from a pinned release, then run `node --test tests/service/*.test.mjs` from the repository root.
+To update, replace the bundle and notices from a pinned release, then run `node --test tests/dashboard/*.test.mjs` from the repository root.

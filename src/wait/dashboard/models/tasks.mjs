@@ -14,6 +14,20 @@ export function nodeRows(goal) {
     .sort((a, b) => priority.indexOf(a.state) - priority.indexOf(b.state));
 }
 
+export function matchesTaskScope(state, scope) {
+  const historical = ["completed", "cancelled"].includes(state);
+  if (scope === "current") return !historical;
+  if (scope === "history") return historical;
+  return true;
+}
+
+export function scopeForStatuses(states, scope) {
+  if (!states.length || states.every(state => matchesTaskScope(state, scope))) return scope;
+  if (states.every(state => matchesTaskScope(state, "history"))) return "history";
+  if (states.every(state => matchesTaskScope(state, "current"))) return "current";
+  return "all";
+}
+
 export function timeDate(value) {
   if (value == null) return null;
   const date = new Date(typeof value === "number" ? value * 1000 : value);

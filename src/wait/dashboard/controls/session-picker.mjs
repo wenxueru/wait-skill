@@ -1,16 +1,4 @@
-export function sessionUrl(scope, session) {
-  const query = new URLSearchParams(scope);
-  const home = scope.get("home") || scope.get("session");
-  if (home) query.set("home", home);
-  if (session === null) query.set("all", "1");
-  else {
-    query.delete("all");
-    query.set("session", session);
-  }
-  query.delete("focus");
-  query.delete("node");
-  return "/?" + query.toString();
-}
+import {sessionUrl} from "../models/links.mjs";
 
 export function createSessionPicker(scope, t, getView) {
   const $ = id => document.getElementById(id);
@@ -21,9 +9,10 @@ export function createSessionPicker(scope, t, getView) {
   function link(label, session, counts) {
     const item = document.createElement("a");
     const query = new URLSearchParams(scope);
-    const {mode, view} = getView();
+    const {mode, view, tasks} = getView();
     query.set("mode", mode);
     query.set("view", view);
+    query.set("tasks", tasks);
     item.href = sessionUrl(query, session);
     if (session === selected) item.setAttribute("aria-current", "page");
     const name = document.createElement("span");

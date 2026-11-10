@@ -8,7 +8,7 @@ Use Python 3.11 or newer and the current conversation's session ID:
 python /path/to/wait/src/waitctl.py dashboard --session "$AGENT_SESSION_ID"
 ```
 
-Open the returned HTTP URL; `assets/dashboard.html` needs the service and cannot be opened as a `file://` page. Add `&view=graph` to open the map directly.
+Open the returned HTTP URL; `src/wait/dashboard/index.html` needs the service and cannot be opened as a `file://` page. Add `&view=graph` to open the map directly.
 
 The page defaults to English and light mode. **Settings** changes language and appearance; preferences belong to this browser address, including its port.
 
@@ -35,7 +35,7 @@ The page defaults to English and light mode. **Settings** changes language and a
 | View | Records and details | Map |
 | --- | --- | --- |
 | **Waits** | Independent and parent-owned watchers; query, delivery, result and full event note | Recorded Goal/Loop ownership and known Goal dependencies |
-| **Loops** | Iteration, schedule, deadline and run history | Parent Goal and current timer |
+| **Loops** | Iteration, schedule, deadline and run history | Parent Goal and one recurring Loop card |
 | **Goals** | DAG nodes, acceptance criteria, results and final verification | Actual task dependencies |
 
 - The header has only these three tabs. Counts include saved history; without `mode`, the page opens Waits.
@@ -44,11 +44,30 @@ The page defaults to English and light mode. **Settings** changes language and a
 
 ## List and details
 
-- Search titles or IDs. Filter beside **Status**, or click a state count; clear the filter from the header even when nothing matches.
-- Default order prioritizes failed, running and ready work. **Duration** and **Updated** cycle descending → ascending → default; switching columns starts descending. Unknown values stay last.
-- Live updates keep the selected filter and sort. Duration ordering follows the live timer without rebuilding details or discarding an editable draft.
-- Select a row or map node for its full note, recorded times, evidence and related tasks. Parent links open the corresponding task view. Parent-owned watchers are controlled through their Goal or Loop.
-- Hover/focus a badge, state count or legend for its meaning, or tap on touchscreens; Escape dismisses it. Help and filter descriptions follow the task type: a waiting program's successful exit differs from node acceptance and final Goal verification.
+### Visibility and filtering
+
+| Scope | Records |
+| --- | --- |
+| **Current tasks** (default) | Unfinished tasks, including failures |
+| **History** | Completed and cancelled tasks |
+| **All tasks** | Both; no records are deleted |
+
+- Search by title or ID. Status checkboxes and state cards toggle multiple states (OR); **All tasks** in the status menu clears that restriction.
+- Selecting historical states opens History as needed; mixing current and historical states opens All tasks. Empty results keep the filters and a history shortcut.
+- Session changes preserve task scope. Changing Wait/Loop/Goal mode resets to Current tasks. Direct links reveal finished records.
+
+### Columns and navigation
+
+| Column | Content |
+| --- | --- |
+| **Dependencies / Parent task** | Recorded task links; None when no relationship exists |
+| **Next step** | Original event note, or `—`; never inferred from results |
+| **Status** | Task-specific meaning on hover, focus or tap |
+| **Duration / Updated** | Descending → ascending → default; unknown values last |
+
+- Links open the exact task and support new tabs. Unavailable targets stay unlinked instead of opening a different task.
+- Select a task for full notes, times, evidence and related tasks. Owned watchers are controlled through their Goal or Loop.
+- Default order prioritizes failed, running and ready tasks. Live updates retain filters, sort and editable drafts; live duration sorting preserves focus.
 
 ## Timing
 
@@ -58,9 +77,12 @@ The page defaults to English and light mode. **Settings** changes language and a
 
 ## Map controls
 
-- Dagre reduces crossings. Goal filters dim other nodes without moving the layout. Relationship filters show matching records with their parent chain and current timers, fitting that subset so history does not overwhelm the map.
+- Dagre reduces crossings. Current/history maps omit unrelated finished records but retain required ancestors and current Loop timers. Within a Goal scope, status/search filters dim other nodes without moving the layout; Wait/Loop maps fit the matching relationship subset. All tasks restores the full graph.
 - Zoom with the slider, +/−, Ctrl + scroll or trackpad pinch. Drag anywhere, including nodes, with mouse, touch or pen to pan; ordinary scrolling also pans. A tap/click selects a node, while dragging does not.
 - Panning works even when the map fits and survives live updates. **Fit** recenters it; **100%** restores natural size. With the map focused, use `+`/`−`, `0` for 100%, or `f` to fit.
+- Loop timers fold into their owner card: round, interval/next run, latest result and matching timer/failure counts.
+- Loop details show five recent completed iterations and a collapsed timer history linking to original Wait records. Filters still count original records; no state is deleted.
+- Map instructions and relationship explanations are under **?** (hover, focus or tap); task notes and results remain complete.
 - Assets are bundled locally; no CDN or page maintenance by the agent is needed.
 
 ## Change tasks

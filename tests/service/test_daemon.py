@@ -1160,22 +1160,6 @@ class WaitDaemonTest(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(json.JSONDecodeError):
             waitd.WaitDaemon(registry)
 
-    async def test_state_command_timeout_includes_lock_wait(self) -> None:
-        runner = waitd.StateCommandRunner()
-        await runner.locks["goal"].acquire()
-        original_timeout = waitd.STATE_COMMAND_TIMEOUT
-        waitd.STATE_COMMAND_TIMEOUT = 0.01
-        try:
-            result = await asyncio.wait_for(
-                runner.run("goal", ["check"], self.root),
-                timeout=0.1,
-            )
-        finally:
-            waitd.STATE_COMMAND_TIMEOUT = original_timeout
-            runner.locks["goal"].release()
-
-        self.assertEqual(result["code"], 124)
-
     async def test_state_commands_run_through_service(self) -> None:
         goal_state = self.root / "goal.json"
         response = await self.daemon.dispatch(

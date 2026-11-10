@@ -1,10 +1,3 @@
-<!doctype html>
-<html lang="en" data-theme="light">
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title data-i18n="page.title">Wait dashboard</title>
-<link rel="icon" type="image/svg+xml" href="/assets/icon.svg">
-<style>
 :root {
   color-scheme: light;
   font: 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -70,9 +63,8 @@ h1 { display: flex; align-items: center; gap: 10px; margin: 0; font-size: 20px; 
 #connection { font-size: 11px; color: var(--primary); white-space: nowrap; }
 main { max-width: 1640px; padding: 30px 32px 44px; margin: auto; }
 .eyebrow { display: block; margin-bottom: 9px; color: var(--muted); font-size: 10px; font-weight: 600; letter-spacing: 1.7px; text-transform: uppercase; }
-.session-summary { padding-bottom: 24px; }
+.session-summary { padding-bottom: 16px; }
 .session-summary h2 { font-size: 26px; letter-spacing: -.7px; margin: 0; font-weight: 650; }
-.session-summary p { margin: 9px 0 0; color: var(--muted); font-size: 12px; line-height: 1.7; max-width: 950px; }
 .mode-tabs { display: flex; gap: 5px; margin-bottom: 22px; border-bottom: 1px solid var(--border); }
 .mode-tabs button { position: relative; border: 0; border-radius: 0; padding: 12px 17px; background: transparent; color: var(--muted); border-bottom: 2px solid transparent; }
 .mode-tabs button:first-child { padding-left: 0; padding-right: 22px; }
@@ -118,14 +110,20 @@ h2 { font-size: 22px; line-height: 1.4; font-weight: 650; margin: 0; letter-spac
 .node-tools { display: flex; align-items: center; gap: 9px; padding: 12px 16px; border-bottom: 1px solid var(--border-soft); }
 .node-tools input { margin: 0; flex: 1; min-width: 80px; padding-left: 11px; font-size: 12px; background: var(--surface-raised); }
 .node-tools output { font-size: 10px; color: var(--muted); white-space: nowrap; }
+#taskScope { max-width: 180px; font-size: 12px; }
 .node-list { min-height: 300px; max-height: 600px; overflow-y: auto; }
-.node-columns, .node-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(110px, .65fr) 86px 90px 112px; gap: 14px; align-items: center; padding: 12px 18px; }
+.node-columns, .node-row { display: grid; grid-template-columns: minmax(140px, 1fr) minmax(105px, .65fr) minmax(150px, 1fr) 86px 90px 112px; gap: 14px; align-items: center; padding: 12px 18px; }
 .node-columns { position: sticky; top: 0; z-index: 1; background: var(--surface-raised); font-size: 10px; color: var(--muted); border-bottom: 1px solid var(--border-soft); text-transform: uppercase; letter-spacing: .6px; }
 .status-column { display: inline-flex; align-items: center; gap: 5px; font-size: inherit; margin: 0; color: var(--muted); }
-.column-filter { position: relative; display: inline-grid; place-items: center; width: 25px; height: 25px; border-radius: 5px; cursor: pointer; }
+.column-filter { display: inline-flex; align-items: center; justify-content: center; gap: 3px; min-width: 25px; height: 25px; padding: 0 4px; border: 0; border-radius: 5px; background: transparent; cursor: pointer; }
 .column-filter:hover, .column-filter[data-active="true"] { background: var(--badge); color: var(--primary); }
 .column-filter:focus-within { outline: 2px solid var(--focus); outline-offset: 1px; }
-.column-filter select { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; margin: 0; padding: 0; }
+.filter-panel { position: fixed; inset: auto; margin: 0; width: 240px; max-width: calc(100vw - 24px); max-height: calc(100vh - 24px); overflow: auto; padding: 7px; border: 1px solid var(--border); border-radius: 12px; color: var(--text); background: var(--surface); box-shadow: 0 10px 35px #0002; }
+.filter-panel label { display: flex; align-items: center; gap: 9px; margin: 0; padding: 9px 10px; border-radius: 6px; cursor: pointer; font-size: 12px; }
+.filter-panel label:hover { background: var(--hover); }
+.filter-panel label:has(:checked) { color: var(--primary); background: var(--badge); }
+.filter-panel input { width: 15px; height: 15px; padding: 0; margin: 0; accent-color: var(--primary); }
+.filter-panel label:first-child { border-bottom: 1px solid var(--border-soft); margin-bottom: 3px; }
 .duration-column { text-align: right; }
 .column-sort { display: inline-flex; gap: 5px; align-items: center; justify-content: flex-end; padding: 5px 0; border: 0; background: transparent; color: var(--muted); font: inherit; letter-spacing: inherit; text-transform: inherit; }
 .column-sort:hover, .column-sort[aria-pressed="true"] { color: var(--primary); }
@@ -133,8 +131,15 @@ h2 { font-size: 22px; line-height: 1.4; font-weight: 650; margin: 0; letter-spac
 .node-row { width: 100%; min-height: 80px; text-align: left; border: 0; border-radius: 0; border-bottom: 1px solid var(--border-soft); background: transparent; }
 .node-row:last-child { border-bottom: 0; }
 .node-row:hover { background: var(--hover); }
-.node-row[aria-pressed="true"] { background: var(--node-selected); box-shadow: inset 3px 0 0 var(--primary); }
-.node-name { min-width: 0; }
+.node-row[aria-current="true"] { background: var(--node-selected); box-shadow: inset 3px 0 0 var(--primary); }
+.node-name { min-width: 0; padding: 0; border: 0; background: transparent; text-align: left; }
+.node-name:hover { background: transparent; color: var(--primary); }
+.node-deps { display: flex; flex-direction: column; gap: 4px; min-width: 0; font-size: 11px; }
+.node-deps a { color: var(--primary); text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.node-deps a:hover { text-decoration: underline; }
+.node-deps > span:not(.muted) { overflow-wrap: anywhere; }
+.dependency-caption, .next-caption { display: none; }
+.node-next { min-width: 0; }
 .node-name strong { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; line-height: 1.6; font-size: 12px; font-weight: 550; overflow-wrap: anywhere; }
 .node-name code { display: block; color: var(--soft-text); font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; margin-top: 5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .node-reason { color: var(--muted); font-size: 11px; line-height: 1.6; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; }
@@ -145,14 +150,29 @@ h2 { font-size: 22px; line-height: 1.4; font-weight: 650; margin: 0; letter-spac
 .node-timeline { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 9px 16px; margin: 17px 0 20px; padding: 14px 0; border-top: 1px solid var(--border-soft); border-bottom: 1px solid var(--border-soft); font-size: 10px; line-height: 1.6; }
 .node-timeline dt { color: var(--muted); }
 .node-timeline dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
-.graph { overflow: hidden; height: 530px; min-height: 320px; background: radial-gradient(var(--grid) .75px, transparent .75px); background-size: 20px 20px; overscroll-behavior: contain; cursor: grab; touch-action: none; user-select: none; }
+.graph { position: relative; overflow: hidden; height: 530px; min-height: 320px; background: radial-gradient(var(--grid) .75px, transparent .75px); background-size: 20px 20px; overscroll-behavior: contain; cursor: grab; touch-action: none; user-select: none; }
+.graph > .empty { position: absolute; inset: 0; background: var(--surface); cursor: default; }
 .graph.panning, .graph.panning * { cursor: grabbing; }
 .graph:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
 .graph-tools { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--border-soft); flex-wrap: wrap; }
-.graph-help { color: var(--muted); font-size: 10px; }
-.relations-hint { margin: 0; padding: 10px 16px; color: var(--muted); font-size: 11px; line-height: 1.6; border-bottom: 1px solid var(--border-soft); }
+.graph-help { margin-left: auto; display: inline-grid; place-items: center; width: 22px; height: 22px; border: 1px solid var(--border); border-radius: 50%; color: var(--muted); font-size: 12px; cursor: help; }
 .graph-node-meta { display: flex; align-items: center; gap: 8px; font-size: 10px; }
 .graph svg { display: block; max-width: none; transform-origin: 0 0; }
+.graph-node.loop-node { display: flex; flex-direction: column; gap: 3px; }
+.loop-kicker { display: flex; justify-content: space-between; color: var(--primary); font-size: 9px; line-height: 13px; }
+.graph-node.loop-node strong { height: auto; min-height: 14px; max-height: 28px; flex-shrink: 0; font-size: 11px; line-height: 14px; }
+.loop-schedule, .loop-result { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--muted); font-size: 9px; line-height: 12px; }
+.loop-node .graph-node-meta { margin-top: auto; gap: 7px; }
+.loop-node .graph-node-meta small { margin-left: auto; font-size: 9px; color: var(--muted); }
+.loop-node .graph-node-meta .loop-alert { color: var(--status-failed); }
+.loop-history { list-style: none; padding: 0 0 0 12px; border-left: 2px solid var(--border); margin: 12px 0; }
+.loop-history li { position: relative; margin-bottom: 15px; font-size: 11px; }
+.loop-history li::before { content: ""; position: absolute; left: -17px; top: 5px; width: 8px; height: 8px; border-radius: 50%; background: var(--primary); }
+.loop-history time { display: block; margin: 5px 0; color: var(--muted); font-size: 10px; }
+.loop-history p { margin: 6px 0; line-height: 1.6; white-space: pre-wrap; }
+.loop-timers { margin: 16px 0; }
+.loop-timers ol { max-height: 280px; overflow: auto; }
+.loop-timers button { margin-left: 7px; padding: 3px 6px; font: 10px ui-monospace, monospace; }
 .graph g { cursor: grab; outline: none; }
 .graph g:hover > rect:first-child, .graph g:focus-visible > rect:first-child { stroke: var(--focus); stroke-width: 2px; }
 .graph-node { color: var(--text); font-size: 12px; line-height: 1.6; overflow: hidden; height: 100%; }
@@ -196,14 +216,18 @@ dialog::backdrop { background: #14212d66; backdrop-filter: blur(3px); }
 dialog select { display: block; width: 100%; margin-top: 6px; }
 .empty { padding: 65px 24px; text-align: center; }
 .empty p { line-height: 1.8; }
-.task-meta { display: flex; flex-wrap: wrap; gap: 9px 20px; margin-top: 14px; font-size: 11px; color: var(--muted); }
+.task-meta { display: grid; gap: 11px; margin: 20px 0 0; padding-top: 16px; border-top: 1px solid var(--border-soft); font-size: 11px; line-height: 1.7; color: var(--muted); }
+.task-meta > span { overflow-wrap: anywhere; }
+.details > .danger { margin-top: 20px; }
+.task-more { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border-soft); }
+.task-more > summary { font-size: 11px; color: var(--muted); }
 .task-note { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.8; font-size: 12px; }
 .wait-context { border-top: 1px solid var(--border-soft); padding-top: 17px; margin-top: 20px; }
 .wait-context p { white-space: pre-wrap; overflow-wrap: anywhere; }
 @media (max-width: 1050px) {
   .layout { grid-template-columns: minmax(0, 1fr) 300px; }
-  .node-columns, .node-row { grid-template-columns: minmax(0, 1fr) 84px 80px 104px; gap: 10px; }
-  .node-reason, .context-column { display: none; }
+  .node-columns, .node-row { grid-template-columns: minmax(0, 1fr) minmax(95px, .65fr) 84px 80px 104px; gap: 10px; }
+  .node-next, .next-column { display: none; }
   .goal-heading { flex-direction: column; gap: 8px; }
 }
 @media (max-width: 760px) {
@@ -221,6 +245,14 @@ dialog select { display: block; width: 100%; margin-top: 6px; }
   .node-tools { flex-wrap: wrap; }
   .node-tools input { flex-basis: 100%; }
   .node-columns, .node-row { grid-template-columns: minmax(0, 1fr) 90px; }
+  .dependency-column, .next-column { display: none; }
+  .node-row > .node-name { grid-column: 1; grid-row: 1; }
+  .node-row > .node-status { grid-column: 2; grid-row: 1; }
+  .node-deps, .node-next { grid-column: 1 / -1; display: block; }
+  .node-deps[data-empty="true"], .node-next[data-empty="true"] { display: none; }
+  .node-deps a { display: inline-block; max-width: 100%; margin-right: 8px; vertical-align: middle; }
+  .dependency-caption, .next-caption { display: inline; margin-right: 7px; color: var(--muted); font-size: 10px; }
+  .node-next { display: grid; grid-template-columns: 48px minmax(0, 1fr); gap: 7px; }
   .duration-column { grid-column: 1; justify-self: start; }
   #updatedSort { grid-column: 2; justify-self: end; }
   .node-time { grid-column: 1; flex-direction: row; flex-wrap: wrap; align-items: center; gap: 7px; }
@@ -232,197 +264,3 @@ dialog select { display: block; width: 100%; margin-top: 6px; }
   .event { flex-direction: column; gap: 4px; }
 }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; scroll-behavior: auto !important; } }
-</style>
-<header>
-  <h1><img class="brand-mark" src="/assets/icon.svg" alt="">Wait</h1>
-  <button id="sessionToggle" type="button" popovertarget="sessionPanel" aria-label="Switch session" data-i18n-aria-label="scope.select"><span id="scopeLabel">Current session</span><span aria-hidden="true">⌄</span></button>
-  <div id="sessionPanel" class="session-panel" popover>
-    <input id="sessionSearch" type="search" placeholder="Search session ID…" aria-label="Search session ID" data-i18n-placeholder="scope.search" data-i18n-aria-label="scope.search">
-    <nav id="sessionOptions" aria-label="Sessions" data-i18n-aria-label="scope.select"></nav>
-    <p id="sessionError" hidden></p>
-  </div>
-  <div class="header-controls">
-    <button id="settingsToggle" type="button" popovertarget="settingsPanel">
-      <span class="settings-icon" aria-hidden="true">⚙︎</span><span data-i18n="settings.title">Settings</span>
-    </button>
-    <div id="settingsPanel" class="settings-panel" popover>
-      <h2 data-i18n="settings.title">Settings</h2>
-      <label for="languagePreference" data-i18n="language.label">Language</label>
-      <select id="languagePreference">
-        <option value="en">English</option>
-        <option value="zh">简体中文</option>
-      </select>
-      <label for="themePreference" data-i18n="theme.label">Appearance</label>
-      <select id="themePreference">
-        <option value="light" data-i18n="theme.light">Light</option>
-        <option value="dark" data-i18n="theme.dark">Dark</option>
-      </select>
-    </div>
-  </div>
-  <span id="connection" data-i18n="connection.connecting"></span>
-</header>
-<main>
-  <div id="error" hidden></div>
-  <section class="session-summary" aria-live="polite">
-    <span class="eyebrow" data-i18n="session.tasks">Session tasks</span>
-    <h2 id="sessionStatus" data-i18n="session.connecting"></h2>
-    <p id="sessionNext"></p>
-  </section>
-  <div id="notice" class="notice" hidden></div>
-  <nav id="modes" class="mode-tabs" data-i18n-aria-label="view.aria" aria-label="Task views">
-    <button data-mode="wait" data-i18n="mode.wait"></button>
-    <button data-mode="loop" data-i18n="mode.loop"></button>
-    <button data-mode="goal" data-i18n="mode.goal"></button>
-  </nav>
-  <div class="toolbar" id="goalToolbar">
-    <select id="goals" data-i18n-aria-label="select.goal" aria-label="Select a goal"></select>
-    <div class="spacer"></div>
-    <button id="pause" data-i18n="goal.pause">Pause</button>
-    <button id="resume" data-i18n="goal.resume">Resume</button>
-    <button class="danger" id="cancel" data-i18n="common.cancel">Cancel</button>
-  </div>
-  <div id="empty" class="card empty" hidden>
-    <h2 data-i18n="empty.goals.title">No goals yet</h2>
-    <p class="muted" data-i18n="empty.goals.body">This session has no DAG. Create one with waitctl goal init.</p>
-  </div>
-  <div id="content" hidden>
-    <div class="goal-heading">
-      <h2 id="objective"></h2>
-      <div class="stats" id="stats"></div>
-    </div>
-    <details class="goal-description">
-      <summary data-i18n="goal.description">Full objective</summary>
-      <p id="goalDescription"></p>
-    </details>
-    <div class="progress"><span id="progress"></span></div>
-    <div id="nodeMetrics" class="metrics">
-      <button class="metric" data-state="ready" aria-pressed="false">
-        <span class="metric-label"><i class="dot ready"></i><span data-i18n="state.ready">Ready</span></span><strong>0</strong>
-      </button>
-      <button class="metric" data-state="running" aria-pressed="false">
-        <span class="metric-label"><i class="dot running"></i><span data-i18n="state.running">Running</span></span><strong>0</strong>
-      </button>
-      <button class="metric" data-state="waiting" aria-pressed="false">
-        <span class="metric-label"><i class="dot waiting"></i><span data-i18n="state.waiting">Waiting</span></span><strong>0</strong>
-      </button>
-      <button class="metric" data-state="completed" aria-pressed="false">
-        <span class="metric-label"><i class="dot completed"></i><span data-i18n="state.completed">Completed</span></span><strong>0</strong>
-      </button>
-    </div>
-    <div class="layout">
-      <section class="card graph-card">
-        <div class="graph-head">
-          <div class="view-switch" id="nodeViews" aria-label="Task display" data-i18n-aria-label="workspace.display">
-            <button data-view="list" data-i18n="workspace.list" aria-pressed="true">Task list</button>
-            <button data-view="graph" data-i18n="graph.title" aria-pressed="false">Dependency map</button>
-          </div>
-          <button id="add" data-i18n="graph.add">+ Node</button>
-        </div>
-        <div class="node-tools">
-          <input id="nodeSearch" type="search" placeholder="Search tasks or IDs…" data-i18n-placeholder="workspace.search" aria-label="Search tasks" data-i18n-aria-label="workspace.search">
-
-          <output id="nodeCount" aria-live="polite"></output>
-        </div>
-        <div id="nodeList" class="node-list">
-          <div id="nodeColumns" class="node-columns">
-            <span data-i18n="workspace.task">Task</span>
-            <span class="context-column" data-i18n="workspace.context">Dependency / next step</span>
-            <label id="statusColumn" class="status-column">
-              <span data-i18n="workspace.state">Status</span>
-              <span class="column-filter" id="filterControl" title="Filter tasks" data-i18n-title="workspace.filter">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 5h16l-6 7v6l-4 2v-8z"/></svg>
-                <select id="nodeFilter" aria-label="Filter tasks" data-i18n-aria-label="workspace.filter">
-            <option value="all" data-i18n="workspace.all">All tasks</option>
-            <option value="ready" data-i18n="state.ready">Ready</option>
-            <option value="running" data-i18n="state.running">Running</option>
-            <option value="waiting" data-i18n="state.waiting">Waiting</option>
-            <option value="blocked" data-i18n="state.blocked">Blocked</option>
-            <option value="pending" data-i18n="state.pending">Pending</option>
-            <option value="completed" data-i18n="state.completed">Completed</option>
-            <option value="failed" data-i18n="state.failed">Failed</option>
-            <option value="cancelled" data-i18n="state.cancelled">Cancelled</option>
-          </select>
-              </span>
-            </label>
-            <button id="durationColumn" class="column-sort duration-column" data-sort="duration" aria-pressed="false"><span data-i18n="duration.title">Duration</span><span id="durationDirection" data-sort-direction aria-hidden="true">↕</span></button>
-            <button id="updatedSort" class="column-sort" data-sort="updated" aria-pressed="false"><span data-i18n="time.updated">Updated</span><span id="sortDirection" data-sort-direction aria-hidden="true">↕</span></button>
-          </div>
-          <div id="nodeRows"></div>
-        </div>
-        <p id="relationsHint" class="relations-hint" data-i18n="activity.relationsHint" hidden></p>
-        <div id="graphTools" class="graph-tools" hidden>
-          <span id="graphFilter"></span>
-          <span class="graph-help" data-i18n="graph.help">Drag anywhere / scroll to pan · Click a node for details · Ctrl + scroll / pinch to zoom</span>
-          <div class="zoom-controls">
-            <button id="zoomOut" aria-label="Zoom out" data-i18n-aria-label="graph.zoomOut">−</button>
-            <input id="zoomRange" type="range" min="1" max="400" value="100" aria-label="Zoom" data-i18n-aria-label="graph.zoom">
-            <output id="zoomLevel">100%</output>
-            <button id="zoomIn" aria-label="Zoom in" data-i18n-aria-label="graph.zoomIn">+</button>
-            <button id="zoomReset">100%</button>
-            <button id="fitGraph" data-i18n="graph.fit">Fit</button>
-          </div>
-        </div>
-        <div class="graph" id="graph" tabindex="0" aria-label="Dependency map" data-i18n-aria-label="graph.title" hidden></div>
-        <div id="graphFooter" class="graph-footer" hidden>
-          <div class="legend">
-            <span data-state="blocked"><i class="dot pending"></i><span data-i18n="state.blocked">Blocked</span></span>
-            <span data-state="running"><i class="dot running"></i><span data-i18n="state.running">Running</span></span>
-            <span data-state="waiting"><i class="dot waiting"></i><span data-i18n="state.waiting">Waiting</span></span>
-            <span data-state="completed"><i class="dot completed"></i><span data-i18n="state.completed">Completed</span></span>
-          </div>
-        </div>
-      </section>
-      <aside class="card details" id="details"></aside>
-    </div>
-    <details class="card events">
-      <summary data-i18n="events.recent">Recent changes</summary>
-      <div id="events"></div>
-    </details>
-  </div>
-</main>
-<dialog id="addDialog">
-  <form id="addForm">
-    <h2 data-i18n="node.add">Add node</h2>
-    <label><span data-i18n="node.id">Node ID</span><input name="id" required pattern="[a-zA-Z0-9_.-]+"></label>
-    <label><span data-i18n="node.title">Task description</span><input name="title" required></label>
-    <label><span data-i18n="node.kind">Type</span>
-      <select name="kind">
-        <option value="local" data-i18n="node.kind.local">Main agent</option>
-        <option value="agent" data-i18n="node.kind.agent">Subagent</option>
-        <option value="external" data-i18n="node.kind.external">External event</option>
-      </select>
-    </label>
-    <label><span data-i18n="node.dependencies">Dependencies (comma-separated IDs)</span><input name="depends_on"></label>
-    <label><span data-i18n="node.acceptance">Acceptance criteria (one per line)</span><textarea name="acceptance"></textarea></label>
-    <label><span data-i18n="node.write_paths">Write paths (one per line; leave blank for read-only)</span><textarea name="write_paths"></textarea></label>
-    <div class="actions">
-      <button class="primary" data-i18n="common.add">Add</button>
-      <button type="button" id="dismiss" data-i18n="common.back">Back</button>
-    </div>
-  </form>
-</dialog>
-<div id="statusHelp" class="status-help" popover="manual" role="tooltip"></div>
-<script>
-if (location.protocol === "file:") {
-  document.querySelector(".brand-mark").hidden = true;
-  const notice = document.createElement("section");
-  notice.className = "card empty";
-  const title = document.createElement("h2");
-  title.textContent = "请通过 HTTP 打开看板 / Open the HTTP dashboard";
-  const message = document.createElement("p");
-  message.textContent = "此页面需要 waitd 提供实时数据，不能直接打开 HTML 文件。运行下方命令后，打开返回的 http:// 地址。 / Run the command below and open its returned HTTP URL.";
-  const command = document.createElement("pre");
-  command.textContent = "python /path/to/wait/src/waitctl.py dashboard --session SESSION_ID";
-  notice.append(title, message, command);
-  document.querySelector("main").replaceChildren(notice);
-} else {
-  import("/assets/dashboard.mjs").catch(error => {
-    document.getElementById("content").hidden = true;
-    document.getElementById("goalToolbar").hidden = true;
-    const message = document.getElementById("error");
-    message.hidden = false;
-    message.textContent = "看板资源加载失败，请通过 waitctl dashboard 重新打开。 / Unable to load the dashboard. " + error.message;
-  });
-}
-</script>
-</html>

@@ -287,14 +287,16 @@ class DashboardTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn(b"text/html", header)
         self.assertIn(b"<!doctype html>", html)
         for asset in (
-            "dashboard.mjs",
-            "appearance.mjs",
-            "task-model.mjs",
-            "activity-model.mjs",
-            "graph-viewport.mjs",
-            "status-help.mjs",
-            "session-picker.mjs",
-            "graph-layout.mjs",
+            "dashboard/app.mjs",
+            "dashboard/appearance.mjs",
+            "dashboard/models/tasks.mjs",
+            "dashboard/models/activity.mjs",
+            "dashboard/controls/viewport.mjs",
+            "dashboard/controls/status-help.mjs",
+            "dashboard/controls/status-filter.mjs",
+            "dashboard/models/links.mjs",
+            "dashboard/controls/session-picker.mjs",
+            "dashboard/graph/layout.mjs",
             "vendor/dagre.mjs",
         ):
             async with self.http(f"/assets/{asset}", **headers) as reader:
@@ -303,10 +305,16 @@ class DashboardTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(header.split()[1], b"200")
             self.assertIn(b"text/javascript", header)
             self.assertTrue(script)
+        async with self.http("/assets/dashboard/styles.css", **headers) as reader:
+            response = await asyncio.wait_for(reader.read(), 2)
+        css_header, css = response.split(b"\r\n\r\n", 1)
+        self.assertEqual(css_header.split()[1], b"200")
+        self.assertIn(b"text/css", css_header)
+        self.assertTrue(css)
         for target in ("/assets/../SKILL.md", "/assets/vendor/unknown.mjs"):
             code, _ = await self.response(target=target, **headers)
             self.assertEqual(code, 404)
-        for asset in ("icon.svg", "logo.svg"):
+        for asset in ("brand/icon.svg", "brand/logo.svg"):
             async with self.http(f"/assets/{asset}", **headers) as reader:
                 response = await asyncio.wait_for(reader.read(), 2)
             header, content = response.split(b"\r\n\r\n", 1)

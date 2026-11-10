@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {durationRanges, nextSort, nodeRows, nodeTimings, orderRows, timeDate} from "../../assets/task-model.mjs";
+import {durationRanges, matchesTaskScope, scopeForStatuses, nextSort, nodeRows, nodeTimings, orderRows, timeDate} from "../../src/wait/dashboard/models/tasks.mjs";
 
 test("updated sorting toggles direction, keeps missing timestamps last and preserves ties", () => {
   const rows = ["missing", "newest", "oldest", "tied"].map(id => ({id}));
@@ -114,4 +114,21 @@ test("timestamps use node records, retain lifecycle times and ignore unrelated g
   assert.equal(times.get("unknown").updated, null);
   assert.equal(times.get("invalid").updated, null);
   assert.equal(timeDate(undefined), null);
+});
+
+test("current tasks hide completed and cancelled history while keeping failures visible", () => {
+  const states = ["ready", "running", "waiting", "blocked", "pending", "failed", "completed", "cancelled"];
+  assert.deepEqual(states.filter(state => matchesTaskScope(state, "current")), states.slice(0, 6));
+  assert.deepEqual(states.filter(state => matchesTaskScope(state, "history")), ["completed", "cancelled"]);
+  assert.deepEqual(states.filter(state => matchesTaskScope(state, "all")), states);
+});
+
+test("status selections widen task scope so mixed current and historical states remain visible", () => {
+  assert.equal(scopeForStatuses(["running", "failed"], "current"), "current");
+  assert.equal(scopeForStatuses(["completed", "cancelled"], "current"), "history");
+  assert.equal(scopeForStatuses(["running", "completed"], "current"), "all");
+  assert.equal(scopeForStatuses(["failed"], "history"), "current");
+  assert.equal(scopeForStatuses(["completed"], "all"), "all");
+  assert.equal(scopeForStatuses([], "current"), "current");
+  assert.equal(scopeForStatuses([], "history"), "history");
 });

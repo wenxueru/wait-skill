@@ -16,10 +16,20 @@ from collections.abc import Callable, Generator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import NotRequired, TypedDict, cast
+from typing import cast
 
 from .. import runtime
 from ..protocol import SOCKET_PATH
+from .schema import (
+    AgentAssignment,
+    GoalEvent,
+    GoalNode,
+    GoalState,
+    NodeAttempt,
+    ReadyNode,
+    WaitMetadata,
+    WatchEvent,
+)
 
 # Constants
 
@@ -33,113 +43,7 @@ WAIT_PHASES = {"prepared", "active"}
 CLIENTS = runtime.CLIENTS
 DEFAULT_STATE_ROOT = Path("/tmp/.wait-goal")
 
-# Persisted-state schema (TypedDicts mirroring the JSON on disk) and errors
-
-
-class WaitMetadata(TypedDict):
-    label: str
-    client: str
-    thread: str
-    log_file: str
-    lock_file: str
-    startup_file: str
-    since: str
-    watch_id: str
-    phase: str
-    event_note: NotRequired[str]
-
-
-class WatchEvent(TypedDict):
-    event_id: str
-    event: str
-    status: str | None
-    at: str
-
-
-class AgentAssignmentFields(TypedDict):
-    phase: str
-    dispatch_token: str
-    prepared_at: str
-
-
-class AgentAssignment(AgentAssignmentFields, total=False):
-    agent_id: str
-    assigned_at: str
-
-
-class NodeAttemptFields(TypedDict):
-    outcome: str
-    result: str
-    failed_at: str
-
-
-class NodeAttempt(NodeAttemptFields, total=False):
-    started_at: str
-    assignment: AgentAssignment
-    last_event: WatchEvent
-
-
-class Verification(TypedDict):
-    summary: str
-    checks: list[str]
-    verified_at: str
-
-
-class GoalEventFields(TypedDict):
-    seq: int
-    at: str
-    operation: str
-
-
-class GoalEvent(GoalEventFields, total=False):
-    source: str
-    node_id: str
-    details: dict[str, object]
-
-
-class GoalNodeFields(TypedDict):
-    title: str
-    kind: str
-    depends_on: list[str]
-    status: str
-    acceptance: list[str]
-    read_only: bool
-    write_paths: list[str]
-    inputs: dict[str, str]
-    expected_artifacts: list[str]
-    artifacts: list[str]
-    result: str | None
-    wait: WaitMetadata | None
-    last_event: WatchEvent | None
-    assignment: AgentAssignment | None
-    attempts: list[NodeAttempt]
-
-
-class GoalNode(GoalNodeFields, total=False):
-    started_at: str
-    completed_at: str
-    failed_at: str
-
-
-class ReadyNode(GoalNode):
-    id: str
-
-
-class GoalStateFields(TypedDict):
-    objective: str
-    status: str
-    client: str
-    thread: str | None
-    verification: Verification | None
-    created_at: str
-    updated_at: str
-    nodes: dict[str, GoalNode]
-    events: list[GoalEvent]
-
-
-class GoalState(GoalStateFields, total=False):
-    result: str
-    completed_at: str
+# Domain errors
 
 
 class GoalError(runtime.StateError):
