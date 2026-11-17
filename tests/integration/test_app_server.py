@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import http.server
 import json
 import os
@@ -113,8 +114,8 @@ def running_codex(root: Path, endpoint: str, model_port: int) -> Generator[None,
 
 
 @unittest.skipUnless(shutil.which("codex"), "Codex CLI is not installed")
-class RealAppServerTest(unittest.TestCase):
-    def test_turn_continues_after_all_clients_disconnect(self) -> None:
+class RealAppServerTest(unittest.IsolatedAsyncioTestCase):
+    async def test_turn_continues_after_all_clients_disconnect(self) -> None:
         requests.clear()
         stub = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Stub)
         threading.Thread(target=stub.serve_forever, daemon=True).start()
@@ -124,32 +125,36 @@ class RealAppServerTest(unittest.TestCase):
                 (root / "home").mkdir()
                 endpoint = f"unix://{root / 'server.sock'}"
                 with running_codex(root, endpoint, stub.server_port):
-                    with AppServer(endpoint, 10) as rpc:
-                        thread = rpc.call(
-                            "thread/start",
-                            {
-                                "cwd": temp,
-                                "model": "wait-smoke",
-                                "approvalPolicy": "never",
-                                "sandbox": "read-only",
-                            },
+                    async with AppServer(endpoint, 10) as rpc:
+                        thread = (
+                            await rpc.call(
+                                "thread/start",
+                                {
+                                    "cwd": temp,
+                                    "model": "wait-smoke",
+                                    "approvalPolicy": "never",
+                                    "sandbox": "read-only",
+                                },
+                            )
                         )["thread"]
                     # No client remains attached; wake independently, then disconnect as well.
-                    result, code = wake(endpoint, thread["id"], "Verify the background continuation.", 10)
+                    result, code = await wake(endpoint, thread["id"], "Verify the background continuation.", 10)
                     self.assertEqual(code, 0, result)
                     self.assertEqual(result["status"], "started", result)
                     for _ in range(100):
-                        with AppServer(endpoint, 5) as rpc:
-                            read = rpc.call(
-                                "thread/read",
-                                {
-                                    "threadId": thread["id"],
-                                    "includeTurns": False,
-                                },
+                        async with AppServer(endpoint, 5) as rpc:
+                            read = (
+                                await rpc.call(
+                                    "thread/read",
+                                    {
+                                        "threadId": thread["id"],
+                                        "includeTurns": False,
+                                    },
+                                )
                             )["thread"]
                         if requests and read["status"]["type"] == "idle":
                             break
-                        time.sleep(0.05)
+                        await asyncio.sleep(0.05)
                     self.assertEqual(read["status"]["type"], "idle", read)
                     self.assertTrue(requests, "model backend was never called")
                     self.assertTrue(

@@ -1,0 +1,14 @@
+{
+  "name": "wait-dashboard",
+  "private": true,
+  "scripts": {
+    "build:dashboard": "node scripts/bundle-dashboard.mjs",
+    "test": "node --test tests/dashboard/*.test.mjs"
+  },
+  "devDependencies": {
+    "d3-selection": "3.0.1",
+    "d3-zoom": "3.0.0",
+    "esbuild": "0.25.12",
+    "lit-html": "3.3.2"
+  }
+}

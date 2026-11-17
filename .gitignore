@@ -8,3 +8,7 @@ commit.tmp
 .vscode/
 .claude/
 history.cmt
+node_modules/
+src/_deps/
+
+/node_modules

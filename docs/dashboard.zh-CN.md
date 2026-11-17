@@ -2,7 +2,7 @@
 
 ## 打开当前会话
 
-使用 Python 3.11 或更新版本，传入当前对话的会话 ID：
+在执行主机上[安装 Wait](../README.zh-CN.md#安装)后，传入当前对话的会话 ID：
 
 ```sh
 python /path/to/wait/src/waitctl.py dashboard --session "$AGENT_SESSION_ID"

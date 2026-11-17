@@ -17,13 +17,14 @@
 
 ## Install
 
-Requires Python 3.11 or newer.
+Requires Python 3.11 or newer with pip. Install on the host that runs `waitd`.
 
 ```sh
 git clone https://github.com/wenxueru/wait-skill.git /path/to/wait-skill
 python /path/to/wait-skill/src/install_skill.py
 ```
 
+- The installer downloads pinned Python libraries into this skill only. Run Wait with the same Python used to install it.
 - Default destination: `${CODEX_HOME:-~/.codex}/skills/wait`. For another client, pass `--destination /path/to/client/skills/wait`.
 - Installation replaces packaged files, removes old nested skills and matching `wait-goal` / `wait-loop` symlinks, and keeps no backups. Unrelated sibling directories remain.
 - Reload the client after installing. Let an older daemon's watches finish before [stopping it to switch versions](docs/waitd.md#service-lifecycle).
@@ -67,7 +68,7 @@ Task commands also return a scoped `dashboard_url`. See [dashboard docs](docs/da
 
 ## Development
 
-The Python core uses only the standard library. Browser dependencies are [bundled locally](assets/vendor/README.md); Node is needed only for frontend tests.
+`aiohttp` serves the dashboard and `websockets` carries Codex RPC. The browser runs with [bundled local modules](assets/vendor/README.md). Node is needed for frontend development only.
 
 | Location | Responsibility |
 | --- | --- |
@@ -103,12 +104,12 @@ classDiagram
   LoopStore --> LoopState : loads
 ```
 
-Run from the repository root:
+Install the Python dependencies in a development environment, then run the checks from the repository root:
 
 ```sh
+python -m pip install -r src/requirements.txt
 python -m unittest discover -s tests -t . -v
-python -m unittest tests.tasks.test_goal -v
-node --test tests/dashboard/*.test.mjs
+npm test
 python /path/to/skill-creator/scripts/quick_validate.py .
 ```
 
@@ -122,4 +123,4 @@ python /path/to/skill-creator/scripts/quick_validate.py .
 
 ## License
 
-MIT. Bundled Dagre/Graphlib notices are in [assets/vendor/dagre.LICENSE.txt](assets/vendor/dagre.LICENSE.txt).
+MIT. See [bundled dependency notices](assets/vendor/README.md).

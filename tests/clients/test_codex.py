@@ -89,6 +89,9 @@ class CodexDeliveryTest(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(second & 128, "client frames must be masked")
                 mask = await reader.readexactly(4)
                 data = await reader.readexactly(length)
+                if first & 15 == 8:
+                    await self.frame(writer, bytes(value ^ mask[i % 4] for i, value in enumerate(data)), opcode=8)
+                    return
                 if first & 15 == 10:
                     continue
                 request = json.loads(bytes(value ^ mask[i % 4] for i, value in enumerate(data)))

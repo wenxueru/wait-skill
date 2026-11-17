@@ -6,9 +6,11 @@ import asyncio
 import json
 from collections.abc import Iterator
 from contextlib import suppress
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from urllib.parse import parse_qs, urlsplit
+
+from aiohttp import web
 
 from .. import runtime
 from ..http import loopback_origin
@@ -18,36 +20,89 @@ if TYPE_CHECKING:
     from .daemon import WaitDaemon
 
 
+MAX_ACTION_BYTES = 64 * 1024
+dashboard_json = partial(json.dumps, ensure_ascii=False)
+
+
+def request_session(request: web.Request) -> str | None:
+    return None if request.query.getall("all", []) == ["1"] else request.query.get("session", "")
+
+
+@web.middleware
+async def loopback_only(request: web.Request, handler: Any) -> web.StreamResponse:
+    try:
+        headers = request.headers
+        for name in ("Host", "Origin", "Content-Type", "Content-Length"):
+            if len(headers.getall(name, ())) > 1:
+                raise ValueError("Duplicate header")
+        authority = loopback_origin(headers.get("Host", ""))
+        origin = headers.get("Origin")
+        if origin is not None and (not origin.startswith("http://") or loopback_origin(origin[7:]) != authority):
+            raise ValueError("Invalid origin")
+        return await handler(request)
+    except web.HTTPException as exc:
+        return web.json_response({"error": exc.reason}, status=exc.status)
+    except (TimeoutError, ValueError, KeyError, TypeError, OSError) as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+
+
+async def serve_asset(path: Path, content_type: str, request: web.Request) -> web.FileResponse:
+    return web.FileResponse(path, headers={"Content-Type": f"{content_type}; charset=utf-8"})
+
+
 class Dashboard:
     def __init__(self, daemon: WaitDaemon) -> None:
         self.daemon = daemon
-        self.assets = Path(__file__).resolve().parents[3] / "assets"
-        self.web = Path(__file__).resolve().parents[1] / "dashboard"
-        self.server: asyncio.Server
-        self.clients: set[asyncio.Task[None]] = set()
+        assets = Path(__file__).resolve().parents[3] / "assets"
+        dashboard = Path(__file__).resolve().parents[1] / "dashboard"
         self.stopping = False
         self.url = ""
+        app = web.Application(middlewares=[loopback_only], client_max_size=MAX_ACTION_BYTES + 1)
+        app.on_response_prepare.append(self.cache_headers)
+        app.router.add_get("/api/state", self.state_response)
+        app.router.add_get("/api/sessions", self.sessions_response)
+        app.router.add_get("/events", self.stream, allow_head=False)
+        app.router.add_post("/api/action", self.action_response)
+        app.router.add_get("/", partial(serve_asset, dashboard / "index.html", "text/html"))
+        app.router.add_get("/assets/dashboard/styles.css", partial(serve_asset, dashboard / "styles.css", "text/css"))
+        for script in (
+            "app.mjs",
+            "appearance.mjs",
+            "controls/session-picker.mjs",
+            "controls/status-filter.mjs",
+            "controls/status-help.mjs",
+            "controls/viewport.mjs",
+            "graph/layout.mjs",
+            "models/activity.mjs",
+            "models/links.mjs",
+            "models/tasks.mjs",
+        ):
+            app.router.add_get(f"/assets/dashboard/{script}", partial(serve_asset, dashboard / script, "text/javascript"))
+        for script in ("dagre.mjs", "ui.mjs"):
+            app.router.add_get(f"/assets/vendor/{script}", partial(serve_asset, assets / "vendor" / script, "text/javascript"))
+        for icon in ("icon.svg", "logo.svg"):
+            app.router.add_get(f"/assets/brand/{icon}", partial(serve_asset, assets / "brand" / icon, "image/svg+xml"))
+        self.runner = web.AppRunner(app, shutdown_timeout=2, auto_decompress=False)
+
+    @staticmethod
+    async def cache_headers(request: web.Request, response: web.StreamResponse) -> None:
+        response.headers.setdefault("Cache-Control", "no-store")
 
     async def start(self) -> str:
-        self.server = await asyncio.start_server(self.accept, "127.0.0.1", 0)
-        port = self.server.sockets[0].getsockname()[1]
+        await self.runner.setup()
+        try:
+            await web.TCPSite(self.runner, "127.0.0.1", 0).start()
+        except BaseException:
+            await self.runner.cleanup()
+            raise
+        port = self.runner.addresses[0][1]
         self.url = f"http://127.0.0.1:{port}"
         return self.url
 
     async def close(self) -> None:
         self.stopping = True
         self.daemon.changed.set()
-        self.server.close()
-        await self.server.wait_closed()
-        tasks = list(self.clients)
-        for task in tasks:
-            task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
-
-    def accept(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        task = asyncio.create_task(self.handle(reader, writer))
-        self.clients.add(task)
-        task.add_done_callback(self.clients.discard)
+        await self.runner.cleanup()
 
     def task(self, mode: str, identity: str) -> dict[str, Any]:
         if mode == "goal":
@@ -174,126 +229,35 @@ class Dashboard:
             raise ValueError(result.get("error") or result.get("output"))
         return result
 
-    async def read_request(
-        self,
-        reader: asyncio.StreamReader,
-    ) -> tuple[str, str, dict[str, str]]:
-        header = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), 10)
-        lines = header.decode("ascii").split("\r\n")
-        method, target, _ = lines[0].split()
-        headers = {}
-        for line in lines[1:]:
-            if ":" in line:
-                key, value = line.split(":", 1)
-                key = key.lower()
-                if key in headers and key in ("host", "origin", "content-type", "content-length"):
-                    raise ValueError("Duplicate header")
-                headers[key] = value.strip()
-        origin = loopback_origin(headers.get("host", ""))
-        if "origin" in headers and (
-            not headers["origin"].startswith("http://") or loopback_origin(headers["origin"][7:]) != origin
-        ):
-            raise ValueError("Invalid origin")
-        return method, target, headers
+    async def state_response(self, request: web.Request) -> web.Response:
+        return web.json_response(self.snapshot(request_session(request)), dumps=dashboard_json)
 
-    async def handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        try:
-            method, target, headers = await self.read_request(reader)
-            address = urlsplit(target)
-            query = parse_qs(address.query)
-            session = None if query.get("all") == ["1"] else query.get("session", [""])[0]
-            target = address.path
-            if method == "GET" and target == "/events":
-                await self.stream(writer, session)
-            elif method == "GET" and target in (
-                "/",
-                "/assets/dashboard/app.mjs",
-                "/assets/dashboard/styles.css",
-                "/assets/dashboard/appearance.mjs",
-                "/assets/dashboard/models/activity.mjs",
-                "/assets/dashboard/controls/viewport.mjs",
-                "/assets/dashboard/controls/status-help.mjs",
-                "/assets/dashboard/controls/status-filter.mjs",
-                "/assets/dashboard/models/links.mjs",
-                "/assets/dashboard/controls/session-picker.mjs",
-                "/assets/dashboard/models/tasks.mjs",
-                "/assets/dashboard/graph/layout.mjs",
-                "/assets/vendor/dagre.mjs",
-                "/assets/brand/icon.svg",
-                "/assets/brand/logo.svg",
-            ):
-                if target == "/":
-                    path = self.web / "index.html"
-                elif target.startswith("/assets/dashboard/"):
-                    path = self.web / target.removeprefix("/assets/dashboard/")
-                else:
-                    path = self.assets / target.removeprefix("/assets/")
-                content_type = {".html": "text/html", ".css": "text/css", ".mjs": "text/javascript", ".svg": "image/svg+xml"}[
-                    path.suffix
-                ]
-                content = await asyncio.to_thread(path.read_bytes)
-                await self.respond(writer, 200, content, f"{content_type}; charset=utf-8")
-            elif method == "GET" and target == "/api/sessions":
-                await self.respond(writer, 200, self.sessions())
-            elif method == "GET" and target == "/api/state":
-                await self.respond(writer, 200, self.snapshot(session))
-            elif method == "POST" and target == "/api/action":
-                if headers.get("content-type") != "application/json":
-                    raise ValueError("Expected application/json")
-                length = int(headers.get("content-length", "0"))
-                if not 0 < length <= 65536:
-                    raise ValueError("Invalid body length")
-                content = await asyncio.wait_for(reader.readexactly(length), 10)
-                await self.respond(writer, 200, await self.action(json.loads(content), session))
-            else:
-                await self.respond(writer, 404, {"error": "Not found"})
-        except (
-            TimeoutError,
-            ValueError,
-            KeyError,
-            TypeError,
-            OSError,
-            asyncio.IncompleteReadError,
-            asyncio.LimitOverrunError,
-        ) as exc:
-            with suppress(OSError):
-                await self.respond(writer, 400, {"error": str(exc)})
-        finally:
-            writer.close()
-            with suppress(OSError):
-                await writer.wait_closed()
+    async def sessions_response(self, request: web.Request) -> web.Response:
+        return web.json_response(self.sessions(), dumps=dashboard_json)
 
-    async def stream(self, writer: asyncio.StreamWriter, session: str | None = None) -> None:
-        writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\n\r\n")
-        while not self.stopping:
-            changed = self.daemon.changed
-            payload = json.dumps(self.snapshot(session), ensure_ascii=False)
-            writer.write(f"data: {payload}\n\n".encode())
-            await writer.drain()
+    async def action_response(self, request: web.Request) -> web.Response:
+        if request.headers.get("Content-Type") != "application/json":
+            raise ValueError("Expected application/json")
+        if not 0 < (request.content_length or 0) <= MAX_ACTION_BYTES or "Content-Encoding" in request.headers:
+            raise ValueError("Invalid body length or encoding")
+        async with asyncio.timeout(10):
+            body = await request.json()
+        return web.json_response(await self.action(body, request_session(request)), dumps=dashboard_json)
 
-            # Heartbeats keep an idle connection alive without rereading the DAG.
-            while not changed.is_set() and not self.stopping:
-                try:
-                    await asyncio.wait_for(changed.wait(), 20)
-                except TimeoutError:
-                    writer.write(b": keepalive\n\n")
-                    await writer.drain()
+    async def stream(self, request: web.Request) -> web.StreamResponse:
+        response = web.StreamResponse(headers={"Content-Type": "text/event-stream", "Cache-Control": "no-cache"})
+        session = request_session(request)
+        await response.prepare(request)
+        with suppress(OSError):
+            while not self.stopping:
+                changed = self.daemon.changed
+                payload = dashboard_json(self.snapshot(session))
+                await response.write(f"data: {payload}\n\n".encode())
 
-    @staticmethod
-    async def respond(
-        writer: asyncio.StreamWriter,
-        status: int,
-        body: Any,
-        content_type: str = "application/json",
-    ) -> None:
-        if not isinstance(body, bytes):
-            body = json.dumps(body, ensure_ascii=False).encode()
-        header = (
-            f"HTTP/1.1 {status} Response\r\n"
-            f"Content-Type: {content_type}\r\n"
-            f"Content-Length: {len(body)}\r\n"
-            "Cache-Control: no-store\r\n"
-            "Connection: close\r\n\r\n"
-        )
-        writer.write(header.encode() + body)
-        await writer.drain()
+                # Keep idle previews connected without rereading task state.
+                while not changed.is_set() and not self.stopping:
+                    try:
+                        await asyncio.wait_for(changed.wait(), 20)
+                    except TimeoutError:
+                        await response.write(b": keepalive\n\n")
+        return response

@@ -16,7 +16,7 @@ STATE_COMMANDS = ("goal", "loop")
 def source_fingerprint() -> str:
     digest = hashlib.sha256()
     package = Path(__file__).resolve().parent
-    sources = [package.parent / "worker.py", *sorted(package.rglob("*.py"))]
+    sources = [package.parent / "worker.py", package.parent / "requirements.txt", *sorted(package.rglob("*.py"))]
     for path in sources:
         digest.update(path.relative_to(package.parent).as_posix().encode())
         digest.update(path.read_bytes())

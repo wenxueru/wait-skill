@@ -11,6 +11,8 @@ from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import urlsplit
 
+from aiohttp import ClientSession
+
 import waitctl
 from wait.service.daemon import WaitDaemon
 from wait.service.dashboard import Dashboard
@@ -51,7 +53,7 @@ class DashboardTest(unittest.IsolatedAsyncioTestCase):
         authority = address.netloc if host is None else host
         content = json.dumps(body).encode() if body is not None else b""
         method = "POST" if body is not None else "GET"
-        request = f"{method} {target} HTTP/1.1\r\n"
+        request = f"{method} {target} HTTP/1.1\r\nConnection: close\r\n"
         if authority:
             request += f"Host: {authority}\r\n"
         if origin is not None:
@@ -72,7 +74,7 @@ class DashboardTest(unittest.IsolatedAsyncioTestCase):
         async with self.http(**kwargs) as reader:
             result = await asyncio.wait_for(reader.read(), 2)
         header, body = result.split(b"\r\n\r\n", 1)
-        return int(header.split()[1]), json.loads(body)
+        return int(header.split()[1]), json.loads(body) if b"application/json" in header else body
 
     async def action(self, action, **fields):
         return await self.response(target="/api/action", body={"path": str(self.path), "action": action, **fields})
@@ -298,6 +300,7 @@ class DashboardTest(unittest.IsolatedAsyncioTestCase):
             "dashboard/controls/session-picker.mjs",
             "dashboard/graph/layout.mjs",
             "vendor/dagre.mjs",
+            "vendor/ui.mjs",
         ):
             async with self.http(f"/assets/{asset}", **headers) as reader:
                 response = await asyncio.wait_for(reader.read(), 2)
@@ -335,22 +338,25 @@ class DashboardTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(state["goals"])
 
         async with (
-            self.http("/events?session=session-a", **headers) as current,
-            self.http("/events?session=session-b", **headers) as other,
+            ClientSession(headers={"Host": headers["host"], "Origin": headers["origin"]}) as client,
+            client.get(self.dashboard.url + "/events?session=session-a") as current,
+            client.get(self.dashboard.url + "/events?session=session-b") as other,
         ):
-            for reader in (current, other):
-                header = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), 2)
-                self.assertIn(b"text/event-stream", header)
-            self.assertIn(b'"status": "open"', await asyncio.wait_for(current.readuntil(b"\n\n"), 2))
-            self.assertIn(b'"goals": []', await asyncio.wait_for(other.readuntil(b"\n\n"), 2))
+            for response in (current, other):
+                self.assertEqual(response.status, 200)
+                self.assertEqual(response.content_type, "text/event-stream")
+            self.assertIn(b'"status": "open"', await asyncio.wait_for(current.content.readline(), 2))
+            self.assertIn(b'"goals": []', await asyncio.wait_for(other.content.readline(), 2))
+            for response in (current, other):
+                self.assertEqual(await response.content.readline(), b"\n")
             code, _ = await self.response(
                 target="/api/action?session=session-a",
                 body={"path": str(self.path), "action": "pause"},
                 **headers,
             )
             self.assertEqual(code, 200)
-            self.assertIn(b'"status": "paused"', await asyncio.wait_for(current.readuntil(b"\n\n"), 2))
-            self.assertIn(b'"goals": []', await asyncio.wait_for(other.readuntil(b"\n\n"), 2))
+            self.assertIn(b'"status": "paused"', await asyncio.wait_for(current.content.readline(), 2))
+            self.assertIn(b'"goals": []', await asyncio.wait_for(other.content.readline(), 2))
         code, _ = await self.response(
             target="/api/action?session=session-b",
             body={"path": str(self.path), "action": "resume"},

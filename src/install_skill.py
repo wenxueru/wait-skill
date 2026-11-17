@@ -5,6 +5,9 @@ from __future__ import annotations
 import argparse
 import os
 import shutil
+import subprocess
+import sys
+import tempfile
 from pathlib import Path
 
 PACKAGED = (
@@ -56,9 +59,25 @@ def install(source: Path, destination: Path) -> None:
             # These are packaged resources; replace them directly without backups.
             if target.exists():
                 shutil.rmtree(target)
-            shutil.copytree(item, target, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+            shutil.copytree(item, target, ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "_deps"))
         else:
             shutil.copy2(item, target)
+
+
+def install_with_dependencies(source: Path, destination: Path) -> None:
+    if sys.version_info < (3, 11):  # noqa: UP036 - the installer may run before Python is upgraded
+        raise SystemExit("Wait requires Python 3.11 or newer. Run the installer with that interpreter.")
+    with tempfile.TemporaryDirectory(prefix="wait-dependencies-") as temporary:
+        dependencies = Path(temporary) / "_deps"
+        args = ["--target", str(dependencies), "-r", str(source / "src" / "requirements.txt")]
+        subprocess.run(
+            [sys.executable, "-m", "pip", "--disable-pip-version-check", "install", "--no-compile", *args], check=True
+        )
+        install(source, destination)
+        target = destination.expanduser() / "src" / "_deps"
+        if target.exists():
+            shutil.rmtree(target)
+        shutil.move(dependencies, target)
 
 
 def main() -> None:
@@ -66,7 +85,7 @@ def main() -> None:
     root = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
     parser.add_argument("--destination", type=Path, default=root / "skills" / "wait")
     args = parser.parse_args()
-    install(Path(__file__).resolve().parents[1], args.destination)
+    install_with_dependencies(Path(__file__).resolve().parents[1], args.destination)
     print(f"Installed one wait skill at {args.destination.expanduser().absolute()}")
 
 

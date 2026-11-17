@@ -17,13 +17,14 @@
 
 ## 安装
 
-需要 Python 3.11 或更新版本。
+运行 `waitd` 的机器需要安装 Python 3.11 或更新版本和 pip。
 
 ```sh
 git clone https://github.com/wenxueru/wait-skill.git /path/to/wait-skill
 python /path/to/wait-skill/src/install_skill.py
 ```
 
+- 安装器把固定版本的 Python 库装到 skill 目录。运行 Wait 时使用安装时的 Python。
 - 默认安装到 `${CODEX_HOME:-~/.codex}/skills/wait`；其他客户端使用 `--destination /path/to/client/skills/wait`。
 - 安装直接替换打包文件，删除旧嵌套 Skill 和匹配的 `wait-goal` / `wait-loop` 链接，不保留备份，也不修改其他同级目录。
 - 安装后重新加载客户端。旧版 daemon 仍在运行时，先等 watcher 结束，再[停止并切换版本](docs/waitd.zh-CN.md#服务生命周期)。
@@ -67,7 +68,7 @@ python ~/.codex/skills/wait/src/waitctl.py dashboard --session "$CODEX_THREAD_ID
 
 ## 开发
 
-Python 核心仅依赖标准库，浏览器依赖[随仓库本地打包](assets/vendor/README.md)；只有前端测试需要 Node。
+`aiohttp` 提供看板服务，`websockets` 负责 Codex RPC 传输。浏览器加载[随仓库打包的模块](assets/vendor/README.md)，Node 只用于前端开发。
 
 | 位置 | 职责 |
 | --- | --- |
@@ -103,12 +104,12 @@ classDiagram
   LoopStore --> LoopState : loads
 ```
 
-在仓库根目录运行：
+在开发环境里安装 Python 依赖，再从仓库根目录运行：
 
 ```sh
+python -m pip install -r src/requirements.txt
 python -m unittest discover -s tests -t . -v
-python -m unittest tests.tasks.test_goal -v
-node --test tests/dashboard/*.test.mjs
+npm test
 python /path/to/skill-creator/scripts/quick_validate.py .
 ```
 
@@ -122,4 +123,4 @@ python /path/to/skill-creator/scripts/quick_validate.py .
 
 ## 许可证
 
-MIT。Dagre/Graphlib 的许可声明见 [assets/vendor/dagre.LICENSE.txt](assets/vendor/dagre.LICENSE.txt)。
+MIT。见[随附依赖的许可声明](assets/vendor/README.md)。

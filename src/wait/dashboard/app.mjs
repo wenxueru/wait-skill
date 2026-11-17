@@ -1,3 +1,4 @@
+import {guard, html, keyed, nothing, render as renderTemplate, repeat} from "../../../assets/vendor/ui.mjs";
 import {activityId, activityWorkspace, collapseLoopTimers, relationNodes, watchState} from "./models/activity.mjs";
 import {createGraphViewport} from "./controls/viewport.mjs";
 import {findTask, taskUrl} from "./models/links.mjs";
@@ -196,10 +197,8 @@ function render(reveal = false) {
 
   const nodes = Object.values(goal.nodes).filter(node => !node.context);
   const completed = nodes.filter(node => node.status === "completed").length;
-  $("stats").replaceChildren(
-    ...(mode === "goal" ? [statusBadge(goal.status, "goal")] : []),
-    element("span", t("field.completeCount", {done: completed, total: nodes.length}))
-  );
+  renderTemplate(html`${mode === "goal" ? statusBadge(goal.status, "goal") : nothing}
+    <span>${t("field.completeCount", {done: completed, total: nodes.length})}</span>`, $("stats"));
   $("progress").style.width = (nodes.length ? completed / nodes.length * 100 : 0) + "%";
   const focusedNode = goal.nodes[nodeId];
   if (reveal && focusedNode && !matchesTaskScope(nodeState(goal, focusedNode), $("taskScope").value)) {
@@ -209,18 +208,7 @@ function render(reveal = false) {
   }
   const timings = nodeTimings(goal);
   renderWorkspace(goal, timings);
-  const details = $("details");
-  const editor = details.querySelector("form");
-  const node = goal.nodes[nodeId];
-  const editable = mode === "goal" && node?.status === "pending" && goal.status === "open";
-  const sameTask = editor?.dataset.node === nodeId && editor?.dataset.goal === goal.path;
-  if (!editable || !sameTask || !editor.contains(document.activeElement)) {
-    renderDetails(goal, editable && sameTask ? editor : null, timings);
-  } else {
-    details.querySelector("h3").textContent = node.title;
-    details.querySelector(".badge").replaceWith(nodeBadge(goal, node));
-    details.querySelector(".node-timeline").replaceWith(nodeTimeline(timings.get(nodeId)));
-  }
+  renderDetails(goal, timings);
   renderEvents(goal.events);
 }
 
@@ -229,11 +217,9 @@ function statusMeaning(state, kind = mode === "goal" ? "node" : mode) {
 }
 
 function statusBadge(state, kind = "node") {
-  const badge = element("span", t(`state.${state}`), "badge");
-  badge.dataset.state = state;
-  help.attach(badge, statusMeaning(state, kind));
-  badge.tabIndex = 0;
-  return badge;
+  const meaning = statusMeaning(state, kind);
+  return html`<span class="badge" data-state=${state} data-status-help=${meaning}
+    aria-description=${meaning} tabindex="0">${t(`state.${state}`)}</span>`;
 }
 
 function nodeBadge(goal, node, state = nodeState(goal, node)) {
@@ -241,101 +227,74 @@ function nodeBadge(goal, node, state = nodeState(goal, node)) {
 }
 
 function dependencyCell(workspace, node) {
-  const cell = element("span", undefined, "node-deps");
-  cell.dataset.empty = node.depends_on.length === 0;
-  cell.append(element("small", t(mode === "goal" ? "workspace.dependencies" : "workspace.parent"), "dependency-caption"));
-  if (!node.depends_on.length) cell.append(element("span", t("field.noDependencies"), "muted"));
-  for (const id of node.depends_on) {
-    const parent = workspace.nodes[id];
-    const origin = parent.origin || {mode: "goal", path: workspace.path, node: id};
-    const task = findTask(tasks, origin);
-    const link = element(task ? "a" : "span", parent.title);
-    link.title = parent.title;
-    if (task) {
-      link.href = taskUrl(scope, origin, task);
-      link.onclick = event => {
+  return html`<span class="node-deps" data-empty=${node.depends_on.length === 0}>
+    <small class="dependency-caption">${t(mode === "goal" ? "workspace.dependencies" : "workspace.parent")}</small>
+    ${node.depends_on.length ? node.depends_on.map(id => {
+      const parent = workspace.nodes[id];
+      const origin = parent.origin || {mode: "goal", path: workspace.path, node: id};
+      const task = findTask(tasks, origin);
+      if (!task) return html`<span title=${t("activity.parentUnavailable")}>${parent.title}</span>`;
+      return html`<a href=${taskUrl(scope, origin, task)} title=${parent.title} @click=${event => {
         event.stopPropagation();
         if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
         event.preventDefault();
         taskView = "list";
         openOrigin(origin);
-      };
-    } else link.title = t("activity.parentUnavailable");
-    cell.append(link);
-  }
-  return cell;
+      }}>${parent.title}</a>`;
+    }) : html`<span class="muted">${t("field.noDependencies")}</span>`}
+  </span>`;
 }
 
-function timeElement(date, options) {
-  const time = element("time", formatTime(date, options));
-  if (date) {
-    time.dateTime = date.toISOString();
-    time.title = formatTime(date, {
-      year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
-      second: "2-digit", hourCycle: "h23", timeZoneName: "short"
-    });
-  }
-  return time;
+const shortTime = {month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23"};
+const fullTime = {
+  year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
+  second: "2-digit", hourCycle: "h23", timeZoneName: "short"
+};
+
+function timeElement(date) {
+  return html`<time datetime=${date?.toISOString() ?? nothing} title=${date ? formatTime(date, fullTime) : nothing}>
+    ${formatTime(date, shortTime)}</time>`;
 }
 
 function elapsedElement(range) {
-  const span = element("span", "—", "elapsed");
-  if (range) {
-    span.dataset.elapsedStart = +range.start;
-    if (range.end) span.dataset.elapsedEnd = +range.end;
-    span.textContent = formatDuration((range.end || Date.now()) - range.start);
-  }
-  return span;
+  return guard([range ? +range.start : null, range?.end ? +range.end : null, document.documentElement.lang], () => {
+    const span = element("span", "—", "elapsed");
+    if (range) {
+      span.dataset.elapsedStart = +range.start;
+      if (range.end) span.dataset.elapsedEnd = +range.end;
+      span.textContent = formatDuration((range.end || Date.now()) - range.start);
+    }
+    return span;
+  });
 }
 
 function phaseDuration(timing) {
   const {total, phase} = durationRanges(timing);
-  if (["pending", "dispatching"].includes(timing.status) && !phase) return element("span", t("duration.pending"));
-  const span = element("span", undefined, "phase-duration");
-  span.title = t(phase ? `duration.${timing.status}` : "duration.total");
-  span.append(elapsedElement(phase || total));
-  return span;
-}
-
-function timeCell(timing) {
-  const cell = element("span", undefined, "node-time");
-  cell.append(element("span", t("duration.title"), "time-caption"), phaseDuration(timing));
-  return cell;
+  if (["pending", "dispatching"].includes(timing.status) && !phase) return html`<span>${t("duration.pending")}</span>`;
+  return html`<span class="phase-duration" title=${t(phase ? `duration.${timing.status}` : "duration.total")}>
+    ${elapsedElement(phase || total)}</span>`;
 }
 
 function nodeTimeline(timing) {
-  const timeline = element("dl", undefined, "node-timeline");
   const ranges = durationRanges(timing);
-  for (const key of ["phase", "total"]) {
-    if (!ranges[key]) continue;
-    const value = element("dd");
-    value.dataset.field = key;
-    value.append(elapsedElement(ranges[key]));
-    const label = key === "phase" ? t(`duration.${timing.status}`) : t("duration.total");
-    timeline.append(element("dt", label), value);
-  }
-  for (const key of ["created", "started", "waiting", "finished", "updated"]) {
-    if (!timing[key] && key !== "updated") continue;
-    const value = element("dd");
-    value.dataset.field = key;
-    value.append(timeElement(timing[key], {
-      month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23"
-    }));
-    timeline.append(element("dt", t(`time.${key}`)), value);
-  }
-  return timeline;
+  return html`<dl class="node-timeline">
+    ${["phase", "total"].map(key => ranges[key] ? html`
+      <dt>${t(key === "phase" ? `duration.${timing.status}` : "duration.total")}</dt>
+      <dd data-field=${key}>${elapsedElement(ranges[key])}</dd>` : nothing)}
+    ${["created", "started", "waiting", "finished", "updated"].map(key => timing[key] || key === "updated" ? html`
+      <dt>${t(`time.${key}`)}</dt><dd data-field=${key}>${timeElement(timing[key])}</dd>` : nothing)}
+  </dl>`;
 }
 
 function showNode(id) {
   const hadFocus = document.activeElement?.closest("[data-node]")?.dataset.node === id;
-  const editor = id === nodeId ? $("details").querySelector("form") : null;
   nodeId = id;
   const goal = currentWorkspace();
   if (taskView === "list" && !goal.nodes[id].context && !matchesTaskScope(nodeState(goal, goal.nodes[id]), $("taskScope").value)) render(true);
   else {
     const timings = nodeTimings(goal);
     renderWorkspace(goal, timings);
-    renderDetails(goal, editor, timings);
+    renderDetails(goal, timings);
   }
   if (hadFocus) {
     const root = $(taskView === "graph" ? "graph" : "nodeList");
@@ -424,37 +383,32 @@ function renderWorkspace(goal, timings = nodeTimings(goal)) {
     return;
   }
   if (!matching.length) {
-    $("nodeRows").replaceChildren(emptyTasks(rows, taskScope));
+    renderTemplate(emptyTasks(rows, taskScope), $("nodeRows"));
     return;
   }
-  $("nodeRows").replaceChildren(...matching.map(({id, node, state}) => {
-    const row = element("div", undefined, "node-row");
-    row.tabIndex = -1;
-    row.setAttribute("role", "group");
-    row.setAttribute("aria-label", node.title);
-    row.dataset.node = id;
-    if (id === nodeId) row.id = "focusedTask";
-    row.title = node.title;
-    row.setAttribute("aria-current", id === nodeId);
-    const name = element("button", undefined, "node-name");
-    name.type = "button";
-    name.setAttribute("aria-pressed", id === nodeId);
-    name.append(element("strong", node.title), element("code", node.shortId || id));
-    const status = element("span", undefined, "node-status");
-    status.append(nodeBadge(goal, node, state));
-    const updated = element("span", undefined, "node-updated");
-    updated.append(timeElement(timings.get(id).updated, {
-      month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23"
-    }));
+  renderRows(goal, matching, timings);
+}
+
+function renderRows(goal, rows, timings) {
+  renderTemplate(repeat(rows, row => row.id, ({id, node, state}) => {
+    const timing = timings.get(id);
     const next = node.task?.event_note || node.wait?.event_note || "";
-    const step = element("span", undefined, "node-next");
-    step.dataset.empty = !next;
-    step.append(element("small", t("workspace.next"), "next-caption"), element("span", next || "—", "node-reason"));
-    step.title = next;
-    row.append(name, dependencyCell(goal, node), step, status, timeCell(timings.get(id)), updated);
-    row.onclick = () => showNode(id);
-    return row;
-  }));
+    const focused = id === nodeId;
+    return html`<div class="node-row" tabindex="-1" role="group" aria-label=${node.title}
+      data-node=${id} id=${focused ? "focusedTask" : nothing} title=${node.title}
+      aria-current=${focused} @click=${() => showNode(id)}>
+      <button class="node-name" type="button" aria-pressed=${focused}>
+        <strong>${node.title}</strong><code>${node.shortId || id}</code>
+      </button>
+      ${dependencyCell(goal, node)}
+      <span class="node-next" data-empty=${!next} title=${next}>
+        <small class="next-caption">${t("workspace.next")}</small><span class="node-reason">${next || "—"}</span>
+      </span>
+      <span class="node-status">${nodeBadge(goal, node, state)}</span>
+      <span class="node-time"><span class="time-caption">${t("duration.title")}</span>${phaseDuration(timing)}</span>
+      <span class="node-updated">${timeElement(timing.updated)}</span>
+    </div>`;
+  }), $("nodeRows"));
 }
 
 function emptyTasks(rows, taskScope) {
@@ -512,7 +466,7 @@ function draw(goal, matching, timings) {
     const content = svgElement("foreignObject", {x: 16, y: 11, width: 249, height: 98});
     const box = element("div", undefined, "graph-node");
     const meta = element("div", undefined, "graph-node-meta");
-    meta.append(nodeBadge(goal, node), phaseDuration(timings.get(id)));
+    renderTemplate(html`${nodeBadge(goal, node)}${phaseDuration(timings.get(id))}`, meta);
     if (node.taskKind === "loop") {
       box.classList.add("loop-node");
       const loop = node.task?.error ? null : node.task;
@@ -547,35 +501,21 @@ function draw(goal, matching, timings) {
   viewport.render(svg);
 }
 
-function editForm(node) {
-  const form = element("form");
-  form.dataset.node = nodeId;
-  form.dataset.goal = selected;
-  const fields = [
-    ["title", "node.title", node.title],
-    ["depends_on", "node.dependencies", node.depends_on.join(", ")],
-    ["acceptance", "node.acceptance", node.acceptance.join("\n")]
-  ];
-  for (const [name, labelKey, value] of fields) {
-    const field = element("label");
-    const label = element("span");
-    translate(label, labelKey);
-    const input = element(name === "acceptance" ? "textarea" : "input");
-    input.name = name;
-    input.value = value;
-    input.required = name === "title";
-    field.append(label, input);
-    form.append(field);
-  }
-  const save = element("button", undefined, "primary");
-  translate(save, "common.edit");
-  save.style.marginTop = "16px";
-  form.append(save);
-  form.onsubmit = async event => {
-    event.preventDefault();
-    await act("edit", { id: nodeId, ...nodeFields(new FormData(form)) });
-  };
-  return form;
+function editForm(node, id) {
+  return html`<details class="edit-node">
+    <summary>${t("details.edit")}</summary>
+    <form data-node=${id} @submit=${event => {
+      event.preventDefault();
+      act("edit", {id, ...nodeFields(new FormData(event.currentTarget))});
+    }}>
+      <label><span>${t("node.title")}</span><input name="title" required .value=${guard([], () => node.title)}></label>
+      <label><span>${t("node.dependencies")}</span>
+        <input name="depends_on" .value=${guard([], () => node.depends_on.join(", "))}></label>
+      <label><span>${t("node.acceptance")}</span>
+        <textarea name="acceptance" .value=${guard([], () => node.acceptance.join("\n"))}></textarea></label>
+      <button class="primary" style="margin-top: 16px">${t("common.edit")}</button>
+    </form>
+  </details>`;
 }
 
 function openTask(nextMode, identity = "", nextNode = "") {
@@ -595,156 +535,110 @@ function openOrigin(origin) {
   openTask(origin.mode, origin.watch_id || origin.path, origin.node);
 }
 
-function renderLoopHistory(node, box) {
-  const runs = node.task?.runs || [];
-  if (runs.length) {
-    box.append(element("h4", t("loop.recent")));
-    const timeline = element("ol", undefined, "loop-history");
-    for (const run of runs.slice(-5).reverse()) {
-      const row = element("li");
-      row.append(element("b", t("field.iteration", {value: run.iteration})),
-        element("time", formatTime(run.completed_at)), element("p", run.summary));
-      timeline.append(row);
-    }
-    box.append(timeline);
-  }
+function loopHistory(node) {
+  const runs = node.task?.runs?.slice(-5).reverse() ?? [];
   const timers = [...tasks.watches, ...tasks.linked_watches].filter(watch =>
     watch.owner?.mode === "loop" && watch.owner.path === node.origin.path);
-  if (!timers.length) return;
   timers.sort((a, b) => b.submitted_at - a.submitted_at);
-  const history = element("details", undefined, "loop-timers");
-  history.append(element("summary", t("loop.timerHistory", {count: timers.length})));
-  const timeline = element("ol", undefined, "loop-history");
-  for (const timer of timers) {
-    const row = element("li");
-    const open = element("button", timer.watch_id.slice(0, 8));
-    open.onclick = () => { taskView = "list"; openOrigin({mode: "wait", watch_id: timer.watch_id}); };
-    row.append(statusBadge(watchState(timer), "wait"), open, element("time", formatTime(timer.submitted_at)));
-    timeline.append(row);
-  }
-  history.append(timeline);
-  box.append(history);
+  return html`
+    ${runs.length ? html`<h4>${t("loop.recent")}</h4><ol class="loop-history">
+      ${repeat(runs, run => run.iteration, run => html`<li>
+        <b>${t("field.iteration", {value: run.iteration})}</b><time>${formatTime(run.completed_at)}</time><p>${run.summary}</p>
+      </li>`)}
+    </ol>` : nothing}
+    ${timers.length ? html`<details class="loop-timers">
+      <summary>${t("loop.timerHistory", {count: timers.length})}</summary><ol class="loop-history">
+        ${repeat(timers, timer => timer.watch_id, timer => html`<li>
+          ${statusBadge(watchState(timer), "wait")}
+          <button @click=${() => { taskView = "list"; openOrigin({mode: "wait", watch_id: timer.watch_id}); }}>
+            ${timer.watch_id.slice(0, 8)}</button>
+          <time>${formatTime(timer.submitted_at)}</time>
+        </li>`)}
+      </ol>
+    </details>` : nothing}
+  `;
 }
 
-function renderActivityDetails(workspace, node, box) {
-  if (node.context) {
-    const open = element("button", t("activity.open", {kind: t(`mode.${node.taskKind}`)}));
-    open.onclick = () => openOrigin(node.origin);
-    box.append(open);
-  }
-  if (node.summary) box.append(element("h4", t("workspace.context")), element("p", node.summary, "task-note"));
-  if (node.taskKind === "loop") renderLoopHistory(node, box);
-  const related = [...node.depends_on, ...Object.keys(workspace.nodes).filter(id =>
-    workspace.nodes[id].depends_on.includes(nodeId) && !(node.taskKind === "loop" && workspace.nodes[id].taskKind === "wait"))];
-  if (related.length) {
-    box.append(element("h4", t("activity.related")));
-    const links = element("div", undefined, "node-dependencies");
-    for (const id of related) {
-      const button = element("button", workspace.nodes[id].title);
-      button.onclick = () => showNode(id);
-      links.append(button);
-    }
-    box.append(links);
-  }
+function activityDetails(workspace, node, id) {
+  const related = [...node.depends_on, ...Object.keys(workspace.nodes).filter(other =>
+    workspace.nodes[other].depends_on.includes(id) && !(node.taskKind === "loop" && workspace.nodes[other].taskKind === "wait"))];
   const task = node.task;
-  if (!task || task.error) return;
-  if (task.owner) box.append(element("p", t("activity.managed"), "muted"));
-  const meta = element("div", undefined, "task-meta");
-  meta.append(element("span", t("field.deadline", {value: formatTime(task.deadline_at)})));
-  if (node.taskKind === "wait") {
-    meta.append(element("span", t("field.query", {value: task.query_status || "—"})),
-      element("span", t("field.notification", {value: task.result?.notification || task.notification_channel?.status || "—"})));
-  } else {
-    meta.append(element("span", t("field.iteration", {value: task.iteration + (task.max_iterations ? " / " + task.max_iterations : "")})),
-      element("span", t("field.interval", {value: task.interval_seconds})));
-    if (task.next_run_at) meta.append(element("span", t("field.next", {value: formatTime(task.next_run_at)})));
-  }
-  box.append(meta);
-  const cancellable = !node.context && (node.taskKind === "loop" ? task.status === "active" : task.state === "active" && !task.owner);
-  if (cancellable) {
-    const cancel = element("button", t("common.cancel"), "danger");
-    cancel.onclick = () => cancelTask(task, node.taskKind);
-    box.append(cancel);
-  }
-  const more = element("details", undefined, "task-more");
-  const detail = node.taskKind === "wait" ? {result: task.result, log_file: task.log_file}
-    : {path: task.path, goal: task.goal, runs: task.runs, events: task.events};
-  more.append(element("summary", t("common.details")), element("pre", JSON.stringify(detail, null, 2)));
-  box.append(more);
+  return html`
+    ${node.context ? html`<button @click=${() => openOrigin(node.origin)}>
+      ${t("activity.open", {kind: t(`mode.${node.taskKind}`)})}</button>` : nothing}
+    ${node.summary ? html`<h4>${t("workspace.context")}</h4><p class="task-note">${node.summary}</p>` : nothing}
+    ${node.taskKind === "loop" ? loopHistory(node) : nothing}
+    ${related.length ? html`<h4>${t("activity.related")}</h4><div class="node-dependencies">
+      ${related.map(other => html`<button @click=${() => showNode(other)}>${workspace.nodes[other].title}</button>`)}
+    </div>` : nothing}
+    ${task && !task.error ? activityMetadata(node, task) : nothing}
+  `;
 }
 
-function renderDetails(goal, editor = null, timings = nodeTimings(goal)) {
-  const box = $("details");
-  const editing = editor?.parentElement?.open || false;
-  box.replaceChildren();
-  const node = goal.nodes[nodeId];
-  box.append(element("span", t("details.title"), "eyebrow"));
-  if (!node) {
-    box.append(element("p", t("field.selectNode"), "muted"));
-    return;
-  }
-  const kind = node.taskKind ? t(`mode.${node.taskKind}`) : t(`field.nodeKind.${node.kind}`);
-  box.append(
-    nodeBadge(goal, node),
-    element("h3", node.title),
-    element("p", (node.shortId || nodeId) + " · " + kind, "muted")
-  );
-  box.append(nodeTimeline(timings.get(nodeId)));
-  if (node.taskKind) { renderActivityDetails(goal, node, box); return; }
-  const dependencies = element("div", undefined, "node-dependencies");
-  if (node.depends_on.length) {
-    for (const id of node.depends_on) {
-      const button = element("button", id);
-      button.title = goal.nodes[id].title;
-      button.onclick = () => showNode(id);
-      dependencies.append(button);
-    }
-  } else {
-    dependencies.append(element("span", t("field.noDependencies"), "muted"));
-  }
-  const acceptance = element("ul");
-  acceptance.append(...node.acceptance.map(item => element("li", item)));
-  box.append(element("h4", t("details.dependencies")), dependencies);
-  if (node.acceptance.length) box.append(element("b", t("field.acceptance")), acceptance);
-  const relatedLoops = tasks.loops.filter(loop => loop.goal?.state === goal.path && loop.goal?.node === nodeId);
+function activityMetadata(node, task) {
+  const isWait = node.taskKind === "wait";
+  const cancellable = !node.context && (isWait ? task.state === "active" && !task.owner : task.status === "active");
+  const detail = isWait ? {result: task.result, log_file: task.log_file}
+    : {path: task.path, goal: task.goal, runs: task.runs, events: task.events};
+  return html`
+    ${task.owner ? html`<p class="muted">${t("activity.managed")}</p>` : nothing}
+    <div class="task-meta">
+      <span>${t("field.deadline", {value: formatTime(task.deadline_at)})}</span>
+      ${isWait ? html`<span>${t("field.query", {value: task.query_status || "—"})}</span>
+        <span>${t("field.notification", {value: task.result?.notification || task.notification_channel?.status || "—"})}</span>`
+        : html`<span>${t("field.iteration", {value: task.iteration + (task.max_iterations ? " / " + task.max_iterations : "")})}</span>
+          <span>${t("field.interval", {value: task.interval_seconds})}</span>
+          ${task.next_run_at ? html`<span>${t("field.next", {value: formatTime(task.next_run_at)})}</span>` : nothing}`}
+    </div>
+    ${cancellable ? html`<button class="danger" @click=${() => cancelTask(task, node.taskKind)}>${t("common.cancel")}</button>` : nothing}
+    <details class="task-more"><summary>${t("common.details")}</summary><pre>${JSON.stringify(detail, null, 2)}</pre></details>
+  `;
+}
+
+function goalDetails(goal, node, id) {
+  const relatedLoops = tasks.loops.filter(loop => loop.goal?.state === goal.path && loop.goal?.node === id);
   const waits = tasks.linked_watches.filter(watch =>
-    watch.owner.mode === "goal" && watch.owner.path === goal.path && watch.owner.node === nodeId);
-  if (node.wait || relatedLoops.length || waits.length) {
-    const context = element("section", undefined, "wait-context");
-    context.append(element("b", t("field.waitLoop")));
-    if (node.wait) {
-      context.append(element("p", node.wait.label || t("field.externalCondition"), "task-note"));
-      if (node.wait.event_note) context.append(element("p", t("field.triggered", {value: node.wait.event_note}), "task-note"));
-    }
-    for (const wait of waits) {
-      context.append(element("p", `${t(`state.${wait.state}`)} · ${t("field.deadline", {value: formatTime(wait.deadline_at)})}`, "muted"));
-    }
-    for (const loop of relatedLoops) {
-      context.append(element("p", t("field.loopState", {task: loop.task, iteration: loop.iteration, status: t(`state.${loop.status}`)}), "task-note"));
-      if (loop.event_note) context.append(element("p", t("field.loopNext", {value: loop.event_note}), "task-note"));
-    }
-    box.append(context);
-  }
-  if (node.result) {
-    box.append(element("h4", t("field.result")),
-      element("p", typeof node.result === "string" ? node.result : node.result.summary || JSON.stringify(node.result), "task-note"));
-  }
-  if (node.wait) {
-    const metadata = element("details", undefined, "muted");
-    metadata.append(element("summary", t("field.waitDetails")), element("pre", JSON.stringify(node.wait, null, 2)));
-    box.append(metadata);
-  }
-  if (node.status === "failed" && goal.status === "open") {
-    const retry = element("button", t("common.retry"));
-    retry.onclick = () => act("retry", { id: nodeId });
-    box.append(retry);
-  }
-  if (node.status === "pending" && goal.status === "open") {
-    const edit = element("details", undefined, "edit-node");
-    edit.open = editing;
-    edit.append(element("summary", t("details.edit")), editor || editForm(node));
-    box.append(edit);
-  }
+    watch.owner.mode === "goal" && watch.owner.path === goal.path && watch.owner.node === id);
+  const result = typeof node.result === "string" ? node.result : node.result?.summary || JSON.stringify(node.result);
+  return html`
+    <h4>${t("details.dependencies")}</h4>
+    <div class="node-dependencies">
+      ${node.depends_on.length ? node.depends_on.map(dependency => html`
+        <button title=${goal.nodes[dependency].title} @click=${() => showNode(dependency)}>${dependency}</button>`)
+        : html`<span class="muted">${t("field.noDependencies")}</span>`}
+    </div>
+    ${node.acceptance.length ? html`<b>${t("field.acceptance")}</b><ul>
+      ${node.acceptance.map(item => html`<li>${item}</li>`)}
+    </ul>` : nothing}
+    ${node.wait || relatedLoops.length || waits.length ? html`<section class="wait-context">
+      <b>${t("field.waitLoop")}</b>
+      ${node.wait ? html`<p class="task-note">${node.wait.label || t("field.externalCondition")}</p>
+        ${node.wait.event_note ? html`<p class="task-note">${t("field.triggered", {value: node.wait.event_note})}</p>` : nothing}` : nothing}
+      ${waits.map(wait => html`<p class="muted">${t(`state.${wait.state}`)} · ${t("field.deadline", {value: formatTime(wait.deadline_at)})}</p>`)}
+      ${relatedLoops.map(loop => html`
+        <p class="task-note">${t("field.loopState", {task: loop.task, iteration: loop.iteration, status: t(`state.${loop.status}`)})}</p>
+        ${loop.event_note ? html`<p class="task-note">${t("field.loopNext", {value: loop.event_note})}</p>` : nothing}`)}
+    </section>` : nothing}
+    ${node.result ? html`<h4>${t("field.result")}</h4><p class="task-note">${result}</p>` : nothing}
+    ${node.wait ? html`<details class="muted"><summary>${t("field.waitDetails")}</summary>
+      <pre>${JSON.stringify(node.wait, null, 2)}</pre></details>` : nothing}
+    ${node.status === "failed" && goal.status === "open" ? html`<button @click=${() => act("retry", {id})}>
+      ${t("common.retry")}</button>` : nothing}
+    ${node.status === "pending" && goal.status === "open" ? editForm(node, id) : nothing}
+  `;
+}
+
+function renderDetails(goal, timings) {
+  const id = nodeId;
+  const node = goal.nodes[id];
+  const kind = node?.taskKind ? t(`mode.${node.taskKind}`) : node && t(`field.nodeKind.${node.kind}`);
+  renderTemplate(html`<span class="eyebrow">${t("details.title")}</span>
+    ${node ? keyed(JSON.stringify([mode, goal.path, id]), html`
+      ${nodeBadge(goal, node)}
+      <h3>${node.title}</h3><p class="muted">${node.shortId || id} · ${kind}</p>
+      ${nodeTimeline(timings.get(id))}
+      ${node.taskKind ? activityDetails(goal, node, id) : goalDetails(goal, node, id)}
+    `) : html`<p class="muted">${t("field.selectNode")}</p>`}`, $("details"));
 }
 
 $("goals").onchange = event => openTask("goal", event.target.value);
@@ -813,14 +707,15 @@ function refreshDurations() {
     const goal = currentWorkspace();
     if (!goal || goal.error) return;
     const root = $("nodeRows");
-    const visible = new Map([...root.querySelectorAll(".node-row")].map(row => [row.dataset.node, row]));
-    const ordered = orderRows(nodeRows(goal).filter(row => visible.has(row.id)), nodeTimings(goal), sort, now);
-    const focused = document.activeElement;
-    ordered.forEach(({id}, index) => {
-      const row = visible.get(id);
-      if (root.children[index] !== row) root.insertBefore(row, root.children[index]);
-    });
-    if (focused?.closest(".node-row") && document.activeElement !== focused) focused.focus({preventScroll: true});
+    const visible = [...root.querySelectorAll(".node-row")].map(row => row.dataset.node);
+    const included = new Set(visible);
+    const timings = nodeTimings(goal);
+    const ordered = orderRows(nodeRows(goal).filter(row => included.has(row.id)), timings, sort, now);
+    if (ordered.some(({id}, index) => id !== visible[index])) {
+      const focused = document.activeElement;
+      renderRows(goal, ordered, timings);
+      if (root.contains(focused) && document.activeElement !== focused) focused.focus({preventScroll: true});
+    }
   }
 }
 setInterval(refreshDurations, 1000);

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import base64
 import errno
 import fcntl
 import hashlib
@@ -11,8 +10,6 @@ import json
 import math
 import os
 import re
-import secrets
-import socket
 import sys
 import tempfile
 import time
@@ -211,23 +208,15 @@ def preflight_codex_remote(remote: str | None, timeout: float = 1.0) -> str:
             f"notification_unavailable: Codex app-server socket not found: {path}; "
             "pass --remote or enable the app-server control socket"
         )
-    request = (
-        "GET / HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
-        f"Sec-WebSocket-Key: {base64.b64encode(secrets.token_bytes(16)).decode()}\r\n"
-        "Sec-WebSocket-Version: 13\r\n\r\n"
-    ).encode()
+    from websockets.exceptions import WebSocketException
+    from websockets.sync.client import unix_connect
+
     try:
-        with socket.socket(socket.AF_UNIX) as connection:
-            connection.settimeout(timeout)
-            connection.connect(os.fspath(path))
-            connection.sendall(request)
-            response = connection.recv(4096)
+        unix_connect(path, open_timeout=timeout, close_timeout=0, compression=None, ping_interval=None).close()
     except OSError as exc:
         raise NotificationUnavailable(f"notification_unavailable: cannot reach {path}: {exc}") from exc
-    status = response.split(b"\r\n", 1)[0]
-    if b" 101 " not in status:
-        detail = status.decode("utf-8", errors="replace").strip() or "no HTTP response"
-        raise NotificationUnavailable(f"notification_unavailable: {path} is not a Codex app-server endpoint ({detail})")
+    except WebSocketException as exc:
+        raise NotificationUnavailable(f"notification_unavailable: {path} is not a Codex app-server endpoint") from exc
     return endpoint
 
 

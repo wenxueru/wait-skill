@@ -2,7 +2,7 @@
 
 ## Open your session
 
-Use Python 3.11 or newer and the current conversation's session ID:
+After [installing Wait](../README.md#install) on the execution host, pass the current conversation's session ID:
 
 ```sh
 python /path/to/wait/src/waitctl.py dashboard --session "$AGENT_SESSION_ID"

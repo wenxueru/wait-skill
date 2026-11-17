@@ -15,6 +15,7 @@ import uuid
 from collections.abc import Callable, Generator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from datetime import UTC, datetime
+from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
 from typing import cast
 
@@ -498,28 +499,10 @@ class GoalGraph:
         validate_watch_event(attempt.get("last_event"), label)
 
     def _validate_acyclic(self) -> None:
-        visiting: set[str] = set()
-        visited: set[str] = set()
-        nodes = self.nodes
-        for root in nodes:
-            if root in visited:
-                continue
-            visiting.add(root)
-            stack = [(root, iter(nodes[root]["depends_on"]))]
-            while stack:
-                node_id, dependencies = stack[-1]
-                try:
-                    dependency = next(dependencies)
-                except StopIteration:
-                    stack.pop()
-                    visiting.remove(node_id)
-                    visited.add(node_id)
-                    continue
-                if dependency in visiting:
-                    raise GoalError(f"dependency cycle includes {dependency!r}")
-                if dependency not in visited:
-                    visiting.add(dependency)
-                    stack.append((dependency, iter(nodes[dependency]["depends_on"])))
+        try:
+            TopologicalSorter({node_id: node["depends_on"] for node_id, node in self.nodes.items()}).prepare()
+        except CycleError as exc:
+            raise GoalError(f"dependency cycle includes {exc.args[1][0]!r}") from exc
 
     def get_node(self, node_id: str) -> GoalNode:
         try:

@@ -122,22 +122,16 @@ class RuntimeTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "control.sock"
             path.touch()
-            for response, available in (
-                (b"HTTP/1.1 101 Switching Protocols\r\n\r\n", True),
-                (b"HTTP/1.1 400 Bad Request\r\n\r\n", False),
-                (b"", False),
-            ):
-                with self.subTest(response=response):
-                    connection = mock.MagicMock()
-                    connection.__enter__.return_value = connection
-                    connection.recv.return_value = response
-                    with mock.patch.object(runtime.socket, "socket", return_value=connection):
-                        endpoint = f"unix://{path}"
-                        if available:
-                            self.assertEqual(runtime.preflight_codex_remote(endpoint), endpoint)
-                        else:
-                            with self.assertRaisesRegex(runtime.NotificationUnavailable, "notification_unavailable"):
-                                runtime.preflight_codex_remote(endpoint)
+            from websockets.exceptions import InvalidHandshake
+
+            endpoint = f"unix://{path}"
+            for error in (None, InvalidHandshake("invalid upgrade"), ConnectionRefusedError()):
+                with self.subTest(error=error), mock.patch("websockets.sync.client.unix_connect", side_effect=error):
+                    if error is None:
+                        self.assertEqual(runtime.preflight_codex_remote(endpoint), endpoint)
+                    else:
+                        with self.assertRaisesRegex(runtime.NotificationUnavailable, "notification_unavailable"):
+                            runtime.preflight_codex_remote(endpoint)
 
     def test_notification_connection_failures_are_unavailable(self) -> None:
         for stderr in (
