@@ -1,5 +1,5 @@
 import {guard, html, keyed, nothing, render as renderTemplate, repeat} from "../../../assets/vendor/ui.mjs";
-import {activityId, activityWorkspace, collapseLoopTimers, relationNodes, watchState} from "./models/activity.mjs";
+import {activityId, activityWorkspace, collapseLoopTimers, relationNodes, sessionSummary, wakeStatus, watchState} from "./models/activity.mjs";
 import {createGraphViewport} from "./controls/viewport.mjs";
 import {findTask, taskUrl} from "./models/links.mjs";
 import {createStatusFilter} from "./controls/status-filter.mjs";
@@ -7,7 +7,7 @@ import {createStatusHelp} from "./controls/status-help.mjs";
 import {createSessionPicker} from "./controls/session-picker.mjs";
 import {createAppearance} from "./appearance.mjs";
 import {layoutGraph} from "./graph/layout.mjs";
-import {durationRanges, matchesTaskScope, scopeForStatuses, nextSort, nodeRows, nodeState, nodeTimings, orderRows} from "./models/tasks.mjs";
+import {durationRanges, matchesTaskScope, scopeForStatuses, nextSort, nodeRows, nodeState, nodeTimings, orderRows, timeDate} from "./models/tasks.mjs";
 
 const $ = id => document.getElementById(id);
 const scope = new URLSearchParams(location.search);
@@ -120,27 +120,32 @@ async function cancelTask(task, kind) {
 }
 
 function renderSummary() {
-  const validGoals = tasks.goals.filter(goal => !goal.error);
-  const watches = [...tasks.watches, ...tasks.linked_watches];
-  const running = validGoals.some(goal => Object.values(goal.nodes).some(node => ["running", "dispatching"].includes(node.status))) ||
-    tasks.loops.some(loop => loop.status === "active" && loop.phase === "running") || watches.some(watch => watchState(watch) === "running");
-  const ready = validGoals.some(goal => goal.status === "open" && goal.activity === "ready");
-  const waiting = watches.filter(watch => watch.state === "active").length;
-  const paused = validGoals.some(goal => goal.status === "paused");
-  const verification = validGoals.some(goal => goal.status === "open" && goal.activity === "awaiting_verification");
-  const failed = validGoals.some(goal => Object.values(goal.nodes).some(node => node.status === "failed")) ||
-    watches.some(watch => watch.error || watch.state === "failed") || tasks.loops.some(loop => loop.error);
-  const statuses = [
-    [failed, "status.attention"],
-    [paused, "status.paused"],
-    [running, "status.running"],
-    [waiting, "status.waiting"],
-    [verification, "status.verification"],
-    [ready, "status.ready"],
-    [validGoals.length || watches.length || tasks.loops.length, "status.idle"],
-    [true, "status.start"]
-  ];
-  translate($("sessionStatus"), statuses.find(([matches]) => matches)[1]);
+  const {status, attention, offline, unavailable} = sessionSummary(tasks);
+  const heading = $("sessionStatus");
+  const key = `status.${status}`;
+  if (heading.dataset.i18n !== key) translate(heading, key);
+
+  const [first, ...rest] = attention.map(({origin, task, title, reason}) => ({
+    href: taskUrl(scope, origin, task), title, reason
+  }));
+  renderTemplate(html`
+    ${first ? keyed(first.href, attentionLink(first)) : nothing}
+    ${rest.length ? html`<details class="session-more">
+      <summary>${t("attention.more", {count: rest.length})}</summary>
+      ${repeat(rest, link => link.href, attentionLink)}
+    </details>` : nothing}
+    ${unavailable ? html`<p class="session-hint">${t("attention.unavailable")}</p>` : nothing}
+    ${offline ? html`<p class="session-hint session-offline">
+      <i class="dot waiting" aria-hidden="true"></i>${t(offline === 1 ? "attention.offlineOne" : "attention.offline", {count: offline})}
+    </p>` : nothing}
+  `, $("sessionNotices"));
+}
+
+function attentionLink({href, title, reason}) {
+  return html`<a class="session-action" href=${href}>
+    <span><strong>${title}</strong><small>${t(reason)}</small></span>
+    <span class="session-action-arrow" aria-hidden="true">↗</span>
+  </a>`;
 }
 
 function render(reveal = false) {
@@ -575,21 +580,35 @@ function activityDetails(workspace, node, id) {
   `;
 }
 
+function wakeSummary(task) {
+  const wake = wakeStatus(task);
+  if (!wake) return nothing;
+  const retryAt = timeDate(wake.retryAt);
+  return html`<div class="wake-summary" data-wake=${wake.status} aria-live="polite" aria-atomic="true">
+    <div class="wake-heading">
+      <span>${t("wake.label")}</span>
+      <strong><i class="dot" aria-hidden="true"></i>${t(`wake.${wake.status}`)}</strong>
+    </div>
+    ${retryAt ? html`<p>${t("wake.retry", {time: formatTime(retryAt, shortTime)})}</p>`
+      : wake.hint ? html`<p>${t(`wake.hint.${wake.hint}`)}</p>` : nothing}
+  </div>`;
+}
+
 function activityMetadata(node, task) {
   const isWait = node.taskKind === "wait";
   const cancellable = !node.context && (isWait ? task.state === "active" && !task.owner : task.status === "active");
-  const detail = isWait ? {result: task.result, log_file: task.log_file}
+  const detail = isWait
+    ? {event_id: task.watch_id, query_status: task.query_status, result: task.result, log_file: task.log_file}
     : {path: task.path, goal: task.goal, runs: task.runs, events: task.events};
   return html`
     ${task.owner ? html`<p class="muted">${t("activity.managed")}</p>` : nothing}
     <div class="task-meta">
       <span>${t("field.deadline", {value: formatTime(task.deadline_at)})}</span>
-      ${isWait ? html`<span>${t("field.query", {value: task.query_status || "—"})}</span>
-        <span>${t("field.notification", {value: task.result?.notification || task.notification_channel?.status || "—"})}</span>`
-        : html`<span>${t("field.iteration", {value: task.iteration + (task.max_iterations ? " / " + task.max_iterations : "")})}</span>
+      ${isWait ? nothing : html`<span>${t("field.iteration", {value: task.iteration + (task.max_iterations ? " / " + task.max_iterations : "")})}</span>
           <span>${t("field.interval", {value: task.interval_seconds})}</span>
           ${task.next_run_at ? html`<span>${t("field.next", {value: formatTime(task.next_run_at)})}</span>` : nothing}`}
     </div>
+    ${isWait ? wakeSummary(task) : nothing}
     ${cancellable ? html`<button class="danger" @click=${() => cancelTask(task, node.taskKind)}>${t("common.cancel")}</button>` : nothing}
     <details class="task-more"><summary>${t("common.details")}</summary><pre>${JSON.stringify(detail, null, 2)}</pre></details>
   `;

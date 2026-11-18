@@ -29,6 +29,8 @@ class NotificationUnavailable(ValueError):
 
 EXIT_NOTIFY_FAILED = 70
 EXIT_NOTIFY_UNCONFIRMED = 71
+EXIT_NOTIFY_BUSY = 75
+EXIT_NOTIFY_REJECTED = 2
 EXIT_ALREADY_WATCHING = 75
 EXIT_ACTIVATION_CANCELLED = 76
 EXIT_TIMEOUT = 124
@@ -218,19 +220,6 @@ def preflight_codex_remote(remote: str | None, timeout: float = 1.0) -> str:
     except WebSocketException as exc:
         raise NotificationUnavailable(f"notification_unavailable: {path} is not a Codex app-server endpoint") from exc
     return endpoint
-
-
-CONNECTION_FAILURE_MARKERS = (
-    "failed to connect",
-    "connection refused",
-    "no such file or directory",
-    "handshake",
-)
-
-
-def notification_failure_is_unavailable(stderr: str) -> bool:
-    """Whether adapter stderr describes a connection failure before turn submission."""
-    return any(marker in stderr.casefold() for marker in CONNECTION_FAILURE_MARKERS)
 
 
 def notification_enabled(args: argparse.Namespace) -> bool:
@@ -440,7 +429,7 @@ def add_runtime_arguments(result: argparse.ArgumentParser) -> None:
         "--max-notification-attempts",
         type=positive_int,
         default=None,
-        help="Positive delivery-attempt limit; defaults to 12 for Codex and one otherwise",
+        help="Limit for delivery failures; Codex busy and offline retries do not count (default: 12 for Codex, 1 otherwise)",
     )
 
 

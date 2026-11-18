@@ -53,18 +53,18 @@ $wait goal 发布 API。拆分实现和测试，测试及健康检查通过后�
 python ~/.codex/skills/wait/src/waitctl.py dashboard --session "$CODEX_THREAD_ID"
 ```
 
-- 按会话查看等待、循环与目标，默认隐藏已结束记录。
+- 从会话摘要直达待处理任务。已完成和已取消的任务在「历史」中查看。
 - 多选状态、按耗时排序、查看依赖和循环历史。
-- 默认英文、浅色；在「设置」中切换中文和深色。
+- 在「设置」中切换语言或主题，默认英文、浅色。
 
 任务命令也会返回所属会话的 `dashboard_url`。操作与远程访问见[看板文档](docs/dashboard.zh-CN.md)。
 
-## 投递与安全
+## 事件投递
 
-- Codex 使用 `$wait`，斜杠命令客户端使用 `/wait`。Claude Code 必须挂接原生后台 `follow` 任务；另有 CodeWiz、Cursor 和 GitHub Copilot 适配器，见[客户端设置](docs/clients.zh-CN.md)。
-- Codex 恢复原 app-server 会话。`waitd` 应运行在该会话的主机上；只要两个服务均可用，Desktop 可以关闭。忙碌重试和不确定回执见[投递与恢复](docs/clients.zh-CN.md#桌面关闭与远程运行)。
-- 等待程序应只读且有期限，凭据不得放入参数、状态、日志或通知。
-- 程序输出和唤醒 note 不增加授权；验收结果或采取行动前，先复查当前状态。进程管理与恢复见[服务操作](docs/waitd.zh-CN.md)。
+- **Codex** 唤醒原 app-server 会话。端点离线时保留已保存的事件，同一端点恢复后继续投递。见 [Codex 投递说明](docs/clients.zh-CN.md#投递与恢复)。
+- **Claude Code** 在所属会话中用原生后台任务运行 `follow`。见 [Claude Code 配置](docs/clients.zh-CN.md#claude-code)。
+
+等待程序应只读且有截止时间，凭据放在环境变量中。所属 Agent 收到事件后，先核对结果和当前状态，再接着做。
 
 ## 开发
 
@@ -74,7 +74,7 @@ python ~/.codex/skills/wait/src/waitctl.py dashboard --session "$CODEX_THREAD_ID
 | --- | --- |
 | `src/` 入口 | CLI、安装脚本、等待程序 API 与共用子进程入口 |
 | `src/wait/tasks/` | Goal、Loop 状态引擎 |
-| `src/wait/service/` | watcher 监管与看板 HTTP 服务 |
+| `src/wait/service/` | watcher 监管、唤醒投递与看板 HTTP 服务 |
 | `src/wait/clients/` | 客户端投递适配器 |
 | `src/wait/` 共享模块 | 运行逻辑、服务身份与回环地址策略 |
 | `src/wait/dashboard/` | 共用任务视图、纯任务／导航模型、外观、交互控制器与本地图布局 |
@@ -94,11 +94,12 @@ assets/
   vendor/            本地依赖
 ```
 
-`WaitDaemon` 持有命令执行器，`Dashboard` 向它查询和提交操作。JSON 类型归入 `tasks/schema.py`，不充当运行时继承基类。
+`WaitDaemon` 管理等待任务并保存状态，`WakeDelivery` 负责发送唤醒、重试和记录回执。看板通过服务读取和修改任务。Goal 的状态类型定义在 `tasks/schema.py`。
 
 ```mermaid
 classDiagram
   WaitDaemon *-- StateCommandRunner
+  WaitDaemon *-- WakeDelivery
   Dashboard --> WaitDaemon : reads and actions
   GoalStore --> GoalGraph : loads
   LoopStore --> LoopState : loads

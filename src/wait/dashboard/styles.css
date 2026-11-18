@@ -65,6 +65,16 @@ main { max-width: 1640px; padding: 30px 32px 44px; margin: auto; }
 .eyebrow { display: block; margin-bottom: 9px; color: var(--muted); font-size: 10px; font-weight: 600; letter-spacing: 1.7px; text-transform: uppercase; }
 .session-summary { padding-bottom: 16px; }
 .session-summary h2 { font-size: 26px; letter-spacing: -.7px; margin: 0; font-weight: 650; }
+.session-notices { max-width: 520px; }
+.session-action { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 12px; margin-top: 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text); text-decoration: none; }
+.session-action:hover { background: var(--hover); border-color: var(--focus); }
+.session-action span { min-width: 0; }
+.session-action strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.session-action small, .session-hint, .session-more > summary { color: var(--muted); font-size: 11px; line-height: 1.6; }
+.session-action small { display: block; margin-top: 2px; }
+.session-action-arrow { color: var(--primary); }
+.session-more, .session-hint { margin: 8px 0 0; }
+.session-offline { display: flex; align-items: center; gap: 6px; }
 .mode-tabs { display: flex; gap: 5px; margin-bottom: 22px; border-bottom: 1px solid var(--border); }
 .mode-tabs button { position: relative; border: 0; border-radius: 0; padding: 12px 17px; background: transparent; color: var(--muted); border-bottom: 2px solid transparent; }
 .mode-tabs button:first-child { padding-left: 0; padding-right: 22px; }
@@ -218,6 +228,13 @@ dialog select { display: block; width: 100%; margin-top: 6px; }
 .empty p { line-height: 1.8; }
 .task-meta { display: grid; gap: 11px; margin: 20px 0 0; padding-top: 16px; border-top: 1px solid var(--border-soft); font-size: 11px; line-height: 1.7; color: var(--muted); }
 .task-meta > span { overflow-wrap: anywhere; }
+.wake-summary { --wake-tone: var(--status-running); margin-top: 12px; padding: 10px 12px; border: 1px solid var(--border-soft); border-radius: 8px; background: var(--surface-raised); }
+.wake-summary[data-wake="started"] { --wake-tone: var(--status-completed); }
+.wake-summary[data-wake="review"] { --wake-tone: var(--status-waiting); }
+.wake-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 12px; color: var(--muted); font-size: 11px; }
+.wake-heading strong { display: inline-flex; align-items: center; gap: 6px; color: var(--text); font-size: 12px; }
+.wake-heading .dot { background: var(--wake-tone); }
+.wake-summary p { margin: 5px 0 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
 .details > .danger { margin-top: 20px; }
 .task-more { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border-soft); }
 .task-more > summary { font-size: 11px; color: var(--muted); }

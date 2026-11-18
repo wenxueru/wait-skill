@@ -2,80 +2,62 @@
 
 [简体中文](clients.zh-CN.md)
 
-`waitd` supports two documented delivery paths, both bound to the owning conversation's exact session ID. Resume messages show the first eight event-ID characters and the complete agent-authored `event_note`; `waitctl show SHORT_ID` resolves the full ID, log path and mode state.
+Wait sends events back to the conversation that owns them. A wake message includes the short event ID and full event note. Run `waitctl show SHORT_ID` for the full ID, log path, and associated Goal or Loop state.
 
-| Client | Delivery path | Invocation |
+| Client | Delivery | Invocation |
 | --- | --- | --- |
 | Codex | Direct app-server `turn/start` | `$wait`, `$wait loop`, `$wait goal` |
 | Claude Code | Native background Bash running `waitctl.py follow` | `/wait`, `/wait loop`, `/wait goal` |
 
-`--thread` is a compatibility alias for `--session`. `--remote` applies only to Codex. Credentials must not appear in session IDs, arguments, notes, or persisted files.
+Use `--session ID` for the owning conversation. `--thread` remains an alias. Use `--no-notify` to keep the session visible in the dashboard and retrieve the event manually with `follow`.
 
 ## Codex
 
-### Endpoint selection
+### Configure the endpoint
 
-Submit with `--client codex --session ID`. Add `--remote ENDPOINT` when the default app-server control socket is not available.
+Submit with `--client codex --session ID`. Wait records the selected app-server endpoint with the watcher.
 
-Accepted endpoint forms are:
+| `--remote` | Endpoint | Submission check |
+| --- | --- | --- |
+| Omitted or `unix://` | `$CODEX_HOME/app-server-control/app-server-control.sock` (`CODEX_HOME` defaults to `~/.codex`) | WebSocket upgrade before the waiting program starts |
+| `unix:///absolute/path` | Explicit app-server control socket | Same check |
+| `ws://host:port` or `wss://host:port` | Explicit WebSocket server | Recorded as configured, then checked on delivery |
 
-- `unix://` or no `--remote`: `$CODEX_HOME/app-server-control/app-server-control.sock`, with `$CODEX_HOME` defaulting to `~/.codex`;
-- `unix:///absolute/path`: an explicit Unix app-server control socket;
-- `ws://host:port` or `wss://host:port`: an explicit WebSocket endpoint.
+A Unix preflight failure returns `notification_unavailable` with `query_status: not_started`. Use the app-server control socket for local delivery and reserve `~/.codex/ipc/ipc.sock` for Desktop IPC.
 
-The Desktop socket at `~/.codex/ipc/ipc.sock` is not an app-server endpoint and is never selected automatically.
-
-### Submission and preflight
-
-Before starting the waiting program, `waitd` resolves the endpoint and checks the notification channel:
-
-- A Unix endpoint must exist and complete a WebSocket upgrade. Success is reported as `notification_channel.status: ready`.
-- A `ws://` or `wss://` endpoint is reported as `configured`; URL validation and connectivity are checked at delivery.
-- An unavailable or incompatible Unix endpoint returns `notification_unavailable` with `query_status: not_started`. No watcher is created and no retry begins.
-- A wait without a session has notification disabled and can still be followed manually. `--no-notify` retains session ownership and dashboard visibility while disabling automatic resume turns; use `waitctl follow` to block for its event.
-
-This separates query startup from notification readiness, so a healthy status query cannot hide a broken wake path.
+For an authenticated endpoint, export the token in the daemon environment and pass `--resume-arg=--remote-auth-token-env=VARIABLE_NAME`. Keep the token value in the environment.
 
 ### Delivery and recovery
 
-`waitd` runs `src/worker.py codex` against the owning endpoint and exact thread ID. The adapter:
+`waitd` sends one wake event at a time per session ID. Other sessions can receive events in parallel. The adapter reads the thread status, loads it if needed, and starts a turn with the existing model, workspace, and approval settings.
 
-1. Initializes JSON-RPC and reads the thread's runtime status.
-2. Calls `thread/resume` only when the thread is unloaded.
-3. Calls `turn/start` with the generated `$wait [goal|loop] resume ...` instruction.
+| Delivery state | What happens |
+| --- | --- |
+| Busy or offline before `turn/start` | Keep the result and next retry time. Resume delivery with the same event ID, including after a daemon restart. |
+| `started` | The app-server returned a turn ID. The root agent checks the event and accepts the task result separately. |
+| `unconfirmed` | A lost reply, timeout, unexpected helper exit, or interrupted send leaves delivery unconfirmed. Check the original conversation before another wake. |
+| Legacy `queued` | The previous adapter accepted the event for delivery. Check the original conversation to see whether it was processed. |
 
-The original model, working directory, instructions, sandbox and approval settings stay with the thread. Delivery uses that app-server directly, without a second Codex executor or Desktop queue consumer.
+The retry delay grows to at most five minutes. Explicit rejections count toward the default limit of 12 attempts. Busy and offline results remain pending outside that limit. Each Codex attempt has a default timeout of 60 seconds. Before each attempt, Wait checks cancellation and Goal or Loop ownership.
 
-- `notification: started` means `turn/start` returned an actual turn ID. The helper's JSON stdout records that ID. Starting a turn is not business success; the root still validates the event and result.
-- An active thread returns `busy` without steering it. The service retries after a bounded delay; a server-side race can still cause `turn/start` to reach a turn that became active after the status read.
-- A connection failure before `turn/start` retries as `notification_unavailable`; explicit server rejections also use the bounded retry policy. Defaults are 12 attempts and 60 seconds per attempt, with exponential backoff capped at 300 seconds.
-- A lost `turn/start` acknowledgement or delivery timeout is `unconfirmed` and is never automatically replayed. A daemon crash during `attempting` also recovers as `unconfirmed`. Inspect the original thread before recovery.
-- Watcher cancellation and goal/loop ownership are rechecked before each attempt. The same event ID is preserved throughout retries.
-
-For an authenticated WS/WSS endpoint, export a token in the daemon environment and pass `--resume-arg=--remote-auth-token-env=VARIABLE_NAME` on the watcher. No token value goes into argv or state. Codex resume arguments cannot override thread settings. The helper verifies WSS certificates; Unix and TCP WebSockets validate the upgrade response. The selected endpoint is saved in watcher argv at submission.
+After delivery, the root agent uses Goal `wake` or Loop `begin` to handle the event. A Goal watcher keeps its lock until acknowledgement or the wake acknowledgement deadline. See the [app-server lifecycle](https://learn.chatgpt.com/docs/app-server) for transport details.
 
 ### Desktop closed and remote execution
 
-Run `waitd` on the host that owns the conversation, using its app-server endpoint and thread ID. If that remote app-server remains alive when the Desktop app closes, the wake starts directly on the remote server. Reopening Desktop is unnecessary for execution. An app-server stopped with the app, an offline execution host, expired credentials, required user approval, or Desktop-only tools can still block progress; this skill does not start a replacement server or bypass interaction requirements.
-
-A previously recorded `notification: queued` came from the old queue adapter. It proves only queue acceptance and is retained as legacy state; do not blindly replay it during migration. Reconcile the original conversation and event ID first. Existing goal/loop JSON state paths remain valid. After delivery, goal `wake` and loop `begin` still run in the resumed root; goal watchers retain ownership until acknowledgement or the configured wake-ack deadline.
-
-The protocol follows the [official app-server lifecycle](https://learn.chatgpt.com/docs/app-server).
+Run `waitd` on the execution host and point it at the owning app-server. Desktop can stay closed while those services are running. If Desktop also stops the app-server, pending events stay on disk and delivery resumes when the same endpoint returns. Approvals and Desktop-only tools can still require the user.
 
 ## Claude Code
 
-Claude Code does not use a headless `claude --resume` process to notify an open conversation. The owning interactive session attaches a native background Bash task to the watcher instead.
-
-1. Submit the watcher with `--client claude --session ID` and keep its watch ID.
-2. In the owning root session, start this command with the client's native background-task feature:
+1. Submit with `--client claude --session ID` and keep the watch ID.
+2. Run this command through the owning session's native background-task feature:
 
    ```bash
    python /absolute/path/src/waitctl.py follow WATCH_ID --timeout 3600
    ```
 
-3. Choose a finite follow timeout that covers the remaining watcher deadline, retain the native task ID, and end the turn.
-4. When the background task completes, read its output and watcher log, validate the event, and apply the normal wait, goal, or loop resume protocol.
+3. Set a finite timeout that covers the remaining watcher deadline, keep the native task ID, and end the turn.
+4. When the task returns, inspect the watcher log and follow the resume steps for Wait, Goal, or Loop.
 
-Shell `&`, tmux, and a separate headless Claude process do not provide the owning conversation's native completion notification. Closing the conversation stops its background task; after reopening, attach `follow` to the original watch. A retained completed record returns immediately, so a replacement watcher is unnecessary.
+When you reopen a closed conversation, attach `follow` to the same watcher. A retained completed record returns immediately.
 
-`notification: native_pending` means the event is durable and available to `follow`; it does not mean the root accepted it. Goal waits remain owned until `wake` or the notification deadline. If that deadline passes, the watcher records `unconfirmed` and preserves the event for recovery.
+`native_pending` means the event is saved and ready for `follow`. A Goal watch keeps its lock until `wake` acknowledges the event or the notification deadline expires. On expiry, Wait saves `unconfirmed` and retains the event for recovery.

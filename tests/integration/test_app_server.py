@@ -17,15 +17,13 @@ from pathlib import Path
 
 from wait.clients.codex import AppServer, wake
 
-requests = []
-
 
 class Stub(http.server.BaseHTTPRequestHandler):
     def log_message(self, *args) -> None:
         pass
 
     def do_POST(self) -> None:
-        requests.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+        self.rfile.read(int(self.headers["Content-Length"]))
         message = {
             "id": "msg-smoke",
             "type": "message",
@@ -116,7 +114,6 @@ def running_codex(root: Path, endpoint: str, model_port: int) -> Generator[None,
 @unittest.skipUnless(shutil.which("codex"), "Codex CLI is not installed")
 class RealAppServerTest(unittest.IsolatedAsyncioTestCase):
     async def test_turn_continues_after_all_clients_disconnect(self) -> None:
-        requests.clear()
         stub = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Stub)
         threading.Thread(target=stub.serve_forever, daemon=True).start()
         try:
@@ -141,30 +138,15 @@ class RealAppServerTest(unittest.IsolatedAsyncioTestCase):
                     result, code = await wake(endpoint, thread["id"], "Verify the background continuation.", 10)
                     self.assertEqual(code, 0, result)
                     self.assertEqual(result["status"], "started", result)
-                    for _ in range(100):
-                        async with AppServer(endpoint, 5) as rpc:
-                            read = (
-                                await rpc.call(
-                                    "thread/read",
-                                    {
-                                        "threadId": thread["id"],
-                                        "includeTurns": False,
-                                    },
-                                )
-                            )["thread"]
-                        if requests and read["status"]["type"] == "idle":
-                            break
-                        await asyncio.sleep(0.05)
-                    self.assertEqual(read["status"]["type"], "idle", read)
-                    self.assertTrue(requests, "model backend was never called")
-                    self.assertTrue(
-                        any(
-                            b"Headless wake verified" in file.read_bytes()
-                            for file in (root / "home").rglob("*")
-                            if file.is_file()
-                        ),
-                        "completion not persisted",
-                    )
+                    # The persisted assistant output proves work continued after wake disconnected.
+                    sessions = root / "home" / "sessions"
+
+                    def completion_saved() -> bool:
+                        return any(b"Headless wake verified" in file.read_bytes() for file in sessions.rglob("*.jsonl"))
+
+                    async with asyncio.timeout(5):
+                        while not await asyncio.to_thread(completion_saved):
+                            await asyncio.sleep(0.05)
         finally:
             stub.shutdown()
             stub.server_close()

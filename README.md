@@ -53,18 +53,18 @@ While the agent is idle, local `waitd` checks state, saves results, and delivers
 python ~/.codex/skills/wait/src/waitctl.py dashboard --session "$CODEX_THREAD_ID"
 ```
 
-- Browse Waits, Loops, and Goals by session; finished records stay in History.
-- Combine status filters, sort by duration, and inspect dependencies and loop history.
-- English and light mode by default; switch language and theme in **Settings**.
+- Open the task that needs attention from the session summary. Completed and cancelled tasks are in **History**.
+- Filter by status, sort by duration, and inspect dependencies or loop history.
+- Switch language or theme in **Settings**. The default is English and light mode.
 
 Task commands also return a scoped `dashboard_url`. See [dashboard docs](docs/dashboard.md) for controls and remote access.
 
-## Delivery and safety
+## Event delivery
 
-- Codex uses `$wait`; slash-command clients use `/wait`. Claude Code requires a native background `follow` task. CodeWiz, Cursor, and GitHub Copilot adapters are also available; see [client setup](docs/clients.md).
-- Codex resumes the original app-server session. Run `waitd` on that session's host; Desktop can stay closed while both services remain available. See [delivery and recovery](docs/clients.md#desktop-closed-and-remote-execution) for busy retries and ambiguous acknowledgements.
-- Waiting programs should be read-only and finite. Keep credentials out of arguments, state, logs, and notifications.
-- Program output and wake notes do not grant new authority. Recheck current state before accepting a result or acting. See [service operations](docs/waitd.md) for process management and recovery.
+- **Codex** wakes the original app-server session. A saved event waits for the same endpoint to return if it goes offline. See [Codex delivery](docs/clients.md#delivery-and-recovery).
+- **Claude Code** uses a native background `follow` task in the owning conversation. See [Claude Code setup](docs/clients.md#claude-code).
+
+Use read-only waiting programs with a deadline. Store credentials in the environment. The owning agent verifies the result and current state before continuing.
 
 ## Development
 
@@ -74,7 +74,7 @@ Task commands also return a scoped `dashboard_url`. See [dashboard docs](docs/da
 | --- | --- |
 | `src/` entry points | CLI, installer, waiting-program API, and shared subprocess worker |
 | `src/wait/tasks/` | Goal and Loop state engines |
-| `src/wait/service/` | Watcher supervision and dashboard HTTP service |
+| `src/wait/service/` | Watcher supervision, wake delivery, and dashboard HTTP service |
 | `src/wait/clients/` | Client delivery adapters |
 | Shared `src/wait/` modules | Runtime, service identity, and loopback address policy |
 | `src/wait/dashboard/` | Shared task views, pure task/navigation models, appearance, interaction controllers, and bundled graph layout |
@@ -94,11 +94,12 @@ assets/
   vendor/            Bundled dependencies
 ```
 
-`WaitDaemon` owns the command runner; `Dashboard` delegates task reads and actions to it. JSON contracts live in `tasks/schema.py`, outside the runtime class hierarchy.
+`WaitDaemon` supervises watchers and saves their state. `WakeDelivery` handles send attempts, retry times, and receipts. The dashboard uses the service for reads and actions. Goal state types live in `tasks/schema.py`.
 
 ```mermaid
 classDiagram
   WaitDaemon *-- StateCommandRunner
+  WaitDaemon *-- WakeDelivery
   Dashboard --> WaitDaemon : reads and actions
   GoalStore --> GoalGraph : loads
   LoopStore --> LoopState : loads

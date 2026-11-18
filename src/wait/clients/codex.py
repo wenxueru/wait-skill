@@ -17,9 +17,6 @@ from websockets.exceptions import WebSocketException
 
 from .. import runtime
 
-EXIT_UNAVAILABLE = runtime.EXIT_NOTIFY_FAILED
-EXIT_UNCONFIRMED = runtime.EXIT_NOTIFY_UNCONFIRMED
-EXIT_BUSY = 75
 MAX_MESSAGE_BYTES = 8 * 1024 * 1024
 
 
@@ -128,7 +125,7 @@ async def wake(remote: str, session: str, message: str, timeout: float, token_en
                 raise ValueError("app-server resumed a different thread")
             status = thread["status"]["type"]
         if status == "active":
-            return {"status": "busy", "thread_id": session}, EXIT_BUSY
+            return {"status": "busy", "thread_id": session}, runtime.EXIT_NOTIFY_BUSY
         if status != "idle":
             raise RpcError(f"cannot wake thread in status {status!r}")
         # Never override model, working directory, sandbox, approval policy, or instructions.
@@ -162,14 +159,14 @@ def main(argv: list[str] | None = None) -> int:
         result, code = asyncio.run(wake(args.remote, args.session, args.message, args.timeout, args.remote_auth_token_env))
     except Unconfirmed as exc:
         print(str(exc), file=sys.stderr)
-        return EXIT_UNCONFIRMED
+        return runtime.EXIT_NOTIFY_UNCONFIRMED
     except (OSError, WebSocketException):
         # Do not echo server responses or token-bearing transport details.
         print("notification_unavailable: cannot connect to Codex app-server", file=sys.stderr)
-        return EXIT_UNAVAILABLE
+        return runtime.EXIT_NOTIFY_FAILED
     except (ValueError, KeyError, TypeError) as exc:
         print(str(exc), file=sys.stderr)
-        return 2
+        return runtime.EXIT_NOTIFY_REJECTED
     print(json.dumps(result))
     return code
 

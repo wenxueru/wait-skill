@@ -25,6 +25,8 @@ python /path/to/wait/src/waitctl.py dashboard --session "$AGENT_SESSION_ID"
 - `dashboard` 使用 `CODEX_THREAD_ID` 或显式 `--session`。无会话的 URL 不显示任务；`--all-sessions` 主动开启本机总览。
 - `dashboard --state /absolute/path/goal.json` 登记已有 DAG；未选择会话时使用其所属会话，不从最近任务或标签页推断归属。
 
+点击会话摘要可直达首个待处理任务。展开「其他待处理项」查看其余任务。等待连接恢复的事件合并显示总数。
+
 ## 分享更新
 
 - Wait/Loop/Goal 命令返回定位所属会话、任务和节点的 `dashboard_url`。保留完整查询参数，复用可访问的转发地址。
@@ -66,7 +68,8 @@ python /path/to/wait/src/waitctl.py dashboard --session "$AGENT_SESSION_ID"
 | **耗时／最近更新** | 降序 → 升序 → 默认；未知值排最后 |
 
 - 链接定位具体任务并支持新标签页。目标不可用时保留文字，不跳到其他任务。
-- 选择任务查看完整说明、时间、证据和关联任务。所属等待器通过其目标或循环控制。
+- 点选任务可查看说明、时间、结果和关联任务。通过所属 Goal 或 Loop 控制关联等待。
+- 等待详情中的「唤醒状态」显示下次重试时间、确认送达情况或需要核对的原因。展开「详情」可查看事件 ID、日志和投递记录。
 - 默认优先显示失败、执行中和可推进任务。实时更新保留筛选、排序和编辑草稿，耗时排序不丢失焦点。
 
 ## 时间

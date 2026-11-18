@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {activityId, activityWorkspace, collapseLoopTimers, relationNodes, watchState} from "../../src/wait/dashboard/models/activity.mjs";
+import {activityId, activityWorkspace, collapseLoopTimers, relationNodes, sessionSummary, wakeStatus, watchState} from "../../src/wait/dashboard/models/activity.mjs";
 import {durationRanges, nodeRows, nodeTimings} from "../../src/wait/dashboard/models/tasks.mjs";
 import {layoutGraph} from "../../src/wait/dashboard/graph/layout.mjs";
 
@@ -121,4 +121,42 @@ test("loop timers collapse only in the graph, preserving ownership, raw records 
   const loopView = collapseLoopTimers(activityWorkspace(tasks, "loop").nodes);
   assert.equal(Object.keys(loopView.nodes).length, 3);
   assert.equal(loopView.nodes[loopId].timerCount, 1);
+});
+
+test("wake status distinguishes pending retries, accepted wakes and ambiguous delivery", () => {
+  const retryAt = 1234;
+  for (const [state, notification, expected] of [
+    ["active", "notification_unavailable_retrying", {status: "pending", retryAt}],
+    ["completed", "started", {status: "started"}],
+    ["failed", "unconfirmed", {status: "review", hint: "unconfirmed"}],
+    ["completed", "queued", {status: "review", hint: "queued"}],
+    ["failed", "notification_unavailable", {status: "review", hint: "failed"}],
+    ["active", undefined, null],
+    ["completed", "disabled", null],
+    ["cancelled", "busy_retrying", null]
+  ]) {
+    assert.deepEqual(wakeStatus({state, result: {notification, next_notification_at: retryAt}}), expected, notification);
+  }
+});
+
+test("session summary groups offline events and keeps distinct actions for failed steps and orphaned waits", () => {
+  const wake = (watch_id, state, notification) => ({watch_id, state, result: {notification}});
+  const goals = [{
+    path: "/g.json", status: "open", activity: "orphaned_wait",
+    nodes: {upstream: {title: "Upstream", status: "failed"}, downstream: {title: "Downstream", status: "waiting"}}
+  }];
+  const {status, attention, offline, unavailable} = sessionSummary({goals, loops: [], watches: [
+    wake("offline-1", "active", "notification_unavailable_retrying"),
+    wake("busy", "active", "busy_retrying"),
+    wake("uncertain", "failed", "unconfirmed"),
+    wake("legacy", "completed", "queued")
+  ], linked_watches: [wake("offline-2", "active", "notification_unavailable_retrying")]});
+  assert.equal(status, "attention");
+  assert.equal(offline, 2);
+  assert.equal(unavailable, false);
+  assert.deepEqual(attention.map(({origin, reason}) => [origin, reason]), [
+    [{mode: "wait", watch_id: "uncertain"}, "wake.hint.unconfirmed"],
+    [{mode: "goal", path: "/g.json", node: "upstream"}, "attention.goalFailed"],
+    [{mode: "goal", path: "/g.json"}, "attention.missingWatcher"]
+  ]);
 });

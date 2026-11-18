@@ -25,6 +25,8 @@ The page defaults to English and light mode. **Settings** changes language and a
 - `dashboard` uses `CODEX_THREAD_ID` or an explicit `--session`. An unscoped URL shows no tasks; `--all-sessions` opts into the machine-wide view.
 - `dashboard --state /absolute/path/goal.json` registers a saved DAG and uses its owner when no session was selected. Never infer ownership from recent tasks or tabs.
 
+The session summary links directly to the first task that needs attention. Expand **More to review** for the rest. Events waiting for a connection are shown as one count.
+
 ## Share updates
 
 - Wait/Loop/Goal commands return a `dashboard_url` focused on their session, task and node. Keep its full query and reuse a working forwarded address.
@@ -66,7 +68,8 @@ The page defaults to English and light mode. **Settings** changes language and a
 | **Duration / Updated** | Descending → ascending → default; unknown values last |
 
 - Links open the exact task and support new tabs. Unavailable targets stay unlinked instead of opening a different task.
-- Select a task for full notes, times, evidence and related tasks. Owned watchers are controlled through their Goal or Loop.
+- Select a task to see its notes, timing, result, and related tasks. Use the parent Goal or Loop to control owned watchers.
+- In Wait details, **Wake status** shows a retry time, confirmed delivery, or a reason to review the original chat. Open **Details** for the event ID, log, and delivery record.
 - Default order prioritizes failed, running and ready tasks. Live updates retain filters, sort and editable drafts; live duration sorting preserves focus.
 
 ## Timing

@@ -15,8 +15,8 @@ import sys
 import time
 import traceback
 import uuid
-from collections.abc import Callable
 from contextlib import suppress
+from functools import partial
 from pathlib import Path
 from typing import Any, TextIO
 from urllib.parse import urlencode
@@ -30,20 +30,12 @@ from ..protocol import (
     STATE_COMMANDS,
 )
 from ..tasks import goal, loop
+from . import process
 from .commands import StateCommandRunner
+from .delivery import DELIVERED_NOTIFICATIONS, WakeDelivery
 
 MAX_FINISHED_WATCHES = 256
-MAX_PROGRAM_OUTPUT_BYTES = 64 * 1024
 PATH_OPTIONS = {"--goal-state", "--loop-state", "--startup-file", "--log-file", "--lock-file"}
-DELIVERED_NOTIFICATIONS = {"started", "queued", "completed", "native_pending"}
-
-
-class PreDeliveryPersistenceError(OSError):
-    """The notification has not been sent yet."""
-
-
-def notification_is_unconfirmed(client: str, outcome: dict[str, object]) -> bool:
-    return outcome["event"] == "timeout" or (client == "codex" and outcome["exit_code"] == runtime.EXIT_NOTIFY_UNCONFIRMED)
 
 
 def watcher_failure(exc: BaseException, **context: object) -> dict[str, object]:
@@ -113,64 +105,6 @@ def acquire_daemon_lock(socket_path: Path) -> TextIO:
     return lock
 
 
-async def wait_for_cancel(cancel_event: asyncio.Event, timeout: float) -> bool:
-    """Return whether cancellation arrives before the timeout."""
-    try:
-        await asyncio.wait_for(cancel_event.wait(), timeout)
-    except TimeoutError:
-        return False
-    return True
-
-
-async def run_program(
-    command: list[str],
-    timeout: float,
-    cwd: str,
-    on_started: Callable[[int], None] | None = None,
-) -> dict[str, object]:
-    """Run once; preserve bounded output without interpreting it."""
-    result: dict[str, object] = {"event": "exited", "exit_code": None}
-    output = {"stdout": bytearray(), "stderr": bytearray()}
-    truncated = {"stdout": False, "stderr": False}
-    try:
-        process = await asyncio.create_subprocess_exec(
-            *command,
-            cwd=cwd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            start_new_session=True,
-        )
-    except OSError as exc:
-        return {**result, "event": "start_failed", "error": str(exc), "stdout": "", "stderr": ""}
-    if on_started:
-        on_started(process.pid)
-
-    async def drain(name: str, stream: asyncio.StreamReader) -> None:
-        while chunk := await stream.read(8192):
-            remaining = MAX_PROGRAM_OUTPUT_BYTES - len(output[name])
-            output[name].extend(chunk[:remaining])
-            truncated[name] |= len(chunk) > remaining
-
-    assert process.stdout is not None and process.stderr is not None
-    readers = [
-        asyncio.create_task(drain("stdout", process.stdout)),
-        asyncio.create_task(drain("stderr", process.stderr)),
-    ]
-    try:
-        await asyncio.wait_for(process.wait(), timeout)
-        result["exit_code"] = process.returncode
-    except TimeoutError:
-        result["event"] = "timeout"
-    finally:
-        with suppress(ProcessLookupError):
-            os.killpg(process.pid, signal.SIGKILL)
-        await process.wait()
-        await asyncio.gather(*readers)
-    result.update({name: data.decode("utf-8", errors="replace") for name, data in output.items()})
-    result["output_truncated"] = any(truncated.values())
-    return result
-
-
 class WaitDaemon:
     """Persistent watcher scheduler and state-command gateway."""
 
@@ -182,6 +116,7 @@ class WaitDaemon:
         self.watchers: dict[str, dict[str, Any]] = self._load_registry()
         self.tasks: dict[str, asyncio.Task[None]] = {}
         self.cancel_events: dict[str, asyncio.Event] = {}
+        self.delivery = WakeDelivery()
         self.state_commands = StateCommandRunner(socket_path)
         self.shutdown_event = asyncio.Event()
         self.changed = asyncio.Event()
@@ -591,19 +526,18 @@ class WaitDaemon:
         if record.get("state") != "active":
             return
         if result.get("event") == "watcher_failed":
-            if (
-                args
-                and runtime.notification_enabled(args)
-                and await self._notify_watcher_failure(args, result, record, self.cancel_events[watch_id])
-            ):
+            if args and runtime.notification_enabled(args):
+                await self._notify_watcher_failure(args, result, record, self.cancel_events[watch_id])
+            if record["state"] != "active":
                 return
             record["phase"] = "finalizing"
-        self._update_record(
-            record,
-            state="completed" if code == 0 else "failed",
-            code=code,
-            result=result,
-        )
+        try:
+            self._update_record(record, state="completed" if code == 0 else "failed", code=code, result=result)
+        except OSError as exc:
+            # Connected followers can still read the in-memory outcome.
+            result["persistence_error"] = str(exc)
+            print(f"waitd could not save watch {watch_id}: {exc}", file=sys.stderr, flush=True)
+            self.publish_change()
 
     async def _notify_watcher_failure(
         self,
@@ -611,80 +545,35 @@ class WaitDaemon:
         result: dict[str, object],
         record: dict[str, Any],
         cancel_event: asyncio.Event,
-    ) -> bool:
+    ) -> None:
         if result.get("notification") not in {None, "pending"}:
-            return False
+            return
         durable = result.get("durable_result")
-        if isinstance(durable, dict) and durable.get("notification_attempts", 0):
+        if not isinstance(durable, dict) or not durable.get("notification_attempts"):
+            durable = record.get("result")
+        if isinstance(durable, dict) and durable.get("notification_attempts"):
             status = durable.get("notification")
             if status == "attempting" or str(status).endswith("_retrying"):
                 status = "unconfirmed"
             result.update(notification=status, notification_attempts=durable["notification_attempts"])
-            return False
+            return
+
+        result.update(notification="pending", notification_attempts=0)
         try:
-            self._update_record(record, phase="notifying", code=1)
-        except OSError as exc:
-            await self._notify_without_persistence(args, result, record, exc)
-            return True
-        try:
-            result.update(notification="pending", notification_attempts=0)
+            self._persist_result(args, record, result, phase="notifying", code=1)
             await self._deliver(args, result, record, cancel_event)
         except (OSError, RuntimeError, TypeError, ValueError, KeyError) as exc:
-            if isinstance(exc, PreDeliveryPersistenceError):
-                await self._notify_without_persistence(args, result, record, exc)
-                return True
-            if result.get("notification") in DELIVERED_NOTIFICATIONS:
+            # Delivery requires a persisted attempt. Any later failure may hide its receipt.
+            notification = result.get("notification")
+            if notification in DELIVERED_NOTIFICATIONS:
                 result["notification_finalize_error"] = repr(exc)
             else:
-                result.update(notification="failed", notification_stderr=repr(exc))
-            with suppress(OSError):
-                self._persist_result(args, record, result, code=1)
-        return False
-
-    async def _notify_without_persistence(
-        self,
-        args: argparse.Namespace,
-        result: dict[str, object],
-        record: dict[str, Any],
-        error: OSError,
-    ) -> None:
-        persistence_error = error.__cause__ or error
-        result.update(notification="unconfirmed", persistence_error=repr(persistence_error))
-        if args.client != "claude":
-            result["notification_attempts"] = 1
-            message = runtime.resume_instruction(args) + "; event=watcher_failed; persistence=unavailable"
-            try:
-                command = self._notification_command(args, message)
-                _, timeout = runtime.notification_limits(args)
-                outcome = await run_program(command, timeout, record["cwd"])
                 result.update(
-                    notification_exit_code=outcome.get("exit_code"),
-                    notification_stdout=outcome.get("stdout"),
-                    notification_stderr=outcome.get("stderr") or outcome.get("error"),
+                    notification="unconfirmed" if notification == "attempting" else "failed",
+                    notification_stderr=repr(exc),
                 )
-                if outcome["event"] == "exited" and outcome["exit_code"] == 0:
-                    result["notification"] = runtime.notification_success(args.client)
-                elif not notification_is_unconfirmed(args.client, outcome):
-                    result["notification"] = "failed"
-            except (OSError, RuntimeError, TypeError, ValueError, KeyError) as exc:
-                result.update(notification="failed", notification_stderr=repr(exc))
-        record.update(state="failed", result=result, code=1, phase="finalizing", updated_at=time.time())
-        print(
-            json.dumps({
-                "event": "watcher_failed",
-                "watch_id": record["watch_id"],
-                "persistence_error": repr(persistence_error),
-                "notification": result["notification"],
-            }),
-            file=sys.stderr,
-            flush=True,
-        )
-        self.publish_change()
-
-    @staticmethod
-    def _notification_command(args: argparse.Namespace, message: str) -> list[str]:
-        remote = runtime.resolve_codex_remote(args.remote) if args.client == "codex" else args.remote
-        return runtime.notification_command(args.client, args.thread, message, remote, args.resume_args)
+            with suppress(OSError):
+                self._write_result_log(args, result)
 
     async def _watch(
         self,
@@ -768,20 +657,11 @@ class WaitDaemon:
                 result = saved_result
                 code = int(record["code"])
 
-            if phase == "notifying" and result.get("notification") == "attempting":
-                result["notification"] = "unconfirmed"
-                code = runtime.EXIT_NOTIFY_FAILED
-                phase = "finalizing"
-                self._persist_result(args, record, result, phase=phase, code=code)
-
             if phase == "notifying":
-                if result.get("notification") in DELIVERED_NOTIFICATIONS:
-                    delivery_code = None
-                else:
-                    delivery_code = await self._deliver(args, result, record, cancel_event)
+                delivery_code = await self._deliver(args, result, record, cancel_event)
                 if delivery_code is not None:
                     code = delivery_code
-                if delivery_code is None and args.goal_state:
+                if delivery_code is None and args.goal_state and result.get("event") != "watcher_failed":
                     phase = "awaiting_ack"
                     if result.get("notification") == "native_pending":
                         # Native task availability is not delivery confirmation.
@@ -856,7 +736,7 @@ class WaitDaemon:
             remaining = deadline_at - time.time()
             if remaining <= 0:
                 return "timeout"
-            if await wait_for_cancel(cancel_event, min(args.activation_interval, remaining)):
+            if await process.wait_for_cancel(cancel_event, min(args.activation_interval, remaining)):
                 return "cancelled"
 
     async def _execute_program(
@@ -873,7 +753,7 @@ class WaitDaemon:
         def started(pid: int) -> None:
             self._update_record(record, phase="querying", query_status="verified", query_pid=pid)
 
-        task = asyncio.create_task(run_program(command, remaining, record["cwd"], started))
+        task = asyncio.create_task(process.run_program(command, remaining, record["cwd"], started))
         try:
             while not task.done():
                 if cancel_event.is_set() or not runtime.watch_is_current(args):
@@ -892,75 +772,8 @@ class WaitDaemon:
         record: dict[str, Any],
         cancel_event: asyncio.Event,
     ) -> int | None:
-        if args.client == "claude":
-            result.update(notification="native_pending", notification_attempts=0, available_at=time.time())
-            try:
-                self._persist_result(args, record, result)
-            except OSError as exc:
-                raise PreDeliveryPersistenceError(*exc.args) from exc
-            return None
-        max_attempts, timeout = runtime.notification_limits(args)
-        previous_attempts = int(result.get("notification_attempts", 0))
-        for attempt in range(previous_attempts + 1, max_attempts + 1):
-            if cancel_event.is_set() or not runtime.watch_is_current(args):
-                result["notification"] = "cancelled"
-                return runtime.EXIT_ACTIVATION_CANCELLED
-            result.update(notification="attempting", notification_attempts=attempt)
-            try:
-                self._persist_result(args, record, result)
-            except OSError as exc:
-                if attempt == 1:
-                    raise PreDeliveryPersistenceError(*exc.args) from exc
-                raise
-            message = runtime.resume_instruction(args)
-            if result.get("event") == "watcher_failed":
-                message += "; event=watcher_failed"
-            try:
-                command = self._notification_command(args, message)
-            except runtime.NotificationUnavailable as exc:
-                result.update(notification="notification_unavailable", notification_stderr=str(exc))
-                self._persist_result(args, record, result)
-                return runtime.EXIT_NOTIFY_FAILED
-            outcome = await run_program(command, timeout, record["cwd"])
-            if outcome["event"] == "start_failed":
-                result.update(notification="failed", notification_stderr=outcome["error"])
-                self._persist_result(args, record, result)
-                return runtime.EXIT_NOTIFY_FAILED
-            result.update(
-                notification_exit_code=outcome["exit_code"],
-                notification_stdout=outcome["stdout"],
-                notification_stderr=outcome["stderr"],
-            )
-            if outcome.get("output_truncated"):
-                result["notification_output_truncated"] = True
-            if args.client == "codex" and notification_is_unconfirmed(args.client, outcome):
-                # turn/start may have been accepted: never replay an ambiguous wake.
-                result["notification"] = "unconfirmed"
-                self._persist_result(args, record, result)
-                return runtime.EXIT_NOTIFY_FAILED
-            if outcome["event"] == "timeout":
-                failed = "unconfirmed"
-            elif outcome["exit_code"] == 0:
-                result.update(notification=runtime.notification_success(args.client), delivered_at=time.time())
-                self._persist_result(args, record, result)
-                return None
-            elif args.client == "codex" and (
-                outcome["exit_code"] == runtime.EXIT_NOTIFY_FAILED
-                or runtime.notification_failure_is_unavailable(outcome["stderr"])
-            ):
-                failed = "notification_unavailable"
-            elif args.client == "codex" and outcome["exit_code"] == 75:
-                failed = "busy"
-            else:
-                failed = "failed"
-            exhausted = attempt == max_attempts
-            result["notification"] = failed if exhausted else f"{failed}_retrying"
-            self._persist_result(args, record, result)
-            if exhausted:
-                return runtime.EXIT_NOTIFY_FAILED
-            delay = min(args.notification_retry_interval * 2 ** min(attempt - 1, 10), 300.0)
-            await wait_for_cancel(cancel_event, delay)
-        return runtime.EXIT_NOTIFY_FAILED
+        persist = partial(self._persist_result, args, record, result)
+        return await self.delivery.deliver(args, result, record["cwd"], cancel_event, persist)
 
     async def _wake_goal(
         self,
@@ -974,7 +787,7 @@ class WaitDaemon:
             remaining = deadline_at - time.time()
             if remaining <= 0:
                 return
-            if await wait_for_cancel(cancel_event, min(args.activation_interval, remaining)):
+            if await process.wait_for_cancel(cancel_event, min(args.activation_interval, remaining)):
                 return
 
 

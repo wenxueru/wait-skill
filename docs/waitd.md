@@ -39,25 +39,24 @@ Coordination paths resolve from the submitter's directory. Program argv after th
 
 ## Persistence and recovery
 
-State files, registry, and results use unique temporary files, fsync, and atomic replacement. Transient `ENOENT` retries at most three times. The program result is written before the registry; a later watcher failure preserves that log and references it through `durable_result` when possible. Event meanings and output limits belong to the [result contract](wait.md#results).
+Wait writes the result log before the registry. A watcher failure can reference the existing log through `durable_result`. See the [result contract](wait.md#results) for event fields and output limits.
 
-On restart, active records receive `recovered_at` and `recovery_action`. Recovery follows the saved phase:
+After a restart, active records include `recovered_at` and `recovery_action`. Wait resumes from the saved phase.
 
-| Evidence | Action |
+| Saved state | Recovery |
 | --- | --- |
-| Program never started | It may start once under the original deadline |
-| `running` / `querying`, matching result log | Continue finalization/delivery with the original event ID |
-| Started program without durable result | Record `interrupted`; never replay uncertain execution |
-| Delivery was `attempting` | Record `unconfirmed`; inspect the original conversation before retrying |
-| Delivery already accepted | Continue finalization/acknowledgement without resending |
-| Loop state committed, timer registry entry missing | Restore that timer using its saved watch ID without rerunning the iteration |
+| Program never started | Start it within the original deadline. |
+| Program was running and its result log matches | Use the saved result to finish the watch or deliver its original event. |
+| Program started and its result is missing | Record `interrupted` for review. |
+| Event pending, busy, or offline | Continue delivery from the saved result and retry time. |
+| Delivery was `attempting` | Record `unconfirmed`. Check the original conversation before another wake. |
+| Delivery already accepted | Finish the watch or wait for the Goal acknowledgement. |
+| Loop saved its next run but the timer is missing | Restore the timer with its saved watch ID. |
 
-Terminal watchers release locks. Duplicate event IDs and conflicting locks are rejected. Goal `check` exposes lost watcher ownership as `orphaned_wait`; recover the [original node](goal.md#recovery). Recovery restores scheduling and delivery only, never authority for external mutations.
+Finished watches release their locks. If Goal `check` reports `orphaned_wait`, recover the [original node](goal.md#recovery).
 
 ## Watcher failures
 
-`watcher_failed` uses the ordinary [client delivery](clients.md). If persistence fails before delivery, the daemon logs the error and makes one best-effort wake with `event=watcher_failed; persistence=unavailable`, or wakes a connected Claude `follow`. This wake and its in-memory state are not durable; restart can repeat it. Durable evidence that delivery may already have succeeded prevents another send.
+A saved `watcher_failed` result follows the [client delivery rules](clients.md). If saving an attempt fails, Wait records the storage error in the daemon log and holds the result in memory. A connected Claude Code `follow` can still read it. External wake delivery requires a saved attempt.
 
-Wake messages display the short event ID and full agent-authored `event_note`; paths are retrieved through `show SHORT_ID`, and raw program output is never embedded. Both log and registry may be stale after a persistence failure. Inspect them before making a recovery decision.
-
-Resolve the short ID using the [resume protocol](../SKILL.md#resume-messages).
+Use `show SHORT_ID` and the original conversation to inspect the result and any delivery evidence. Then follow the [resume steps](../SKILL.md#resume-messages).

@@ -133,17 +133,6 @@ class RuntimeTest(unittest.TestCase):
                         with self.assertRaisesRegex(runtime.NotificationUnavailable, "notification_unavailable"):
                             runtime.preflight_codex_remote(endpoint)
 
-    def test_notification_connection_failures_are_unavailable(self) -> None:
-        for stderr in (
-            "Failed to connect to remote app server",
-            "Connection refused (os error 61)",
-            "No such file or directory (os error 2)",
-            "WebSocket handshake not finished",
-        ):
-            with self.subTest(stderr=stderr):
-                self.assertTrue(runtime.notification_failure_is_unavailable(stderr))
-        self.assertFalse(runtime.notification_failure_is_unavailable("thread not found"))
-
     def test_loop_watch_must_still_own_the_event(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             state = Path(directory) / "loop.json"

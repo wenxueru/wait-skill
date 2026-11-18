@@ -39,25 +39,24 @@ waitctl.py start -- <watcher 参数> -- <等待程序及参数>
 
 ## 持久化与恢复
 
-状态、registry 和结果均用唯一临时文件、fsync 和原子替换写入；瞬时 `ENOENT` 最多重试三次。程序结果先于 registry 落盘，后续 watcher 故障保留该日志，并在可能时通过 `durable_result` 引用。事件含义与输出上限见[结果约定](wait.zh-CN.md#结果)。
+Wait 先保存结果日志，再写入登记记录。等待任务失败时，可通过 `durable_result` 找到已保存的结果。事件字段及输出上限见[结果约定](wait.zh-CN.md#结果)。
 
-重启时活动记录增加 `recovered_at`、`recovery_action`，按保存的阶段恢复：
+重启后，活动记录会带有 `recovered_at` 和 `recovery_action`。Wait 按保存的阶段恢复。
 
-| 证据 | 动作 |
+| 保存的状态 | 恢复方式 |
 | --- | --- |
-| 程序未启动 | 可在原期限内启动一次 |
-| `running` / `querying` 且结果日志匹配 | 用原 event ID 继续收尾／投递 |
-| 已启动但没有持久结果 | 记录 `interrupted`，不重放不确定执行 |
-| 投递处于 `attempting` | 记录 `unconfirmed`，重试前检查原会话 |
-| 投递已接受 | 继续收尾／确认，不再次发送 |
-| Loop 状态已提交但缺少计时器注册 | 用保存的 watch ID 恢复计时器，不重跑迭代 |
+| 程序未启动 | 在原截止时间内启动。 |
+| 程序曾运行，且找到匹配的结果日志 | 使用已保存的结果收尾或继续投递原事件。 |
+| 程序已启动，但结果缺失 | 记录 `interrupted`，供人工核对。 |
+| 事件待投递、会话忙或端点离线 | 按保存的结果和重试时间继续投递。 |
+| 投递处于 `attempting` | 记录 `unconfirmed`。再次唤醒前先核对原会话。 |
+| 投递已接受 | 继续收尾或等待 Goal 确认。 |
+| Loop 保存了下一轮，但计时器缺失 | 使用保存的等待 ID 恢复计时器。 |
 
-终态 watcher 释放锁，重复 event ID 和锁冲突会被拒绝。Goal `check` 将失去 watcher 所有权报告为 `orphaned_wait`，应恢复[原节点](goal.zh-CN.md#恢复)。恢复只重建调度与投递，不增加外部修改权限。
+已结束的等待会释放锁。Goal 的 `check` 若报告 `orphaned_wait`，请恢复[原节点](goal.zh-CN.md#恢复)。
 
-## Watcher 故障
+## 等待任务故障
 
-`watcher_failed` 使用普通[客户端投递](clients.zh-CN.md)。投递前持久化失效时，daemon 记录服务日志，再尝试一次带 `event=watcher_failed; persistence=unavailable` 的唤醒，或通知已连接的 Claude `follow`。该唤醒及内存状态不持久，重启后可能重复；持久证据显示可能已投递成功时不会再次发送。
+已保存的 `watcher_failed` 按[客户端投递规则](clients.zh-CN.md)送达。若投递记录保存失败，Wait 将存储错误写入服务日志，并在内存中保留结果。Claude Code 已连接的 `follow` 仍可读取。外部唤醒须先保存投递记录。
 
-唤醒消息显示短 event ID 和 Agent 编写的完整 `event_note`，路径通过 `show SHORT_ID` 读取，从不嵌入原始程序输出。持久化失败后日志与 registry 均可能过期，决定恢复方式前先检查证据。
-
-先按[唤醒恢复协议](../SKILL.zh-CN.md#唤醒消息)解析短 ID，再执行本模式的恢复步骤。
+用 `show SHORT_ID` 和原会话核对结果及投递证据，再按[唤醒恢复步骤](../SKILL.zh-CN.md#唤醒消息)继续。

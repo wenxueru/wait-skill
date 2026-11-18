@@ -10,7 +10,7 @@ import sys
 import tempfile
 import unittest
 from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
 from tests import SRC
@@ -121,7 +121,8 @@ class CodexDeliveryTest(unittest.IsolatedAsyncioTestCase):
         finally:
             self.connections.discard(writer)
             writer.close()
-            await writer.wait_closed()
+            with suppress(ConnectionError):
+                await writer.wait_closed()
 
     async def invoke(self, *extra, remote=None, env=None):
         process = await asyncio.create_subprocess_exec(
@@ -195,8 +196,8 @@ class CodexDeliveryTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.starts)
 
     @asynccontextmanager
-    async def tcp_endpoint(self) -> AsyncGenerator[str, None]:
-        server = await asyncio.start_server(self.serve, host="127.0.0.1", port=0)
+    async def tcp_endpoint(self, port: int = 0) -> AsyncGenerator[str, None]:
+        server = await asyncio.start_server(self.serve, host="127.0.0.1", port=port)
         try:
             port = server.sockets[0].getsockname()[1]
             yield f"ws://127.0.0.1:{port}"
@@ -216,28 +217,38 @@ class CodexDeliveryTest(unittest.IsolatedAsyncioTestCase):
             self.assertIn("Authorization: Bearer test-secret", self.headers[-1])
             self.assertNotIn("test-secret", stdout + stderr)
 
-    async def test_waitd_runs_query_and_directly_starts_wake_turn(self) -> None:
+    async def test_waitd_delivers_saved_result_when_tcp_app_server_returns(self) -> None:
         daemon = waitd.WaitDaemon(self.root / "registry.json")
         async with self.tcp_endpoint() as remote:
-            submitted = daemon.submit(
-                [
-                    "--label",
-                    "headless",
-                    "--session",
-                    "session",
-                    "--event-note",
-                    "Recheck the saved state",
-                    "--remote",
-                    remote,
-                    "--",
-                    sys.executable,
-                    "-c",
-                    "print('Ready')",
-                ],
-                str(self.root),
-            )
-            await asyncio.wait_for(daemon.tasks[submitted["watch_id"]], 5)
-            result = daemon.watchers[submitted["watch_id"]]["result"]
-            self.assertEqual(result["notification"], "started")
-            self.assertEqual(result["stdout"], "Ready\n")
-            self.assertIn(submitted["watch_id"][:8], self.starts[0]["input"][0]["text"])
+            port = int(remote.rsplit(":", 1)[1])
+        submitted = daemon.submit(
+            [
+                "--label",
+                "headless",
+                "--session",
+                "session",
+                "--event-note",
+                "Recheck the saved state",
+                "--remote",
+                remote,
+                "--notification-retry-interval",
+                "0.05",
+                "--",
+                sys.executable,
+                "-c",
+                "print('Ready')",
+            ],
+            str(self.root),
+        )
+        watch_id = submitted["watch_id"]
+        record = daemon.watchers[watch_id]
+        async with asyncio.timeout(5):
+            while record.get("result", {}).get("notification") != "notification_unavailable_retrying":
+                await daemon.changed.wait()
+        self.assertFalse(self.starts)
+        self.assertEqual(json.loads(await asyncio.to_thread(Path(submitted["log_file"]).read_text))["stdout"], "Ready\n")
+        async with self.tcp_endpoint(port):
+            await asyncio.wait_for(daemon.tasks[watch_id], 5)
+        self.assertEqual(record["result"]["notification"], "started")
+        self.assertEqual(len(self.starts), 1)
+        self.assertIn(watch_id[:8], self.starts[0]["input"][0]["text"])

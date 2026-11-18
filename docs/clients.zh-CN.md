@@ -2,80 +2,62 @@
 
 [English](clients.md)
 
-`waitd` 文档化两种投递方式，都绑定所属对话的准确会话 ID。恢复消息展示事件 ID 前 8 位和 Agent 编写的完整 `event_note`；通过 `waitctl show SHORT_ID` 读取完整 ID、日志路径和模式状态。
+Wait 把事件送回所属会话。唤醒消息包含事件短 ID 和完整说明。运行 `waitctl show SHORT_ID` 可查看完整 ID、日志路径和关联的 Goal 或 Loop 状态。
 
 | 客户端 | 投递方式 | 调用 |
 | --- | --- | --- |
 | Codex | 直接调用 app-server `turn/start` | `$wait`、`$wait loop`、`$wait goal` |
 | Claude Code | 原生后台 Bash 执行 `waitctl.py follow` | `/wait`、`/wait loop`、`/wait goal` |
 
-`--thread` 是 `--session` 的兼容别名；`--remote` 只用于 Codex。会话 ID、参数、note 和持久化文件都不得包含凭据。
+用 `--session ID` 指定所属会话，`--thread` 是兼容别名。使用 `--no-notify` 可在看板保留会话归属，再通过 `follow` 手动领取事件。
 
 ## Codex
 
-### 选择端点
+### 配置端点
 
-使用 `--client codex --session ID` 提交。默认 app-server 控制 socket 不可用时，再传 `--remote ENDPOINT`。
+使用 `--client codex --session ID` 提交。Wait 会在等待记录中保存所选 app-server 端点。
 
-支持以下端点：
+| `--remote` | 端点 | 提交时检查 |
+| --- | --- | --- |
+| 省略或使用 `unix://` | `$CODEX_HOME/app-server-control/app-server-control.sock`（`CODEX_HOME` 默认为 `~/.codex`） | 等待程序启动前完成 WebSocket 升级 |
+| `unix:///绝对路径` | 指定 app-server 控制套接字 | 同上 |
+| `ws://host:port` 或 `wss://host:port` | 指定 WebSocket 服务 | 提交时标记为已配置，投递时检查 |
 
-- `unix://` 或省略 `--remote`：使用 `$CODEX_HOME/app-server-control/app-server-control.sock`，`$CODEX_HOME` 默认是 `~/.codex`；
-- `unix:///绝对路径`：显式指定 Unix app-server 控制 socket；
-- `ws://host:port` 或 `wss://host:port`：显式指定 WebSocket 端点。
+Unix 端点预检失败会返回 `notification_unavailable` 和 `query_status: not_started`。本机投递使用 app-server 控制套接字。`~/.codex/ipc/ipc.sock` 供 Desktop 内部通信使用。
 
-Codex Desktop 创建的 `~/.codex/ipc/ipc.sock` 不是 app-server 端点，服务不会自动使用它。
-
-### 提交与预检
-
-等待程序启动前，`waitd` 先解析端点并检查通知通道：
-
-- Unix 端点必须存在并完成 WebSocket 升级；成功时返回 `notification_channel.status: ready`。
-- `ws://` 和 `wss://` 端点返回 `configured`；URL 格式与连通性在投递时检查。
-- Unix 端点缺失或不兼容时，立即返回 `notification_unavailable` 和 `query_status: not_started`，不创建 watcher，也不开始重试。
-- 不绑定会话的 wait 会把通知标为 `disabled`，仍可手动执行 `follow`。 `--no-notify` 可保留会话归属和看板可见性，同时禁用自动恢复回合；用 `waitctl follow` 阻塞接收事件。
-
-这样查询启动状态和通知通道状态彼此独立，不会用正常的状态查询掩盖失效的唤醒路径。
+认证端点的 token 放在守护进程环境中，提交时用 `--resume-arg=--remote-auth-token-env=变量名` 引用。
 
 ### 投递与恢复
 
-`waitd` 通过 `src/worker.py codex` 连接所属端点和准确的会话 ID。适配器依次：
+`waitd` 按会话 ID 串行投递。不同会话可以并行。适配器读取会话状态，按需加载会话，再使用原模型、工作区和审批设置启动一轮。
 
-1. 初始化 JSON-RPC，读取线程运行状态。
-2. 仅在线程未加载时调用 `thread/resume`。
-3. 用生成的 `$wait [goal|loop] resume ...` 指令调用 `turn/start`。
+| 投递状态 | 如何处理 |
+| --- | --- |
+| 调用 `turn/start` 前遇到会话忙或连接离线 | 保存结果和下次重试时间。即使 `waitd` 重启，也用同一个事件 ID 继续投递。 |
+| `started` | app-server 已返回轮次 ID。根 Agent 仍需核对事件并验收结果。 |
+| `unconfirmed` | 回执丢失、超时、投递进程异常退出或发送中断时，先检查原会话，再决定是否唤醒。 |
+| 旧版 `queued` | 旧适配器已接收待投递事件。到原会话确认是否已处理。 |
 
-原模型、工作目录、指令、沙箱和审批设置随会话保留。事件直接投递给该 app-server，不启动第二个 Codex 执行器，也不依赖 Desktop 消费队列。
+重试间隔逐步增加，最长五分钟。明确拒绝默认最多尝试 12 次，忙碌和离线不计入这个上限。每次 Codex 投递默认限时 60 秒。每次尝试前，Wait 检查任务是否取消，以及 Goal 或 Loop 是否仍关联此等待。
 
-- `notification: started` 表示 `turn/start` 已返回真实 turn ID，记录在 helper 的 JSON stdout 中。启动执行不代表业务成功，Root 仍须核对事件与结果。
-- 会话活跃时返回 `busy`，不主动 steer 正在进行的轮次；服务有界延迟重试。状态读取与 `turn/start` 之间存在竞争窗口，线程在窗口内变为活跃时仍可能接收该输入。
-- 在发送 `turn/start` 前连接失败时，以 `notification_unavailable` 有界重试；服务明确拒绝请求时也采用有界重试。默认最多 12 次、每次 60 秒，指数退避上限 300 秒。
-- `turn/start` 回执丢失或投递超时记录 `unconfirmed`，不自动重放；服务在 `attempting` 阶段崩溃后也按不确定投递恢复。恢复前检查原会话。
-- 每次尝试前重新校验取消状态及 goal/loop 所有权；重试始终复用原 event ID。
-
-认证 WS/WSS 端点可在 daemon 环境中导出 token，并给 watcher 传 `--resume-arg=--remote-auth-token-env=变量名`。参数和状态中不写 token 值。Codex 的 resume 参数不可覆盖原会话设置。WSS 验证证书，Unix/TCP WebSocket 验证升级响应；提交时选定的端点保存在 watcher argv 中。
+投递后，根 Agent 通过 Goal 的 `wake` 或 Loop 的 `begin` 接续事件。Goal 的等待锁保留到确认事件或超过确认期限。传输细节见 [app-server 生命周期](https://learn.chatgpt.com/docs/app-server)。
 
 ### 桌面关闭与远程运行
 
-`waitd` 应运行在会话所在主机，使用该主机的 app-server 端点和会话 ID。只要远程 app-server 在桌面 App 关闭后仍存活，事件就直接在远程启动执行，无需重开 App。如果 app-server 随 App 一起退出、执行主机离线、凭据失效，或任务需要人工审批、桌面专有工具，进度仍可能受阻；本 Skill 不启动替代服务，也不绕过交互要求。
-
-旧版记录的 `notification: queued` 只表示队列接收；迁移时保留为历史状态，不盲目重发。先核对原会话和 event ID。已有 goal/loop JSON 路径仍然有效。唤醒后仍由 Root 执行 goal `wake` 或 loop `begin`；goal watcher 保留所有权直到确认或超过配置的确认时限。
-
-协议依据[官方 app-server 生命周期文档](https://learn.chatgpt.com/docs/app-server)。
+在执行主机上运行 `waitd`，并指向会话所属的 app-server。两项服务运行时，可以关闭 Desktop。如果 Desktop 同时结束 app-server，待投递事件会留在磁盘上，同一端点恢复后继续发送。审批及桌面专属工具仍可能需要用户参与。
 
 ## Claude Code
 
-Claude Code 不通过无头 `claude --resume` 进程通知已有对话，而是在所属交互会话中把原生后台 Bash 任务挂到 watcher 上。
-
-1. 使用 `--client claude --session ID` 提交 watcher，并保存 watch ID。
-2. 在所属 Root 会话中，用客户端原生后台任务功能启动：
+1. 使用 `--client claude --session ID` 提交，保留等待 ID。
+2. 在所属会话中，使用原生后台任务功能运行：
 
    ```bash
    python /绝对路径/src/waitctl.py follow WATCH_ID --timeout 3600
    ```
 
-3. follow 超时必须有限，并覆盖 watcher 的剩余期限；保存原生任务 ID，然后结束本轮。
-4. 后台任务完成后，读取它的输出和 watcher 日志，校验事件，再执行 wait、goal 或 loop 的恢复协议。
+3. 设置覆盖剩余等待期限的有限超时，保留后台任务 ID，结束本轮。
+4. 后台任务返回后，查看等待日志，按 Wait、Goal 或 Loop 的恢复步骤接着做。
 
-Shell `&`、tmux 和独立的无头 Claude 进程都不能向所属对话提供原生完成通知。关闭会话会结束后台任务；重新打开后，对原 watcher 再执行 `follow`。已完成且仍保留的记录会立即返回，无需创建替代 watcher。
+重新打开会话后，对原等待执行 `follow`。仍保留的已完成记录会立即返回。
 
-`notification: native_pending` 表示事件已经持久化并可由 `follow` 读取，不代表 Root 已接受。goal wait 会保持所有权直到执行 `wake` 或超过通知截止时间；超时后记录 `unconfirmed` 并保留事件供恢复。
+`native_pending` 表示事件已保存，可通过 `follow` 领取。Goal 的等待锁保留到 `wake` 确认或通知期限到期。超时时，Wait 记录 `unconfirmed` 并保留事件供恢复。

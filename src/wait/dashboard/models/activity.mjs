@@ -9,6 +9,74 @@ export function watchState(watch) {
   return ["running", "querying"].includes(watch.phase) && !watch.result ? "running" : "waiting";
 }
 
+export function wakeStatus({state, result}) {
+  const notification = result?.notification;
+  if (state === "cancelled" || !notification) return null;
+  switch (notification) {
+    case "cancelled":
+    case "disabled":
+      return null;
+    case "started":
+    case "completed":
+      return {status: "started"};
+    case "queued":
+    case "unconfirmed":
+      return {status: "review", hint: notification};
+    case "native_pending":
+      return {status: "pending", hint: notification};
+  }
+  if (state === "active" && (notification === "pending" || notification === "attempting" || notification.endsWith("_retrying"))) {
+    return {status: "pending", retryAt: result.next_notification_at};
+  }
+  return {status: "review", hint: "failed"};
+}
+
+export function sessionSummary({goals, loops, watches, linked_watches}) {
+  const allWatches = [...watches, ...linked_watches];
+  const readableGoals = goals.filter(goal => !goal.error);
+  const attention = [];
+  let offline = 0;
+  for (const watch of allWatches) {
+    const wake = wakeStatus(watch);
+    if (wake?.status === "pending" && watch.result.notification === "notification_unavailable_retrying") {
+      offline++;
+      continue;
+    }
+    const needsReview = wake?.status === "review" && wake.hint !== "queued";
+    const reason = needsReview ? `wake.hint.${wake.hint}` : watch.state === "failed" ? "attention.waitFailed" : null;
+    if (reason) {
+      attention.push({task: watch, origin: {mode: "wait", watch_id: watch.watch_id}, title: watch.label, reason});
+    }
+  }
+  for (const goal of readableGoals) {
+    if (goal.status !== "open") continue;
+    const origin = {mode: "goal", path: goal.path};
+    const failed = Object.entries(goal.nodes).filter(([, node]) => node.status === "failed");
+    for (const [id, node] of failed) {
+      attention.push({task: goal, origin: {...origin, node: id}, title: node.title, reason: "attention.goalFailed"});
+    }
+    if (goal.activity === "orphaned_wait" || (!failed.length && goal.activity === "blocked")) {
+      const reason = goal.activity === "orphaned_wait" ? "attention.missingWatcher" : "attention.goalBlocked";
+      attention.push({task: goal, origin, title: goal.objective, reason});
+    }
+  }
+  const unavailable = [goals, loops, allWatches].some(group => group.some(task => task.error));
+  const running = readableGoals.some(goal => Object.values(goal.nodes).some(node => ["running", "dispatching"].includes(node.status))) ||
+    loops.some(loop => loop.status === "active" && loop.phase === "running") ||
+    allWatches.some(watch => watchState(watch) === "running");
+  const states = [
+    [attention.length || unavailable, "attention"],
+    [readableGoals.some(goal => goal.status === "paused"), "paused"],
+    [running, "running"],
+    [allWatches.some(watch => watch.state === "active"), "waiting"],
+    [readableGoals.some(goal => goal.status === "open" && goal.activity === "awaiting_verification"), "verification"],
+    [readableGoals.some(goal => goal.status === "open" && goal.activity === "ready"), "ready"],
+    [readableGoals.length || allWatches.length || loops.length, "idle"]
+  ];
+  const status = states.find(([matches]) => matches)?.[1] ?? "start";
+  return {status, attention, offline, unavailable};
+}
+
 export function relationNodes(nodes, selected) {
   const result = {};
   function include(id) {
