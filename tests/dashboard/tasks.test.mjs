@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {durationRanges, matchesTaskScope, scopeForStatuses, nextSort, nodeRows, nodeTimings, orderRows, timeDate} from "../../src/wait/dashboard/models/tasks.mjs";
+import {durationRanges, nextSort, nodeRows, nodeTimings, orderRows, scopeForStatuses, timeDate} from "../../src/wait/dashboard/models/tasks.mjs";
 
 test("updated sorting toggles direction, keeps missing timestamps last and preserves ties", () => {
   const rows = ["missing", "newest", "oldest", "tied"].map(id => ({id}));
@@ -40,7 +40,7 @@ test("duration sorting uses displayed phase time, handles zero and reorders live
   assert.deepEqual(orderRows(rows, timings, {...sort, direction: "desc"}, 100000).map(row => row.id), ["done", "running", "waiting", "zero", "pending"]);
 });
 
-test("task priority reflects dependency readiness and user pause", () => {
+test("goal rows reflect task priority, lifecycle and visibility", () => {
   const goal = {status: "open", nodes: {
     done: {status: "completed", depends_on: []},
     blocked: {status: "pending", depends_on: ["ready"]},
@@ -49,14 +49,16 @@ test("task priority reflects dependency readiness and user pause", () => {
     running: {status: "dispatching", depends_on: []},
     failed: {status: "failed", depends_on: []}
   }};
-  assert.deepEqual(nodeRows(goal).map(({id, state}) => [id, state]), [
-    ["failed", "failed"], ["running", "running"], ["ready", "ready"],
-    ["waiting", "waiting"], ["blocked", "blocked"], ["done", "completed"]
+  assert.deepEqual(nodeRows(goal).map(({id, state, scope}) => [id, state, scope]), [
+    ["failed", "failed", "attention"], ["running", "running", "current"], ["ready", "ready", "current"],
+    ["waiting", "waiting", "current"], ["blocked", "blocked", "current"], ["done", "completed", "history"]
   ]);
   goal.status = "paused";
   const paused = Object.fromEntries(nodeRows(goal).map(({id, state}) => [id, state]));
   assert.equal(paused.ready, "pending");
   assert.equal(paused.blocked, "blocked");
+  goal.status = "cancelled";
+  assert.equal(nodeRows(goal).find(({id}) => id === "failed").scope, "history");
 });
 
 test("phase duration restarts on wake while total elapsed retains the original start", () => {
@@ -116,19 +118,19 @@ test("timestamps use node records, retain lifecycle times and ignore unrelated g
   assert.equal(timeDate(undefined), null);
 });
 
-test("current tasks hide completed and cancelled history while keeping failures visible", () => {
-  const states = ["ready", "running", "waiting", "blocked", "pending", "failed", "completed", "cancelled"];
-  assert.deepEqual(states.filter(state => matchesTaskScope(state, "current")), states.slice(0, 6));
-  assert.deepEqual(states.filter(state => matchesTaskScope(state, "history")), ["completed", "cancelled"]);
-  assert.deepEqual(states.filter(state => matchesTaskScope(state, "all")), states);
-});
-
-test("status selections widen task scope so mixed current and historical states remain visible", () => {
-  assert.equal(scopeForStatuses(["running", "failed"], "current"), "current");
-  assert.equal(scopeForStatuses(["completed", "cancelled"], "current"), "history");
-  assert.equal(scopeForStatuses(["running", "completed"], "current"), "all");
-  assert.equal(scopeForStatuses(["failed"], "history"), "current");
-  assert.equal(scopeForStatuses(["completed"], "all"), "all");
-  assert.equal(scopeForStatuses([], "current"), "current");
-  assert.equal(scopeForStatuses([], "history"), "history");
+test("status selections switch scopes using actual matching rows", () => {
+  const rows = [
+    {state: "running", scope: "current"},
+    {state: "failed", scope: "attention"},
+    {state: "completed", scope: "history"},
+    {state: "cancelled", scope: "history"}
+  ];
+  assert.equal(scopeForStatuses(rows, ["running", "failed"], "current"), "all");
+  assert.equal(scopeForStatuses(rows, ["completed", "cancelled"], "current"), "history");
+  assert.equal(scopeForStatuses(rows, ["failed"], "history"), "attention");
+  assert.equal(scopeForStatuses(rows, ["completed"], "all"), "all");
+  assert.equal(scopeForStatuses(rows, [], "history"), "history");
+  assert.equal(scopeForStatuses(rows, ["waiting"], "current"), "current");
+  rows.push({state: "failed", scope: "history"});
+  assert.equal(scopeForStatuses(rows, ["failed"], "attention"), "all");
 });

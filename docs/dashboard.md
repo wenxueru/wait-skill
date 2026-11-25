@@ -32,7 +32,7 @@ The session summary links directly to the first task that needs attention. Expan
 - Wait/Loop/Goal commands return a `dashboard_url` focused on their session, task and node. Keep its full query and reuse a working forwarded address.
 - Share the link on first task presentation, substantive progress/state/result/blocker changes, or user request. Ordinary replies and unchanged callbacks need no repeated link.
 
-## Three task views
+## Task views
 
 | View | Records and details | Map |
 | --- | --- | --- |
@@ -40,25 +40,22 @@ The session summary links directly to the first task that needs attention. Expan
 | **Loops** | Iteration, schedule, deadline and run history | Parent Goal and one recurring Loop card |
 | **Goals** | DAG nodes, acceptance criteria, results and final verification | Actual task dependencies |
 
-- The header has only these three tabs. Counts include saved history; without `mode`, the page opens Waits.
-- All views share the same list, filters, sorting and details. Context nodes in maps are inspectable but do not count as extra tasks.
-- Independent waits have no inferred connections. The relationship map creates no new scheduler state.
-
-## List and details
+The dashboard opens on **Waits**. Tab counts show current Waits, active Loops and open or paused Goals.
 
 ### Visibility and filtering
 
 | Scope | Records |
 | --- | --- |
-| **Current tasks** (default) | Unfinished tasks, including failures |
-| **History** | Completed and cancelled tasks |
-| **All tasks** | Both; no records are deleted |
+| **Current tasks** (default) | Work in progress or waiting to continue, including events awaiting delivery |
+| **Needs attention** | Unresolved failures and delivery results that need review |
+| **History** | Ended tasks and events their parent has handled or replaced, newest first |
+| **All tasks** | Every retained record in the selected session and task view |
 
-- Search by title or ID. Status checkboxes and state cards toggle multiple states (OR); **All tasks** in the status menu clears that restriction.
-- Selecting historical states opens History as needed; mixing current and historical states opens All tasks. Empty results keep the filters and a history shortcut.
-- Session changes preserve task scope. Changing Wait/Loop/Goal mode resets to Current tasks. Direct links reveal finished records.
+- Scope counts show how many records each scope contains. Switching sessions preserves the scope. Switching task tabs starts at **Current tasks**.
+- Search by title or ID. Select multiple statuses to match any of them. The scope expands to **All tasks** when matches span scopes. Choose **All tasks** in the status menu to clear that filter.
+- Records move between scopes as work progresses. Available history follows [waitd retention](waitd.md#service-lifecycle).
 
-### Columns and navigation
+## List and details
 
 | Column | Content |
 | --- | --- |
@@ -67,10 +64,10 @@ The session summary links directly to the first task that needs attention. Expan
 | **Status** | Task-specific meaning on hover, focus or tap |
 | **Duration / Updated** | Descending → ascending → default; unknown values last |
 
-- Links open the exact task and support new tabs. Unavailable targets stay unlinked instead of opening a different task.
+- Task links open the exact record in its scope and support new tabs. Unavailable targets appear as plain text.
 - Select a task to see its notes, timing, result, and related tasks. Use the parent Goal or Loop to control owned watchers.
 - In Wait details, **Wake status** shows a retry time, confirmed delivery, or a reason to review the original chat. Open **Details** for the event ID, log, and delivery record.
-- Default order prioritizes failed, running and ready tasks. Live updates retain filters, sort and editable drafts; live duration sorting preserves focus.
+- Live updates retain filters, sort and editable drafts. Live duration sorting preserves focus.
 
 ## Timing
 
@@ -80,7 +77,8 @@ The session summary links directly to the first task that needs attention. Expan
 
 ## Map controls
 
-- Dagre reduces crossings. Current/history maps omit unrelated finished records but retain required ancestors and current Loop timers. Within a Goal scope, status/search filters dim other nodes without moving the layout; Wait/Loop maps fit the matching relationship subset. All tasks restores the full graph.
+- The map keeps recorded dependencies and current Loop timers with the displayed tasks. Context nodes are inspectable and excluded from task counts. Independent Waits appear separately.
+- Dagre reduces crossings. Goal filters dim other nodes within the selected scope. Wait and Loop maps fit the relationships of matching tasks.
 - Zoom with the slider, +/−, Ctrl + scroll or trackpad pinch. Drag anywhere, including nodes, with mouse, touch or pen to pan; ordinary scrolling also pans. A tap/click selects a node, while dragging does not.
 - Panning works even when the map fits and survives live updates. **Fit** recenters it; **100%** restores natural size. With the map focused, use `+`/`−`, `0` for 100%, or `f` to fit.
 - Loop timers fold into their owner card: round, interval/next run, latest result and matching timer/failure counts.

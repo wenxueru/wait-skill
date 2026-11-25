@@ -226,6 +226,7 @@ dialog::backdrop { background: #14212d66; backdrop-filter: blur(3px); }
 dialog select { display: block; width: 100%; margin-top: 6px; }
 .empty { padding: 65px 24px; text-align: center; }
 .empty p { line-height: 1.8; }
+.empty button + button { margin-inline-start: 8px; }
 .task-meta { display: grid; gap: 11px; margin: 20px 0 0; padding-top: 16px; border-top: 1px solid var(--border-soft); font-size: 11px; line-height: 1.7; color: var(--muted); }
 .task-meta > span { overflow-wrap: anywhere; }
 .wake-summary { --wake-tone: var(--status-running); margin-top: 12px; padding: 10px 12px; border: 1px solid var(--border-soft); border-radius: 8px; background: var(--surface-raised); }

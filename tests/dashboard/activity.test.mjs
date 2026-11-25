@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {activityId, activityWorkspace, collapseLoopTimers, relationNodes, sessionSummary, wakeStatus, watchState} from "../../src/wait/dashboard/models/activity.mjs";
+import {activityId, collapseLoopTimers, relationNodes, sessionActivity, wakeStatus, watchState} from "../../src/wait/dashboard/models/activity.mjs";
 import {durationRanges, nodeRows, nodeTimings} from "../../src/wait/dashboard/models/tasks.mjs";
 import {layoutGraph} from "../../src/wait/dashboard/graph/layout.mjs";
 
@@ -20,7 +20,7 @@ function fixture() {
 
 test("Wait rows include every watcher once and only recorded relationships enter the graph", () => {
   const tasks = fixture();
-  const workspace = activityWorkspace(tasks, "wait");
+  const workspace = sessionActivity(tasks).workspace("wait");
   const rows = nodeRows(workspace);
   assert.equal(rows.length, 3);
   const independent = workspace.nodes[activityId("wait", "independent")];
@@ -35,7 +35,7 @@ test("Wait rows include every watcher once and only recorded relationships enter
 
 test("Loop rows omit context timers; live phase duration differs from total lifetime", () => {
   const tasks = fixture();
-  const workspace = activityWorkspace(tasks, "loop");
+  const workspace = sessionActivity(tasks).workspace("loop");
   assert.equal(nodeRows(workspace).length, 1);
   assert.equal(Object.keys(workspace.nodes).length, 4);
   const timing = nodeTimings(workspace).get(activityId("loop", "/loop.json"));
@@ -50,26 +50,87 @@ test("Loop rows omit context timers; live phase duration differs from total life
   assert.equal(+durationRanges(parentTiming).phase.start, 30000);
   tasks.goals[0].nodes.deploy.status = "cancelled";
   tasks.goals[0].events.push({operation: "cancel_goal", at: 40});
-  const cancelled = nodeTimings(activityWorkspace(tasks, "loop")).get(parent);
+  const cancelled = nodeTimings(sessionActivity(tasks).workspace("loop")).get(parent);
   assert.equal(+durationRanges(cancelled).total.end, 40000);
 });
 
-test("relationship filtering retains ancestors and a selected Loop's current timer, excluding other history", () => {
-  const workspace = activityWorkspace(fixture(), "wait");
-  assert.deepEqual(Object.keys(relationNodes(workspace.nodes, new Set([activityId("wait", "independent")]))), [activityId("wait", "independent")]);
-  const linked = relationNodes(workspace.nodes, new Set([activityId("wait", "timer")]));
-  assert.equal(Object.keys(linked).length, 4);
-  assert.equal(Object.values(linked).some(node => node.shortId === "direct"), false);
-  const loop = activityWorkspace(fixture(), "loop");
-  assert.equal(Object.keys(relationNodes(loop.nodes, new Set([activityId("loop", "/loop.json")]))).length, 4);
+test("the current Wait graph keeps nine live watches and relevant context out of 265 records", () => {
+  const tasks = fixture();
+  tasks.watches.push(
+    ...Array.from({length: 7}, (_, index) => ({
+      watch_id: "live-" + index, state: "active", phase: "querying"
+    })),
+    ...Array.from({length: 30}, (_, index) => ({
+      watch_id: "failure-" + index, state: "failed"
+    })),
+    ...Array.from({length: 225}, (_, index) => ({
+      watch_id: "history-" + index, state: index % 2 ? "completed" : "cancelled"
+    }))
+  );
+  const activity = sessionActivity(tasks);
+  const workspace = activity.workspace("wait");
+  const rows = nodeRows(workspace);
+  const current = rows.filter(({scope}) => scope === "current");
+  assert.equal(rows.length, 265);
+  assert.equal(current.length, 9);
+  assert.equal(rows.filter(({scope}) => scope === "history").length, 226);
+  assert.equal(activity.summary.attention.length, 30);
+
+  const graph = relationNodes(workspace.nodes, new Set(current.map(({id}) => id)));
+  assert.equal(graph[activityId("goal", "/g.json", "prepare")].status, "completed");
+  assert.equal(graph[activityId("wait", "direct")], undefined);
+  assert.equal(Object.keys(graph).length, 12);
+
+  const loop = activity.workspace("loop");
+  const related = relationNodes(loop.nodes, new Set([activityId("loop", "/loop.json")]));
+  assert.ok(related[activityId("wait", "timer")]);
   assert.deepEqual(relationNodes(loop.nodes, new Set()), {});
+});
+
+test("recorded Goal and Loop lifecycle events retire older failures and keep the current wait", () => {
+  const tasks = fixture();
+  const goal = tasks.goals[0];
+  goal.events = [
+    {operation: "prepare_wait", node_id: "deploy", details: {watch_id: "superseded"}},
+    {operation: "activate_wait", node_id: "deploy", details: {watch_id: "superseded"}},
+    {operation: "prepare_wait", node_id: "deploy", details: {watch_id: "latest-failure"}},
+    {operation: "activate_wait", node_id: "deploy", details: {watch_id: "latest-failure"}},
+    {operation: "wake_node", node_id: "deploy", details: {event_id: "other-owner"}}
+  ];
+  goal.nodes.review = {title: "Review", kind: "external", status: "running", depends_on: []};
+  const loop = tasks.loops[0];
+  loop.events = [
+    {operation: "schedule", watch_id: "previous-timer"},
+    {operation: "begin", event_id: "previous-timer"},
+    {operation: "schedule", watch_id: loop.watch_id}
+  ];
+  const goalOwner = {mode: "goal", path: goal.path, node: "deploy"};
+  const loopOwner = {mode: "loop", path: loop.path};
+  tasks.linked_watches.push(...[
+    ["superseded", goalOwner], ["previous-timer", loopOwner], ["latest-failure", goalOwner],
+    ["other-owner", {...goalOwner, node: "review"}]
+  ].map(([watch_id, owner]) => ({
+    watch_id, owner, state: "failed", result: {notification: "unconfirmed"}
+  })));
+
+  const activity = sessionActivity(tasks);
+  const rows = nodeRows(activity.workspace("wait"));
+  assert.deepEqual(rows.filter(({state, scope}) => state === "failed" && scope === "history")
+    .map(({node}) => node.task.watch_id), ["superseded", "previous-timer"]);
+  assert.deepEqual(activity.summary.attention.map(({task}) => task.watch_id), ["latest-failure", "other-owner"]);
+
+  goal.events.push({operation: "wake_node", node_id: "deploy", details: {event_id: "latest-failure"}});
+  const next = sessionActivity(tasks);
+  const handled = nodeRows(next.workspace("wait")).find(({node}) => node.task.watch_id === "latest-failure");
+  assert.equal(handled.scope, "history");
+  assert.deepEqual(next.summary.attention.map(({task}) => task.watch_id), ["other-owner"]);
 });
 
 test("unavailable parent references stay explicit and never infer other goal dependencies", () => {
   const tasks = fixture();
   tasks.goals = [];
   tasks.loops = [];
-  const workspace = activityWorkspace(tasks, "wait");
+  const workspace = sessionActivity(tasks).workspace("wait");
   assert.equal(nodeRows(workspace).length, 3);
   assert.deepEqual(workspace.nodes[activityId("goal", "/g.json", "deploy")].depends_on, []);
   assert.equal(Object.values(workspace.nodes).some(node => node.shortId === "prepare"), false);
@@ -80,7 +141,7 @@ test("watcher state separates a live query from event delivery; terminal duratio
   assert.equal(watchState({state: "active", phase: "querying"}), "running");
   assert.equal(watchState({state: "active", phase: "running", result: {event: "exited"}}), "waiting");
   assert.equal(watchState({state: "failed", phase: "running"}), "failed");
-  const workspace = activityWorkspace(fixture(), "wait");
+  const workspace = sessionActivity(fixture()).workspace("wait");
   const timing = nodeTimings(workspace).get(activityId("wait", "direct"));
   assert.equal(durationRanges(timing).total.end - durationRanges(timing).total.start, 30000);
   assert.equal(durationRanges(timing).phase, null);
@@ -88,8 +149,9 @@ test("watcher state separates a live query from event delivery; terminal duratio
 
 test("empty and unreadable records stay inspectable without fabricating start times", () => {
   const tasks = {goals: [], loops: [{path: "/broken.json", error: "Unreadable state"}], watches: [{path: "bad-watch", error: "Unreadable watcher"}], linked_watches: []};
+  const activity = sessionActivity(tasks);
   for (const mode of ["wait", "loop"]) {
-    const workspace = activityWorkspace(tasks, mode);
+    const workspace = activity.workspace(mode);
     const [row] = nodeRows(workspace);
     assert.equal(row.state, "failed");
     assert.equal(durationRanges(nodeTimings(workspace).get(row.id)).total, null);
@@ -102,7 +164,8 @@ test("loop timers collapse only in the graph, preserving ownership, raw records 
     watch_id: "past-" + i, label: "Loop timer", state: i === 0 ? "failed" : "completed",
     owner: {mode: "loop", path: "/loop.json"}
   });
-  const workspace = activityWorkspace(tasks, "wait");
+  const activity = sessionActivity(tasks);
+  const workspace = activity.workspace("wait");
   const grouped = collapseLoopTimers(workspace.nodes);
   const loopId = activityId("loop", "/loop.json");
   assert.equal(nodeRows(workspace).length, 43);
@@ -118,7 +181,7 @@ test("loop timers collapse only in the graph, preserving ownership, raw records 
   assert.equal(subset.nodes[loopId].timerCount, 1);
   assert.equal(Object.keys(subset.nodes).length, 3);
   assert.equal(layoutGraph(subset.nodes).edges.length, 2);
-  const loopView = collapseLoopTimers(activityWorkspace(tasks, "loop").nodes);
+  const loopView = collapseLoopTimers(activity.workspace("loop").nodes);
   assert.equal(Object.keys(loopView.nodes).length, 3);
   assert.equal(loopView.nodes[loopId].timerCount, 1);
 });
@@ -139,23 +202,40 @@ test("wake status distinguishes pending retries, accepted wakes and ambiguous de
   }
 });
 
-test("session summary groups offline events and keeps distinct actions for failed steps and orphaned waits", () => {
+test("delivery state controls visibility and the session summary groups unresolved events", () => {
   const wake = (watch_id, state, notification) => ({watch_id, state, result: {notification}});
+  const native = wake("native", "completed", "native_pending");
+  const standalone = {goals: [], loops: [], linked_watches: [], watches: [native]};
+  assert.equal(sessionActivity(standalone).summary.status, "waiting");
+
   const goals = [{
     path: "/g.json", status: "open", activity: "orphaned_wait",
     nodes: {upstream: {title: "Upstream", status: "failed"}, downstream: {title: "Downstream", status: "waiting"}}
   }];
-  const {status, attention, offline, unavailable} = sessionSummary({goals, loops: [], watches: [
+  const tasks = {goals, loops: [], watches: [
     wake("offline-1", "active", "notification_unavailable_retrying"),
     wake("busy", "active", "busy_retrying"),
-    wake("uncertain", "failed", "unconfirmed"),
+    wake("uncertain", "completed", "unconfirmed"),
+    wake("native-failure", "failed", "native_pending"),
+    {...wake("cancelled", "failed"), result: {event: "activation_cancelled"}},
+    native,
     wake("legacy", "completed", "queued")
-  ], linked_watches: [wake("offline-2", "active", "notification_unavailable_retrying")]});
+  ], linked_watches: [wake("offline-2", "active", "notification_unavailable_retrying")]};
+  const activity = sessionActivity(tasks);
+  const rows = nodeRows(activity.workspace("wait"));
+  assert.deepEqual(Object.fromEntries(rows.map(({node, scope}) => [node.task.watch_id, scope])), {
+    "offline-1": "current", busy: "current", uncertain: "attention",
+    "native-failure": "attention", cancelled: "history", native: "current", legacy: "history", "offline-2": "current"
+  });
+  assert.equal(rows.find(row => row.node.task.watch_id === "cancelled").state, "cancelled");
+
+  const {status, attention, offline, unavailable} = activity.summary;
   assert.equal(status, "attention");
   assert.equal(offline, 2);
   assert.equal(unavailable, false);
   assert.deepEqual(attention.map(({origin, reason}) => [origin, reason]), [
     [{mode: "wait", watch_id: "uncertain"}, "wake.hint.unconfirmed"],
+    [{mode: "wait", watch_id: "native-failure"}, "attention.waitFailed"],
     [{mode: "goal", path: "/g.json", node: "upstream"}, "attention.goalFailed"],
     [{mode: "goal", path: "/g.json"}, "attention.missingWatcher"]
   ]);

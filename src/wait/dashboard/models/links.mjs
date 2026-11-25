@@ -1,4 +1,5 @@
-import {matchesTaskScope} from "./tasks.mjs";
+import {watchActivity} from "./activity.mjs";
+import {nodeScope, taskScope} from "./tasks.mjs";
 
 export function sessionUrl(scope, session) {
   const query = new URLSearchParams(scope);
@@ -28,7 +29,7 @@ export function findTask(tasks, origin) {
   if (task && !task.error) return task;
 }
 
-export function taskUrl(scope, origin, task) {
+export function taskUrl(scope, origin, task, visibility) {
   const query = new URLSearchParams(scope);
   const session = origin.mode === "goal" ? task.thread : task.session;
   if (session) { query.set("session", session); query.delete("all"); }
@@ -37,9 +38,10 @@ export function taskUrl(scope, origin, task) {
   query.set("mode", origin.mode);
   query.set("view", "list");
   query.set("focus", origin.watch_id || origin.path);
-  if (origin.mode === "goal" && origin.node) query.set("node", origin.node); else query.delete("node");
-  let state = task.state || task.status;
-  if (origin.mode === "goal" && origin.node) state = task.nodes[origin.node].status;
-  query.set("tasks", matchesTaskScope(state, "history") ? "history" : "current");
+  const node = origin.mode === "goal" && origin.node ? task.nodes[origin.node] : null;
+  if (node) query.set("node", origin.node); else query.delete("node");
+  const taskVisibility = origin.mode === "wait" ? visibility ?? watchActivity(task).scope
+    : node ? nodeScope(task, node, node.status) : taskScope(task.status);
+  query.set("tasks", taskVisibility);
   return "/?" + query.toString();
 }

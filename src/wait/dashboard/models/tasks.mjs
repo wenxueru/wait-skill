@@ -10,22 +10,28 @@ export function nodeRows(goal) {
   const priority = ["failed", "running", "ready", "waiting", "blocked", "pending", "completed", "cancelled"];
   return Object.entries(goal.nodes)
     .filter(([, node]) => !node.context)
-    .map(([id, node]) => ({id, node, state: nodeState(goal, node)}))
+    .map(([id, node]) => {
+      const state = nodeState(goal, node);
+      return {id, node, state, scope: nodeScope(goal, node, state)};
+    })
     .sort((a, b) => priority.indexOf(a.state) - priority.indexOf(b.state));
 }
 
-export function matchesTaskScope(state, scope) {
-  const historical = ["completed", "cancelled"].includes(state);
-  if (scope === "current") return !historical;
-  if (scope === "history") return historical;
-  return true;
+export function taskScope(state) {
+  if (["completed", "cancelled"].includes(state)) return "history";
+  return state === "failed" ? "attention" : "current";
 }
 
-export function scopeForStatuses(states, scope) {
-  if (!states.length || states.every(state => matchesTaskScope(state, scope))) return scope;
-  if (states.every(state => matchesTaskScope(state, "history"))) return "history";
-  if (states.every(state => matchesTaskScope(state, "current"))) return "current";
-  return "all";
+export function nodeScope(goal, node, state = nodeState(goal, node)) {
+  if (taskScope(goal.status) === "history") return "history";
+  return node.scope ?? taskScope(state);
+}
+
+export function scopeForStatuses(rows, states, scope) {
+  if (scope === "all" || !states.length) return scope;
+  const scopes = new Set(rows.filter(row => states.includes(row.state)).map(row => row.scope));
+  if (scopes.size === 0) return scope;
+  return scopes.size === 1 ? scopes.values().next().value : "all";
 }
 
 export function timeDate(value) {

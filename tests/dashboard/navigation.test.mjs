@@ -24,7 +24,7 @@ test("session switching preserves the original session and view, clearing stale 
 
 test("task links resolve exact available targets and scope deep links to their owning session", () => {
   const goal = {path: "/work/release plan.json", thread: "target-session", status: "open", nodes: {
-    checkpoint: {status: "completed"}, export: {status: "pending"}
+    checkpoint: {status: "completed"}, export: {status: "failed"}
   }};
   const loop = {path: "/work/loop.json", session: "target-session", status: "active"};
   const watch = {watch_id: "timer", session: "target-session", state: "cancelled"};
@@ -51,4 +51,10 @@ test("task links resolve exact available targets and scope deep links to their o
   assert.equal(timerLink.get("focus"), "timer");
   assert.equal(timerLink.get("tasks"), "history");
   assert.equal(timerLink.has("node"), false);
+  const failedStep = new URLSearchParams(taskUrl(scope, {...origin, node: "export"}, goal).slice(2));
+  assert.equal(failedStep.get("tasks"), "attention");
+  assert.equal(failedStep.get("node"), "export");
+  const uncertain = {...watch, state: "completed", result: {notification: "unconfirmed"}};
+  const uncertainLink = new URLSearchParams(taskUrl(scope, timerOrigin, uncertain).slice(2));
+  assert.equal(uncertainLink.get("tasks"), "attention");
 });

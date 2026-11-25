@@ -1,5 +1,5 @@
 import {guard, html, keyed, nothing, render as renderTemplate, repeat} from "../../../assets/vendor/ui.mjs";
-import {activityId, activityWorkspace, collapseLoopTimers, relationNodes, sessionSummary, wakeStatus, watchState} from "./models/activity.mjs";
+import {activityId, collapseLoopTimers, relationNodes, sessionActivity, wakeStatus, watchState} from "./models/activity.mjs";
 import {createGraphViewport} from "./controls/viewport.mjs";
 import {findTask, taskUrl} from "./models/links.mjs";
 import {createStatusFilter} from "./controls/status-filter.mjs";
@@ -7,13 +7,13 @@ import {createStatusHelp} from "./controls/status-help.mjs";
 import {createSessionPicker} from "./controls/session-picker.mjs";
 import {createAppearance} from "./appearance.mjs";
 import {layoutGraph} from "./graph/layout.mjs";
-import {durationRanges, matchesTaskScope, scopeForStatuses, nextSort, nodeRows, nodeState, nodeTimings, orderRows, timeDate} from "./models/tasks.mjs";
+import {durationRanges, nodeScope, scopeForStatuses, nextSort, nodeRows, nodeState, nodeTimings, orderRows, timeDate} from "./models/tasks.mjs";
 
 const $ = id => document.getElementById(id);
 const scope = new URLSearchParams(location.search);
 const scopeQuery = "?" + scope.toString();
-$("taskScope").value = ["history", "all"].includes(scope.get("tasks")) ? scope.get("tasks") : "current";
-let tasks = {goals: [], watches: [], loops: [], linked_watches: []};
+$("taskScope").value = ["attention", "history", "all"].includes(scope.get("tasks")) ? scope.get("tasks") : "current";
+let tasks = sessionActivity({goals: [], watches: [], loops: [], linked_watches: []});
 let mode = ["wait", "loop", "goal"].includes(scope.get("mode")) ? scope.get("mode") : "wait";
 const focus = scope.get("focus") || "";
 let focusPending = !!focus;
@@ -50,7 +50,11 @@ const colors = {
 };
 
 function currentWorkspace() {
-  return mode === "goal" ? tasks.goals.find(goal => goal.path === selected) : activityWorkspace(tasks, mode);
+  return mode === "goal" ? tasks.goals.find(goal => goal.path === selected) : tasks.workspace(mode);
+}
+
+function taskLink(origin, task) {
+  return taskUrl(scope, origin, task, tasks.watchScope(task));
 }
 
 function splitValues(value, separator) {
@@ -120,13 +124,13 @@ async function cancelTask(task, kind) {
 }
 
 function renderSummary() {
-  const {status, attention, offline, unavailable} = sessionSummary(tasks);
+  const {status, attention, offline, unavailable} = tasks.summary;
   const heading = $("sessionStatus");
   const key = `status.${status}`;
   if (heading.dataset.i18n !== key) translate(heading, key);
 
   const [first, ...rest] = attention.map(({origin, task, title, reason}) => ({
-    href: taskUrl(scope, origin, task), title, reason
+    href: taskLink(origin, task), title, reason
   }));
   renderTemplate(html`
     ${first ? keyed(first.href, attentionLink(first)) : nothing}
@@ -152,7 +156,7 @@ function render(reveal = false) {
   help.hide();
   sessionPicker.render();
   renderSummary();
-  const counts = {goal: tasks.goals.length, wait: tasks.watches.length + tasks.linked_watches.length, loop: tasks.loops.length};
+  const counts = tasks.summary.workspaceCounts;
   for (const button of $("modes").querySelectorAll("button")) {
     const kind = button.dataset.mode;
     button.textContent = `${t(`mode.${kind}`)} · ${counts[kind]}`;
@@ -206,10 +210,11 @@ function render(reveal = false) {
     <span>${t("field.completeCount", {done: completed, total: nodes.length})}</span>`, $("stats"));
   $("progress").style.width = (nodes.length ? completed / nodes.length * 100 : 0) + "%";
   const focusedNode = goal.nodes[nodeId];
-  if (reveal && focusedNode && !matchesTaskScope(nodeState(goal, focusedNode), $("taskScope").value)) {
-    $("taskScope").value = matchesTaskScope(nodeState(goal, focusedNode), "history") ? "history" : "current";
+  if (reveal && focusedNode && !focusedNode.context) {
+    const visibility = nodeScope(goal, focusedNode);
+    if ($("taskScope").value !== "all") $("taskScope").value = visibility;
     statusFilter.clear();
-    $("nodeSearch").value = focusedNode.shortId || nodeId;
+    $("nodeSearch").value = "";
   }
   const timings = nodeTimings(goal);
   renderWorkspace(goal, timings);
@@ -239,7 +244,7 @@ function dependencyCell(workspace, node) {
       const origin = parent.origin || {mode: "goal", path: workspace.path, node: id};
       const task = findTask(tasks, origin);
       if (!task) return html`<span title=${t("activity.parentUnavailable")}>${parent.title}</span>`;
-      return html`<a href=${taskUrl(scope, origin, task)} title=${parent.title} @click=${event => {
+      return html`<a href=${taskLink(origin, task)} title=${parent.title} @click=${event => {
         event.stopPropagation();
         if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
         event.preventDefault();
@@ -291,19 +296,24 @@ function nodeTimeline(timing) {
   </dl>`;
 }
 
+function taskElement(id) {
+  return $(taskView === "graph" ? "graph" : "nodeList").querySelector(`[data-node="${CSS.escape(id)}"]`);
+}
+
 function showNode(id) {
   const hadFocus = document.activeElement?.closest("[data-node]")?.dataset.node === id;
   nodeId = id;
   const goal = currentWorkspace();
-  if (taskView === "list" && !goal.nodes[id].context && !matchesTaskScope(nodeState(goal, goal.nodes[id]), $("taskScope").value)) render(true);
-  else {
+  if (!goal.nodes[id].context && !taskElement(id)) {
+    taskView = "list";
+    render(true);
+  } else {
     const timings = nodeTimings(goal);
     renderWorkspace(goal, timings);
     renderDetails(goal, timings);
   }
   if (hadFocus) {
-    const root = $(taskView === "graph" ? "graph" : "nodeList");
-    const target = [...root.querySelectorAll("[data-node]")].find(node => node.dataset.node === id);
+    const target = taskElement(id);
     (target?.querySelector(".node-name") || target)?.focus({preventScroll: true});
   }
   if (matchMedia("(max-width: 760px)").matches) {
@@ -322,21 +332,26 @@ function renderWorkspace(goal, timings = nodeTimings(goal)) {
   help.attach($("graphHelp"), t("graph.help") + (mode === "goal" ? "" : " " + t("activity.relationsHint")));
   translate($("nodeColumns").querySelector(".dependency-column"), mode === "goal" ? "workspace.dependencies" : "workspace.parent");
   const rows = nodeRows(goal);
-  const taskScope = $("taskScope").value;
-  const scopedRows = rows.filter(({state}) => matchesTaskScope(state, taskScope));
+  const visibility = $("taskScope").value;
+  const scopedRows = visibility === "all" ? rows : rows.filter(row => row.scope === visibility);
   const counts = {};
-  for (const {state} of rows) counts[state] = (counts[state] || 0) + 1;
+  const scopeCounts = {current: 0, attention: 0, history: 0, all: rows.length};
+  for (const {state, scope} of rows) {
+    counts[state] = (counts[state] || 0) + 1;
+    scopeCounts[scope]++;
+  }
   const filter = statusFilter.selected;
   const search = $("nodeSearch").value.trim().toLowerCase();
+  const ordering = sort ?? (visibility === "history" ? {key: "updated", direction: "desc"} : null);
   const matching = orderRows(scopedRows.filter(({id, node, state}) =>
     (!filter.length || filter.includes(state)) &&
-    `${id} ${node.title}`.toLowerCase().includes(search)), timings, sort);
+    `${id} ${node.title}`.toLowerCase().includes(search)), timings, ordering);
   const matchingIds = new Set(matching.map(({id}) => id));
   let graphNodes;
   if (taskView === "graph" && matching.length) {
     graphNodes = goal.nodes;
     if (mode !== "goal") graphNodes = relationNodes(goal.nodes, matchingIds);
-    else if (taskScope !== "all") graphNodes = relationNodes(goal.nodes, new Set(scopedRows.map(({id}) => id)));
+    else if (visibility !== "all") graphNodes = relationNodes(goal.nodes, new Set(scopedRows.map(({id}) => id)));
     const grouped = collapseLoopTimers(graphNodes);
     graphNodes = grouped.nodes;
     nodeId = grouped.members.get(nodeId) || nodeId;
@@ -365,10 +380,9 @@ function renderWorkspace(goal, timings = nodeTimings(goal)) {
     else filterParent.insertBefore($("statusColumn"), $("durationColumn"));
   }
   statusFilter.render(counts, statusMeaning);
-  $("nodeCount").textContent = t("workspace.count", {shown: matching.length, total: rows.length});
+  $("nodeCount").textContent = t("workspace.count", {shown: matching.length, total: scopedRows.length});
   for (const option of $("taskScope").options) {
-    const count = rows.filter(({state}) => matchesTaskScope(state, option.value)).length;
-    option.textContent = `${t(option.value === "all" ? "workspace.all" : `workspace.${option.value}`)} · ${count}`;
+    option.textContent = `${t(`workspace.${option.value}`)} · ${scopeCounts[option.value]}`;
   }
   for (const button of $("nodeMetrics").querySelectorAll("button")) {
     button.querySelector("strong").textContent = counts[button.dataset.state] || 0;
@@ -384,11 +398,11 @@ function renderWorkspace(goal, timings = nodeTimings(goal)) {
   $("graphTools").hidden = taskView !== "graph";
   if (taskView === "graph") {
     draw({...goal, nodes: matching.length ? graphNodes : {}}, matchingIds, timings);
-    if (!matching.length) $("graph").append(emptyTasks(rows, taskScope));
+    if (!matching.length) $("graph").append(emptyTasks(visibility, scopeCounts));
     return;
   }
   if (!matching.length) {
-    renderTemplate(emptyTasks(rows, taskScope), $("nodeRows"));
+    renderTemplate(emptyTasks(visibility, scopeCounts), $("nodeRows"));
     return;
   }
   renderRows(goal, matching, timings);
@@ -416,23 +430,25 @@ function renderRows(goal, rows, timings) {
   }), $("nodeRows"));
 }
 
-function emptyTasks(rows, taskScope) {
+function emptyTasks(visibility, counts) {
   const empty = element("div", undefined, "empty");
-  const history = rows.filter(({state}) => matchesTaskScope(state, "history")).length;
-  const finished = taskScope === "current" && rows.length > 0 && history === rows.length;
-  const title = finished ? "workspace.noCurrent" : rows.length ? "workspace.empty" : mode === "goal" ? "workspace.emptyGoal" : `empty.${mode}`;
-  const hint = finished ? "workspace.historyHint" : rows.length ? "workspace.emptyHint" : mode === "goal" ? "workspace.addFirst" : "activity.emptyHint";
-  empty.append(element("h3", t(title)), element("p", t(hint), "muted"));
-  if (taskScope === "current" && history) {
-    const button = element("button", t("workspace.showHistory"));
-    button.onclick = () => {
-      $("taskScope").value = "history";
-      statusFilter.clear();
-      $("nodeSearch").value = "";
-      applyFilter();
-    };
-    empty.append(button);
+  if (visibility === "current" && counts.all && !counts.current) {
+    empty.append(element("h3", t("workspace.noCurrent")));
+    for (const target of ["attention", "history"]) {
+      if (!counts[target]) continue;
+      const button = element("button", `${t(`workspace.${target}`)} · ${counts[target]}`);
+      button.onclick = () => {
+        $("nodeSearch").value = "";
+        statusFilter.clear();
+        setTaskScope(target);
+      };
+      empty.append(button);
+    }
+    return empty;
   }
+  const title = counts.all ? "workspace.empty" : mode === "goal" ? "workspace.emptyGoal" : `empty.${mode}`;
+  const hint = counts.all ? "workspace.emptyHint" : mode === "goal" ? "workspace.addFirst" : "activity.emptyHint";
+  empty.append(element("h3", t(title)), element("p", t(hint), "muted"));
   return empty;
 }
 
@@ -689,12 +705,17 @@ $("modes").onclick = event => {
 };
 
 function applyFilter() {
-  if (taskView === "graph") viewport.reset();
+  viewport.reset();
   render();
 }
-$("taskScope").onchange = () => {
-  statusFilter.clear();
+function setTaskScope(visibility) {
+  $("taskScope").value = visibility;
+  if (["attention", "history"].includes(visibility)) taskView = "list";
   applyFilter();
+}
+$("taskScope").onchange = event => {
+  statusFilter.clear();
+  setTaskScope(event.target.value);
 };
 $("nodeSearch").oninput = applyFilter;
 $("nodeMetrics").onclick = event => {
@@ -703,8 +724,10 @@ $("nodeMetrics").onclick = event => {
   statusFilter.toggle(button.dataset.state);
 };
 function filterStatuses() {
-  $("taskScope").value = scopeForStatuses(statusFilter.selected, $("taskScope").value);
-  applyFilter();
+  const current = $("taskScope").value;
+  const next = scopeForStatuses(nodeRows(currentWorkspace()), statusFilter.selected, current);
+  if (next === current) applyFilter();
+  else setTaskScope(next);
 }
 $("nodeColumns").onclick = event => {
   const button = event.target.closest("[data-sort]");
@@ -723,9 +746,9 @@ function refreshDurations() {
     node.textContent = formatDuration(now - Number(node.dataset.elapsedStart));
   });
   if (sort?.key === "duration" && taskView === "list" && !$("content").hidden) {
-    const goal = currentWorkspace();
-    if (!goal || goal.error) return;
     const root = $("nodeRows");
+    if (!root.querySelector("[data-elapsed-start]:not([data-elapsed-end])")) return;
+    const goal = currentWorkspace();
     const visible = [...root.querySelectorAll(".node-row")].map(row => row.dataset.node);
     const included = new Set(visible);
     const timings = nodeTimings(goal);
@@ -742,7 +765,7 @@ document.addEventListener("visibilitychange", refreshDurations);
 
 const stream = new EventSource("/events" + scopeQuery);
 stream.onmessage = event => {
-  tasks = JSON.parse(event.data);
+  tasks = sessionActivity(JSON.parse(event.data));
   translate($("connection"), "connection.live");
   render(focusPending);
   if (focusPending) {

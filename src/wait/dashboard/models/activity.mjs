@@ -1,12 +1,19 @@
-import {nodeState, nodeTimings} from "./tasks.mjs";
+import {nodeState, nodeTimings, taskScope} from "./tasks.mjs";
 
 export function activityId(mode, identity, node = null) {
   return JSON.stringify([mode, identity, node]);
 }
 
 export function watchState(watch) {
-  if (watch.state !== "active") return watch.state;
-  return ["running", "querying"].includes(watch.phase) && !watch.result ? "running" : "waiting";
+  if (watch.error) return "failed";
+  if (watch.state === "active") {
+    return ["running", "querying"].includes(watch.phase) && !watch.result ? "running" : "waiting";
+  }
+  const event = watch.result?.event;
+  if (event === "cancelled" || event === "activation_cancelled" || watch.result?.notification === "cancelled") {
+    return "cancelled";
+  }
+  return watch.state;
 }
 
 export function wakeStatus({state, result}) {
@@ -31,21 +38,82 @@ export function wakeStatus({state, result}) {
   return {status: "review", hint: "failed"};
 }
 
-export function sessionSummary({goals, loops, watches, linked_watches}) {
-  const allWatches = [...watches, ...linked_watches];
+function retiredWatchIds({goals, loops}, watches) {
+  const owners = new Map();
+  for (const {watch_id, owner} of watches) {
+    if (owner) owners.set(watch_id, owner);
+  }
+  const retired = new Set();
+  if (!owners.size) return retired;
+  function retire(id, mode, path, node = null) {
+    const owner = owners.get(id);
+    if (owner?.mode === mode && owner.path === path && (owner.node ?? null) === node) retired.add(id);
+  }
+  for (const goal of goals) {
+    if (!goal.events) continue;
+    const closed = taskScope(goal.status) === "history";
+    const newerWaits = new Map();
+    for (let index = goal.events.length - 1; index >= 0; index--) {
+      const {operation, node_id, details} = goal.events[index];
+      if (!details) continue;
+      if (operation === "wake_node") retire(details.event_id, "goal", goal.path, node_id);
+      if (operation === "abort_wait") retire(details.watch_id, "goal", goal.path, node_id);
+      if (operation === "activate_wait" && !newerWaits.has(node_id)) {
+        newerWaits.set(node_id, details.watch_id);
+      }
+      if (operation === "prepare_wait") {
+        const newerWait = newerWaits.get(node_id);
+        if (closed || taskScope(goal.nodes[node_id]?.status) === "history" || (newerWait && newerWait !== details.watch_id)) {
+          retire(details.watch_id, "goal", goal.path, node_id);
+        }
+      }
+    }
+  }
+  for (const loop of loops) {
+    for (const {operation, event_id, watch_id} of loop.events ?? []) {
+      if (operation === "begin" || operation === "expire") retire(event_id, "loop", loop.path);
+      if (operation === "schedule" && watch_id !== loop.watch_id) retire(watch_id, "loop", loop.path);
+    }
+  }
+  return retired;
+}
+
+export function watchActivity(watch, retired = false) {
+  const state = watchState(watch);
+  const wake = wakeStatus(watch);
+  const review = wake?.status === "review" && wake.hint !== "queued"
+    ? `wake.hint.${wake.hint}`
+    : state === "failed" ? "attention.waitFailed" : null;
+  let scope = taskScope(state);
+  if (watch.state === "active") scope = "current";
+  else if (retired) scope = "history";
+  else if (state !== "cancelled") {
+    if (review) scope = "attention";
+    else if (wake?.status === "pending") scope = "current";
+  }
+  return {scope, state, wake, review};
+}
+
+function summarizeSession({goals, loops}, watches) {
   const readableGoals = goals.filter(goal => !goal.error);
   const attention = [];
   let offline = 0;
-  for (const watch of allWatches) {
-    const wake = wakeStatus(watch);
+  const workspaceCounts = {
+    wait: 0,
+    loop: loops.filter(loop => loop.status === "active").length,
+    goal: readableGoals.filter(goal => ["open", "paused"].includes(goal.status)).length
+  };
+  let runningWatch = false;
+  let unreadableWatch = false;
+  for (const [watch, {scope, state, wake, review}] of watches) {
+    if (scope === "current") workspaceCounts.wait++;
+    runningWatch ||= state === "running";
+    unreadableWatch ||= !!watch.error;
     if (wake?.status === "pending" && watch.result.notification === "notification_unavailable_retrying") {
       offline++;
-      continue;
     }
-    const needsReview = wake?.status === "review" && wake.hint !== "queued";
-    const reason = needsReview ? `wake.hint.${wake.hint}` : watch.state === "failed" ? "attention.waitFailed" : null;
-    if (reason) {
-      attention.push({task: watch, origin: {mode: "wait", watch_id: watch.watch_id}, title: watch.label, reason});
+    if (scope === "attention" && review && !watch.error) {
+      attention.push({task: watch, origin: {mode: "wait", watch_id: watch.watch_id}, title: watch.label, reason: review});
     }
   }
   for (const goal of readableGoals) {
@@ -60,21 +128,37 @@ export function sessionSummary({goals, loops, watches, linked_watches}) {
       attention.push({task: goal, origin, title: goal.objective, reason});
     }
   }
-  const unavailable = [goals, loops, allWatches].some(group => group.some(task => task.error));
+  const unavailable = unreadableWatch || goals.some(goal => goal.error) || loops.some(loop => loop.error);
   const running = readableGoals.some(goal => Object.values(goal.nodes).some(node => ["running", "dispatching"].includes(node.status))) ||
     loops.some(loop => loop.status === "active" && loop.phase === "running") ||
-    allWatches.some(watch => watchState(watch) === "running");
+    runningWatch;
   const states = [
     [attention.length || unavailable, "attention"],
     [readableGoals.some(goal => goal.status === "paused"), "paused"],
     [running, "running"],
-    [allWatches.some(watch => watch.state === "active"), "waiting"],
+    [workspaceCounts.wait, "waiting"],
     [readableGoals.some(goal => goal.status === "open" && goal.activity === "awaiting_verification"), "verification"],
     [readableGoals.some(goal => goal.status === "open" && goal.activity === "ready"), "ready"],
-    [readableGoals.length || allWatches.length || loops.length, "idle"]
+    [readableGoals.length || watches.size || loops.length, "idle"]
   ];
   const status = states.find(([matches]) => matches)?.[1] ?? "start";
-  return {status, attention, offline, unavailable};
+  return {status, attention, offline, unavailable, workspaceCounts};
+}
+
+export function sessionActivity(tasks) {
+  const watches = [...tasks.watches, ...tasks.linked_watches];
+  const retired = retiredWatchIds(tasks, watches);
+  const visibility = new Map(watches.map(watch => [watch, watchActivity(watch, retired.has(watch.watch_id))]));
+  const workspaces = new Map();
+  return {
+    ...tasks,
+    summary: summarizeSession(tasks, visibility),
+    watchScope: watch => visibility.get(watch)?.scope,
+    workspace(mode) {
+      if (!workspaces.has(mode)) workspaces.set(mode, activityWorkspace(tasks, mode, visibility));
+      return workspaces.get(mode);
+    }
+  };
 }
 
 export function relationNodes(nodes, selected) {
@@ -108,12 +192,11 @@ function loopNode(loop, context) {
 }
 
 // These nodes are a browser view of recorded ownership. They never enter scheduler state.
-export function activityWorkspace(tasks, mode) {
+function activityWorkspace(tasks, mode, visibility) {
   const nodes = {};
   const goals = new Map(tasks.goals.map(goal => [goal.path, goal]));
   const goalTimings = new Map();
   const loops = new Map(tasks.loops.map(loop => [loop.path, loop]));
-  const watches = [...tasks.watches, ...tasks.linked_watches];
 
   function goalContext(path, nodeId) {
     const id = activityId("goal", path, nodeId);
@@ -156,9 +239,10 @@ export function activityWorkspace(tasks, mode) {
   function addWatch(watch, context) {
     const identity = watch.watch_id || watch.path;
     const id = activityId("wait", identity);
-    const status = watch.error ? "failed" : watchState(watch);
+    const {state: status, scope} = visibility.get(watch);
     nodes[id] = {
-      title: watch.label || identity, status, taskKind: "wait", kind: "external", context,
+      title: watch.label || identity, status, scope,
+      taskKind: "wait", kind: "external", context,
       shortId: identity.slice(0, 8), depends_on: [], acceptance: [],
       origin: {mode: "wait", watch_id: identity}, task: watch, summary: watch.error || watch.event_note,
       created_at: watch.submitted_at, started_at: watch.submitted_at, updated_at: watch.updated_at,
@@ -171,9 +255,10 @@ export function activityWorkspace(tasks, mode) {
   }
 
   if (mode === "wait") {
-    for (const watch of watches) addWatch(watch, false);
+    for (const watch of visibility.keys()) addWatch(watch, false);
   } else {
-    const watchById = new Map(watches.map(watch => [watch.watch_id, watch]));
+    const watchById = new Map();
+    for (const watch of visibility.keys()) watchById.set(watch.watch_id, watch);
     for (const loop of tasks.loops) {
       addLoop(loop.path, false);
       const timer = watchById.get(loop.watch_id);
