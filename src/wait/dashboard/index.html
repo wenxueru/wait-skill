@@ -6,7 +6,7 @@
 <link rel="icon" type="image/svg+xml" href="/assets/brand/icon.svg">
 <link rel="stylesheet" href="/assets/dashboard/styles.css">
 <header>
-  <h1><img class="brand-mark" src="/assets/brand/icon.svg" alt="">Wait</h1>
+  <h1><img class="brand-lockup" src="/assets/brand/logo.svg" width="84" height="32" alt="Wait"></h1>
   <button id="sessionToggle" type="button" popovertarget="sessionPanel" aria-label="Switch session" data-i18n-aria-label="scope.select"><span id="scopeLabel">Current session</span><span aria-hidden="true">⌄</span></button>
   <div id="sessionPanel" class="session-panel" popover>
     <input id="sessionSearch" type="search" placeholder="Search session ID…" aria-label="Search session ID" data-i18n-placeholder="scope.search" data-i18n-aria-label="scope.search">
@@ -68,16 +68,16 @@
     <div class="progress"><span id="progress"></span></div>
     <div id="nodeMetrics" class="metrics">
       <button class="metric" data-state="ready" aria-pressed="false">
-        <span class="metric-label"><i class="dot ready"></i><span data-i18n="state.ready">Ready</span></span><strong>0</strong>
+        <span class="metric-label"><span data-i18n="state.ready">Ready</span></span><strong>0</strong>
       </button>
       <button class="metric" data-state="running" aria-pressed="false">
-        <span class="metric-label"><i class="dot running"></i><span data-i18n="state.running">Running</span></span><strong>0</strong>
+        <span class="metric-label"><span data-i18n="state.running">Running</span></span><strong>0</strong>
       </button>
       <button class="metric" data-state="waiting" aria-pressed="false">
-        <span class="metric-label"><i class="dot waiting"></i><span data-i18n="state.waiting">Waiting</span></span><strong>0</strong>
+        <span class="metric-label"><span data-i18n="state.waiting">Waiting</span></span><strong>0</strong>
       </button>
       <button class="metric" data-state="completed" aria-pressed="false">
-        <span class="metric-label"><i class="dot completed"></i><span data-i18n="state.completed">Completed</span></span><strong>0</strong>
+        <span class="metric-label"><span data-i18n="state.completed">Completed</span></span><strong>0</strong>
       </button>
     </div>
     <div class="layout">
@@ -130,10 +130,10 @@
         <div class="graph" id="graph" tabindex="0" aria-label="Dependency map" data-i18n-aria-label="graph.title" hidden></div>
         <div id="graphFooter" class="graph-footer" hidden>
           <div class="legend">
-            <span data-state="blocked"><i class="dot pending"></i><span data-i18n="state.blocked">Blocked</span></span>
-            <span data-state="running"><i class="dot running"></i><span data-i18n="state.running">Running</span></span>
-            <span data-state="waiting"><i class="dot waiting"></i><span data-i18n="state.waiting">Waiting</span></span>
-            <span data-state="completed"><i class="dot completed"></i><span data-i18n="state.completed">Completed</span></span>
+            <span data-state="blocked"><span data-i18n="state.blocked">Blocked</span></span>
+            <span data-state="running"><span data-i18n="state.running">Running</span></span>
+            <span data-state="waiting"><span data-i18n="state.waiting">Waiting</span></span>
+            <span data-state="completed"><span data-i18n="state.completed">Completed</span></span>
           </div>
         </div>
       </section>
@@ -170,7 +170,7 @@
 <div id="statusHelp" class="status-help" popover="manual" role="tooltip"></div>
 <script>
 if (location.protocol === "file:") {
-  document.querySelector(".brand-mark").hidden = true;
+  document.querySelector(".brand-lockup").replaceWith("Wait");
   const notice = document.createElement("section");
   notice.className = "card empty";
   const title = document.createElement("h2");

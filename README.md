@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/brand/logo.svg" width="194" height="64" alt="Wait">
+  <img src="assets/brand/logo.svg" alt="Wait">
 </p>
 
 <p align="center">
@@ -11,9 +11,7 @@
   <a href="#install">Install</a> · <a href="#usage">Usage</a> · <a href="docs/dashboard.md">Dashboard docs</a> · <a href="README.zh-CN.md">简体中文</a>
 </p>
 
-![Wait dashboard](assets/dashboard-demo.png)
-
-<p align="center"><sub>Example tasks · English interface · Light theme</sub></p>
+![Example release dashboard showing the checkpoint wait and its dependent evaluation](assets/dashboard-demo.png)
 
 ## Install
 

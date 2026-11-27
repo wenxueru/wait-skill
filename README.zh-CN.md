@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/brand/logo.svg" width="194" height="64" alt="Wait">
+  <img src="assets/brand/logo.svg" alt="Wait">
 </p>
 
 <p align="center">
@@ -11,9 +11,7 @@
   <a href="#安装">安装</a> · <a href="#用法">用法</a> · <a href="docs/dashboard.zh-CN.md">看板文档</a> · <a href="README.md">English</a>
 </p>
 
-![Wait 看板](assets/dashboard-demo.png)
-
-<p align="center"><sub>示例任务 · 英文界面 · 浅色主题</sub></p>
+![模型发布示例看板，展示等待训练检查点的任务及依赖它的测评任务](assets/dashboard-demo.png)
 
 ## 安装
 

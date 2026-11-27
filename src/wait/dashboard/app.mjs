@@ -42,13 +42,6 @@ function svgElement(tag, attributes) {
   return node;
 }
 
-const colors = {
-  pending: "var(--status-pending)", running: "var(--status-running)", dispatching: "var(--status-running)",
-  ready: "var(--status-running)", blocked: "var(--status-pending)",
-  waiting: "var(--status-waiting)", completed: "var(--status-completed)", failed: "var(--status-failed)",
-  cancelled: "var(--status-failed)"
-};
-
 function currentWorkspace() {
   return mode === "goal" ? tasks.goals.find(goal => goal.path === selected) : tasks.workspace(mode);
 }
@@ -140,7 +133,7 @@ function renderSummary() {
     </details>` : nothing}
     ${unavailable ? html`<p class="session-hint">${t("attention.unavailable")}</p>` : nothing}
     ${offline ? html`<p class="session-hint session-offline">
-      <i class="dot waiting" aria-hidden="true"></i>${t(offline === 1 ? "attention.offlineOne" : "attention.offline", {count: offline})}
+      <i class="dot" data-state="waiting" aria-hidden="true"></i>${t(offline === 1 ? "attention.offlineOne" : "attention.offline", {count: offline})}
     </p>` : nothing}
   `, $("sessionNotices"));
 }
@@ -232,7 +225,7 @@ function statusBadge(state, kind = "node") {
     aria-description=${meaning} tabindex="0">${t(`state.${state}`)}</span>`;
 }
 
-function nodeBadge(goal, node, state = nodeState(goal, node)) {
+function nodeBadge(node, state) {
   return statusBadge(state, node.taskKind === "goal" ? "node" : node.taskKind || "node");
 }
 
@@ -326,7 +319,6 @@ function renderWorkspace(goal, timings = nodeTimings(goal)) {
   const firstMetric = $("nodeMetrics").querySelector("button");
   firstMetric.dataset.state = mode === "goal" ? "ready" : "failed";
   translate(firstMetric.querySelector(".metric-label span"), `state.${firstMetric.dataset.state}`);
-  firstMetric.querySelector("i").className = "dot " + firstMetric.dataset.state;
   const graphTitle = mode === "goal" ? "graph.title" : "graph.relations";
   translate($("nodeViews").querySelector('[data-view="graph"]'), graphTitle);
   help.attach($("graphHelp"), t("graph.help") + (mode === "goal" ? "" : " " + t("activity.relationsHint")));
@@ -423,7 +415,7 @@ function renderRows(goal, rows, timings) {
       <span class="node-next" data-empty=${!next} title=${next}>
         <small class="next-caption">${t("workspace.next")}</small><span class="node-reason">${next || "—"}</span>
       </span>
-      <span class="node-status">${nodeBadge(goal, node, state)}</span>
+      <span class="node-status">${nodeBadge(node, state)}</span>
       <span class="node-time"><span class="time-caption">${t("duration.title")}</span>${phaseDuration(timing)}</span>
       <span class="node-updated">${timeElement(timing.updated)}</span>
     </div>`;
@@ -456,38 +448,38 @@ function draw(goal, matching, timings) {
   const {positions, edges, width, height} = layoutGraph(goal.nodes);
   const svg = svgElement("svg", {viewBox: `0 0 ${width} ${height}`, width, height, "aria-label": t("graph.title")});
   const definitions = svgElement("defs", {});
-  const marker = svgElement("marker", {
-    id: "arrow", viewBox: "0 0 10 10", refX: 9, refY: 5, markerWidth: 6, markerHeight: 6, orient: "auto"
-  });
-  marker.append(svgElement("path", {d: "M 0 0 L 10 5 L 0 10 z", fill: "var(--edge)"}));
-  definitions.append(marker);
+  for (const [id, fill] of [["arrow", "var(--edge)"], ["arrow-selected", "var(--primary)"]]) {
+    const marker = svgElement("marker", {
+      id, viewBox: "0 0 10 10", refX: 9, refY: 5, markerWidth: 6, markerHeight: 6, orient: "auto"
+    });
+    marker.append(svgElement("path", {d: "M 0 0 L 10 5 L 0 10 z", fill}));
+    definitions.append(marker);
+  }
   svg.append(definitions);
   for (const {from, to, points} of edges) {
     const active = from === nodeId || to === nodeId;
     svg.append(svgElement("path", {
       d: points.map((point, index) => `${index ? "L" : "M"}${point.x} ${point.y}`).join(" "),
-      fill: "none", stroke: active ? "var(--primary)" : "var(--edge)", "stroke-width": active ? 2 : 1.4,
-      "stroke-linejoin": "round", "marker-end": "url(#arrow)"
+      class: active ? "graph-edge selected" : "graph-edge"
     }));
   }
   for (const [id, node] of Object.entries(goal.nodes)) {
     const position = positions[id];
-    const selectedNode = id === nodeId;
+    const state = nodeState(goal, node);
     const group = svgElement("g", {
       transform: `translate(${position.x},${position.y})`, tabindex: 0, role: "button",
-      "aria-label": node.title, "aria-pressed": selectedNode, "data-node": id, "data-kind": node.taskKind || "goal",
+      "aria-label": node.title, "aria-pressed": id === nodeId, "data-node": id,
       opacity: matching.has(id) || node.context ? 1 : .23
     });
     group.append(
-      svgElement("rect", {width: 280, height: 114, rx: 10,
-        fill: selectedNode ? "var(--node-selected)" : "var(--node)",
-        stroke: selectedNode ? "var(--node-selected-border)" : "var(--node-border)", "stroke-width": selectedNode ? 2 : 1}),
-      svgElement("rect", {x: 0, y: 14, width: 4, height: 86, rx: 2, fill: colors[nodeState(goal, node)]})
+      svgElement("rect", {class: "node-frame", width: 280, height: 114}),
+      svgElement("rect", {x: 0, y: 14, width: 4, height: 86, rx: 1,
+        class: "graph-status", "data-state": state})
     );
     const content = svgElement("foreignObject", {x: 16, y: 11, width: 249, height: 98});
     const box = element("div", undefined, "graph-node");
     const meta = element("div", undefined, "graph-node-meta");
-    renderTemplate(html`${nodeBadge(goal, node)}${phaseDuration(timings.get(id))}`, meta);
+    renderTemplate(html`${nodeBadge(node, state)}${phaseDuration(timings.get(id))}`, meta);
     if (node.taskKind === "loop") {
       box.classList.add("loop-node");
       const loop = node.task?.error ? null : node.task;
@@ -669,7 +661,7 @@ function renderDetails(goal, timings) {
   const kind = node?.taskKind ? t(`mode.${node.taskKind}`) : node && t(`field.nodeKind.${node.kind}`);
   renderTemplate(html`<span class="eyebrow">${t("details.title")}</span>
     ${node ? keyed(JSON.stringify([mode, goal.path, id]), html`
-      ${nodeBadge(goal, node)}
+      ${nodeBadge(node, nodeState(goal, node))}
       <h3>${node.title}</h3><p class="muted">${node.shortId || id} · ${kind}</p>
       ${nodeTimeline(timings.get(id))}
       ${node.taskKind ? activityDetails(goal, node, id) : goalDetails(goal, node, id)}
