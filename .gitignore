@@ -10,3 +10,4 @@ commit.tmp
 history.cmt
 node_modules
 src/_deps/
+/dist/

@@ -21,6 +21,8 @@ Requires Python 3.11 or newer with pip. Install on the host that runs `waitd`.
 
 ### From skills.sh
 
+This install command requires Node.js.
+
 ```sh
 npx skills add wenxueru/wait-skill --skill wait
 ```
@@ -41,9 +43,10 @@ python /path/to/wait-skill/src/install_skill.py
 
 ### Python setup
 
-Use this setup after installing through a skill manager or plugin directory. On macOS or Linux, check that `python3 --version` reports 3.11 or later. Set `WAIT_SKILL_DIR` to the installed directory containing `SKILL.md`:
+After installing through a skill manager or plugin directory, use Python 3.11 or newer on macOS or Linux. Point `WAIT_SKILL_DIR` at the installed directory that contains `SKILL.md`.
 
 ```sh
+WAIT_SKILL_DIR=/path/to/installed/wait
 python3 -m venv "$HOME/.cache/wait-skill/venv"
 "$HOME/.cache/wait-skill/venv/bin/python" -m pip install -r "$WAIT_SKILL_DIR/src/requirements.txt"
 ```
@@ -70,6 +73,8 @@ While the agent is idle, local `waitd` checks state, saves results, and delivers
 
 ## Dashboard
 
+Use the Python interpreter and skill path from your installation. For the default GitHub installation, run this in the owning session.
+
 ```sh
 python ~/.codex/skills/wait/src/waitctl.py dashboard --session "$CODEX_THREAD_ID"
 ```
@@ -89,7 +94,7 @@ Use read-only waiting programs with a deadline. Store credentials in the environ
 
 ## Development
 
-`aiohttp` serves the dashboard and `websockets` carries Codex RPC. The browser runs with [bundled local modules](assets/vendor/README.md). Node is needed for frontend development only.
+`aiohttp` serves the dashboard and `websockets` carries Codex RPC. The browser uses [bundled modules](assets/vendor/README.md). Frontend development requires Node.js.
 
 | Location | Responsibility |
 | --- | --- |
@@ -134,6 +139,10 @@ python -m unittest discover -s tests -t . -v
 npm test
 python /path/to/skill-creator/scripts/quick_validate.py .
 ```
+
+### Desktop plugin package
+
+Run `python -m scripts.package_plugin` from the repository root to build the desktop plugin ZIP in `dist/`.
 
 ## Related work
 

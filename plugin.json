@@ -1,0 +1,35 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "wait-workflow",
+  "version": "0.1.0",
+  "description": "Wait for external events, run bounded loops, and resume work with durable task dependencies.",
+  "author": {
+    "name": "wenxueru",
+    "url": "https://github.com/wenxueru"
+  },
+  "repository": "https://github.com/wenxueru/wait-skill",
+  "license": "MIT",
+  "keywords": ["automation", "wait", "workflows"],
+  "extensions": {
+    "com.openai": {
+      "requires_local_executor": true,
+      "onboardingSkill": "./skills/wait/SKILL.md",
+      "interface": {
+        "displayName": "Wait Workflow",
+        "shortDescription": "Wait for external events",
+        "longDescription": "Wait for external events, run bounded loops, and resume tasks with dependencies. A local service checks conditions between Codex turns. The dashboard shows progress, history, and dependencies. Run on macOS or Linux with Python 3.11 or newer. Automatic wake delivery uses the session's Codex app-server.",
+        "developerName": "wenxueru",
+        "category": "Developer Tools",
+        "defaultPrompt": [
+          "Set up Wait Workflow in this local session.",
+          "Use $wait to tell me when a file I specify appears."
+        ],
+        "websiteURL": "https://github.com/wenxueru/wait-skill",
+        "supportURL": "https://github.com/wenxueru/wait-skill/issues",
+        "brandColor": "#4974a8",
+        "composerIcon": "./skills/wait/assets/brand/icon.svg",
+        "logo": "./skills/wait/assets/brand/icon.svg"
+      }
+    }
+  }
+}

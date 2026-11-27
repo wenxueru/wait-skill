@@ -21,6 +21,8 @@
 
 ### 从 skills.sh 安装
 
+这个安装命令需要 Node.js。
+
 ```sh
 npx skills add wenxueru/wait-skill --skill wait
 ```
@@ -41,9 +43,10 @@ python /path/to/wait-skill/src/install_skill.py
 
 ### Python 设置
 
-从 Skill 管理器或插件目录安装后，在 macOS 或 Linux 上先用 `python3 --version` 确认版本至少为 3.11。将 `WAIT_SKILL_DIR` 设为安装后包含 `SKILL.md` 的目录：
+从 Skill 管理器或插件目录安装后，在 macOS 或 Linux 上使用 Python 3.11 或更新版本。将 `WAIT_SKILL_DIR` 设为安装后包含 `SKILL.md` 的目录。
 
 ```sh
+WAIT_SKILL_DIR=/path/to/installed/wait
 python3 -m venv "$HOME/.cache/wait-skill/venv"
 "$HOME/.cache/wait-skill/venv/bin/python" -m pip install -r "$WAIT_SKILL_DIR/src/requirements.txt"
 ```
@@ -70,6 +73,8 @@ $wait goal 发布 API。拆分实现和测试，测试及健康检查通过后�
 
 ## 看板
 
+请使用与安装方式对应的 Python 解释器和 Skill 路径。通过 GitHub 按默认路径安装时，在所属会话中运行下面的命令。
+
 ```sh
 python ~/.codex/skills/wait/src/waitctl.py dashboard --session "$CODEX_THREAD_ID"
 ```
@@ -89,7 +94,7 @@ python ~/.codex/skills/wait/src/waitctl.py dashboard --session "$CODEX_THREAD_ID
 
 ## 开发
 
-`aiohttp` 提供看板服务，`websockets` 负责 Codex RPC 传输。浏览器加载[随仓库打包的模块](assets/vendor/README.md)，Node 只用于前端开发。
+`aiohttp` 提供看板服务，`websockets` 负责 Codex RPC 传输。浏览器加载[随仓库打包的模块](assets/vendor/README.md)。开发前端需要 Node.js。
 
 | 位置 | 职责 |
 | --- | --- |
@@ -134,6 +139,10 @@ python -m unittest discover -s tests -t . -v
 npm test
 python /path/to/skill-creator/scripts/quick_validate.py .
 ```
+
+### 桌面插件打包
+
+在仓库根目录运行 `python -m scripts.package_plugin`，桌面插件 ZIP 会生成在 `dist/` 下。
 
 ## 相关工作
 
