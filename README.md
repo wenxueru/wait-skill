@@ -19,6 +19,16 @@
 
 Requires Python 3.11 or newer with pip. Install on the host that runs `waitd`.
 
+### From skills.sh
+
+```sh
+npx skills add wenxueru/wait-skill --skill wait
+```
+
+Open a new session and ask the agent to set up Wait, or follow [Python setup](#python-setup) yourself.
+
+### From GitHub
+
 ```sh
 git clone https://github.com/wenxueru/wait-skill.git /path/to/wait-skill
 python /path/to/wait-skill/src/install_skill.py
@@ -28,6 +38,17 @@ python /path/to/wait-skill/src/install_skill.py
 - Default destination: `${CODEX_HOME:-~/.codex}/skills/wait`. For another client, pass `--destination /path/to/client/skills/wait`.
 - Installation replaces packaged files, removes old nested skills and matching `wait-goal` / `wait-loop` symlinks, and keeps no backups. Unrelated sibling directories remain.
 - Reload the client after installing. Let an older daemon's watches finish before [stopping it to switch versions](docs/waitd.md#service-lifecycle).
+
+### Python setup
+
+Use this setup after installing through a skill manager or plugin directory. On macOS or Linux, check that `python3 --version` reports 3.11 or later. Set `WAIT_SKILL_DIR` to the installed directory containing `SKILL.md`:
+
+```sh
+python3 -m venv "$HOME/.cache/wait-skill/venv"
+"$HOME/.cache/wait-skill/venv/bin/python" -m pip install -r "$WAIT_SKILL_DIR/src/requirements.txt"
+```
+
+Run the packaged `src/waitctl.py` with that interpreter. For automatic wake delivery, check the session's [Codex app-server connection](docs/clients.md#codex).
 
 ## Usage
 

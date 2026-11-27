@@ -7,6 +7,8 @@ description: Wait for external state without model polling, run bounded repeated
 
 `waitd` runs waiting programs and delivers events. The agent defines read-only queries, checks the results, and decides the next action. Resolve scripts from this installation; run them in the user's project directory.
 
+Use a Python 3.11+ interpreter with this installation's dependencies. For first use after installation by a skill manager or plugin directory, follow [Python setup](README.md#python-setup). A setup-only request ends after checking readiness.
+
 ## Choose a mode
 
 | Request | Read |

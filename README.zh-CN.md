@@ -19,6 +19,16 @@
 
 运行 `waitd` 的机器需要安装 Python 3.11 或更新版本和 pip。
 
+### 从 skills.sh 安装
+
+```sh
+npx skills add wenxueru/wait-skill --skill wait
+```
+
+开启新会话，让 Agent 设置 Wait，也可以手动完成下文的 [Python 设置](#python-设置)。
+
+### 从 GitHub 安装
+
 ```sh
 git clone https://github.com/wenxueru/wait-skill.git /path/to/wait-skill
 python /path/to/wait-skill/src/install_skill.py
@@ -28,6 +38,17 @@ python /path/to/wait-skill/src/install_skill.py
 - 默认安装到 `${CODEX_HOME:-~/.codex}/skills/wait`；其他客户端使用 `--destination /path/to/client/skills/wait`。
 - 安装直接替换打包文件，删除旧嵌套 Skill 和匹配的 `wait-goal` / `wait-loop` 链接，不保留备份，也不修改其他同级目录。
 - 安装后重新加载客户端。旧版 daemon 仍在运行时，先等 watcher 结束，再[停止并切换版本](docs/waitd.zh-CN.md#服务生命周期)。
+
+### Python 设置
+
+从 Skill 管理器或插件目录安装后，在 macOS 或 Linux 上先用 `python3 --version` 确认版本至少为 3.11。将 `WAIT_SKILL_DIR` 设为安装后包含 `SKILL.md` 的目录：
+
+```sh
+python3 -m venv "$HOME/.cache/wait-skill/venv"
+"$HOME/.cache/wait-skill/venv/bin/python" -m pip install -r "$WAIT_SKILL_DIR/src/requirements.txt"
+```
+
+使用这个环境的 Python 运行已安装的 `src/waitctl.py`。自动唤醒需要核对会话的 [Codex app-server 连接](docs/clients.zh-CN.md#codex)。
 
 ## 用法
 
